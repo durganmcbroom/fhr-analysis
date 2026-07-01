@@ -1,0 +1,7 @@
+.out
+Banner_data/*
+lib/tune-ssnet/training/*
+.venv
+.claude
+src/bin/snr/data/*
+src/bin/snr/out/*

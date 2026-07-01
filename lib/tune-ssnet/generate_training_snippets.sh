@@ -1,0 +1,1 @@
+python3 ../../src/bin/generate_training_snippets.py training_clips.yaml --out-dir="training_clips_mono_v4 (with control)/"

@@ -1,0 +1,65 @@
+length: 10 # in seconds
+overlap: 3 # in seconds
+ppg_col: 1 # defaults to 0 if I don't declare
+mode: "mono"
+data:
+  "band_durgan_2":
+    is_control: True
+    fibers:
+      - "2A"  # ps3000a.npy data col 1; 1B needs the chest bundle ps4000.npy, absent for control dirs
+    sections:
+      - "0-420"
+  "Patient 6":
+    fibers:
+      - "2D"
+      - "2C"
+      - "2B"
+    sections:
+      - "21-38"
+      - "50-80"
+      - "85-118"
+      - "140-172"
+      - "178-194"
+      - "210-250"
+      - "252-263"
+      - "279-291"
+      - "295-348"
+      - "350-420" # This section may be bad, low SNR
+      - "422-439"
+      - "440-490" # Also might be bad
+      - "495-565"
+      - "575-602"
+      - "602-668" # Tad noisy
+      - "702-822" # Low SNR
+      - "830-878"
+      - "890-1100"
+      - "1142-1240"
+      - "1252-1325"
+      - "1330-1353"
+      - "1405-1415" # No SOT beyond point
+  "Patient 7":
+    fibers:
+      - "2A"
+      - "2B"
+      - "2D"
+    sections:
+      - "25-40"
+      - "98-122"
+      - "132-152"
+      - "158-179"
+      - "185-232"
+      - "255-330"
+      - "338-349"
+      - "352-366"
+      - "380-441"
+      - "450-489"
+      - "490-568"
+      - "605-711"
+      - "713-818"
+      - "858-1245" # Low SNR
+      - "1302-1450"
+      # No SOT after this point
+#      - "1475-1592" # Sus
+#      - "1595-1625" # Less sus, breaking it out just to have this metadata
+#      - "1625-1672"
+#      - "1690-1775"
