@@ -137,7 +137,7 @@ def make_loaders(config):
     return train_dl, val_dl
 
 
-def tile_encoder_for_channels(state_dict, target_channels):
+def tile_encoder_for_channels(state_dict, target_channels=1):
     # Warm-start a multi-channel encoder from a 1-channel checkpoint by tiling the
     # single input-channel weight across the new channels (divided to keep scale).
     weight = state_dict.get("encoder.weight")
@@ -154,7 +154,7 @@ def build_model(config, device):
     resume = config.get("train_resume")
     if resume is not None:
         state_dict = torch.load(resume, map_location=device)
-        state_dict = tile_encoder_for_channels(state_dict, model.enc_in_channels)
+        state_dict = tile_encoder_for_channels(state_dict, 1)
         model.load_state_dict(state_dict)
     return model
 

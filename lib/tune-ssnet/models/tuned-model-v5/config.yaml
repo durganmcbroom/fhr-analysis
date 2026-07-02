@@ -7,7 +7,7 @@ hyperparam:
   epochs: 40
   factor: 0.5
   learning_rate: 0.0003
-  loss: SNR
+  loss: LogMSE
   model_config:
     dec_type: convolution
     enc_kernel_size: 512
@@ -35,8 +35,8 @@ hyperparam:
   snr_step: 5
   weight_decay: 0.1
   weights: 1.0, 1.0
-model_dir: tuned-model-v5/
+model_dir: models/tuned-model-v5/
 num_workers: 4
-train_dir: lib/tune-ssnet/training_clips_mono_v4 (with control)/fetal
-train_resume: lib/Neonatal-Chest-Sound-Separation-using-Deep-Learning/models/model_best.pt
+train_dir: training/training_clips_mono_v4 (with control)/fetal
+train_resume: ../neossnet/models/model_best.pt
 train_type: NoNoise

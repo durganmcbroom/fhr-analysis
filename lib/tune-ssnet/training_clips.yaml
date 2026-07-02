@@ -3,12 +3,12 @@ overlap: 3 # in seconds
 ppg_col: 1 # defaults to 0 if I don't declare
 mode: "mono"
 data:
-  "band_durgan_2":
-    is_control: True
-    fibers:
-      - "2A"  # ps3000a.npy data col 1; 1B needs the chest bundle ps4000.npy, absent for control dirs
-    sections:
-      - "0-420"
+#  "band_durgan_2":
+#    is_control: True
+#    fibers:
+#      - "2A"  # ps3000a.npy data col 1; 1B needs the chest bundle ps4000.npy, absent for control dirs
+#    sections:
+#      - "0-420"
   "Patient 6":
     fibers:
       - "2D"

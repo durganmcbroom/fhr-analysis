@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from analyze.anc import fetal_anc
-from analyze.data import FiberData, load_data, windowed, use_fiber
+from analyze.data import FiberData, load_data, windowed, use_fiber, load_no_chest_data
 from analyze.evaluate import evaluate, combine_evaluations, plot_evaluation
 from analyze.evaluate_v2 import evaluate_v2
 from analyze.filters import abdomen_bp, bp, notch
@@ -13,43 +13,25 @@ from analyze.hr.detect_v3 import v3_beat_detector
 from analyze.ica import load_ica_data, prepare_signals, run_ica
 from analyze.mlcmed import run_mlcmed
 from analyze.mnmf import run_mnmf
-from analyze.neossnet import run_neossnet_pipeline
+from analyze.neossnet import run_neossnet_pipeline, run_neossnet_no_sot
 from analyze.nmcf import run_nmcf
 from analyze.pipeline import Pipeline
-from analyze.plot_hr import plot_hr
+from analyze.plot_hr import plot_hr, plot_peaks
 from analyze.sot import load_sot, combine_sot_results
+from analyze.util import run_neossnet
 from constants import PROJECT_DIR, FETAL_ACOUSTIC_BAND_HZ, BROADBAND_FILTER_HZ, POWERLINE_NOTCH_HZ
 
-PATIENT = "PT13_3"
+# PATIENT = "fiber-horizontal"
+PATIENT = "PT13_1"
 # PATIENT = "patient8-session1"
 # PATIENT = "session-02"
 # PATIENT = "band_durgan_1"
 # WINDOW = 50, 70
 # WINDOW = 60, 70
 WINDOW = 179, 199
+# WINDOW = 0, 40
 # WINDOW = 0, 20
 DATA_DIR = f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/{PATIENT}"
-#
-# def paired(name):
-#     def select_pair(data):
-#         print(f"Selecting pair {name}")
-#         return FiberPair(
-#             data.chest,
-#             data.abdomen[name],
-#         )
-#
-#     return select_pair
-
-
-# def run_anc(data):
-#     result = kalman_filter(data.abdomen.data, data.chest.data)[0]
-#     # result = nlms_filter(data.abdomen.data, data.chest.data, int(data.abdomen.hz*0.5), mu=0.01)
-#     audio = Audio(
-#         data.abdomen.time,
-#         data.abdomen.hz,
-#         result
-#     )
-#     return audio
 
 def ica():
     out = f"{PROJECT_DIR}.out/{PATIENT}/ica"
@@ -80,7 +62,6 @@ def ica():
 
 
 def run_mlcmed_pipeline():
-    the_emd = EMD()
     step = 20
 
     evaluations = []
@@ -201,6 +182,23 @@ def run_raw_bandpass():
 
     band_pipe.process(DATA_DIR)
 
+def run_raw_bandpass_no_sot():
+    out = f"{PROJECT_DIR}.out/{PATIENT}/raw_bandpass_190_220"
+    Path(out).mkdir(parents=True, exist_ok=True)
+
+    band_pipe = Pipeline([
+        load_no_chest_data,
+        windowed(WINDOW[0], WINDOW[1]),
+        FiberData.apply_abdomen(bp(*FETAL_ACOUSTIC_BAND_HZ, "butter")),
+        use_fiber("2C"),
+        fiber_beats(v2_beat_detector, Path(out)),
+        plot_peaks(Path(out)),
+        plot_hr(None, out),
+    ], f"{out}/cache")
+
+    band_pipe.process(DATA_DIR)
+
+
 # For peak detection:
 # - Envelope:
 # - 50% energy on either side
@@ -208,25 +206,19 @@ def run_raw_bandpass():
 # Scoring:
 # - Step function instead of impulse train
 
-
-
 # Try larger NST (SOT) window so that if lag is large, you can adjust into open space
 # ^^ Use step/sigmoid for scoring > better xcorr
 if __name__ == '__main__':
-    # run_mnmf_pipeline()  # multichannel NMF (Ozerov SSEM/MU) — needs a patient with SOT
-    # run_nmcf_pipeline()
-    # run_neossnet_homegrown_data(
-    #     "band_durgan_1",
-    #     (0, 20),
-    #     f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/band_durgan_1",
-    # )
     run_neossnet_pipeline(
         PATIENT,
-            WINDOW,
-            DATA_DIR,
+        WINDOW,
+        DATA_DIR
     )
-    # run_nmcf_pipeline(PATIENT, WINDOW, DATA_DIR)
-    # run_mlcmed_pipeline()
-    # ica()
-    # run_raw_bandpass()
+    # run_neossnet_no_sot(
+    #     PATIENT,
+    #     WINDOW,
+    #     DATA_DIR
+    # )
+
+    # run_raw_bandpass_no_sot()
 

@@ -5,7 +5,7 @@ import numpy as np
 from matplotlib import pyplot as plt
 from scipy.ndimage import uniform_filter1d
 
-from analyze.hr import fHROutput
+from analyze.hr import fHROutput, fHRMultiOutput
 from analyze.sot import SOTResult
 
 
@@ -82,6 +82,101 @@ def _plot_hr_axis(
     ax.grid(True, alpha=0.25)
     ax.legend(loc='upper right', fontsize=8)
     ax.set_title(title, fontsize=9)
+
+
+def _plot_hr_axis_multi(
+        ax,
+        sot_beats: np.ndarray | None,
+        pred_beats: dict,
+        sot_color: str,
+        sot_label: str,
+        title: str,
+        band: Tuple[float, float],
+) -> None:
+    """Like ``_plot_hr_axis``, but overlays one trace per entry of ``pred_beats``
+    (name -> beat times) instead of a single prediction."""
+    cmap = plt.get_cmap("tab10")
+    traces = [(name, *_inst_hr(beats, band)) for name, beats in pred_beats.items()]
+
+    if sot_beats is not None:
+        sot_t, sot_y = _inst_hr(sot_beats, band)
+        if sot_t.size:
+            med = float(np.median(sot_y))
+            ax.plot(sot_t, sot_y, color=sot_color, lw=1.4, marker='o', ms=3,
+                    alpha=0.9, label=f'{sot_label} (median {med:.1f})')
+
+    for i, (name, t, y) in enumerate(traces):
+        if t.size:
+            med = float(np.median(y))
+            ax.plot(t, y, color=cmap(i % 10), lw=1.1, marker='s', ms=3,
+                    alpha=0.8, label=f'{name} (median {med:.1f})')
+
+    ylim_traces = [(t, y) for (_, t, y) in traces]
+    if sot_beats is not None:
+        ylim_traces.append((sot_t, sot_y))
+
+    ax.set_ylim(*_hr_ylim(ylim_traces, band))
+    ax.set_ylabel("Instantaneous HR (BPM)", fontsize=8)
+    ax.grid(True, alpha=0.25)
+    ax.legend(loc='upper right', fontsize=8)
+    ax.set_title(title, fontsize=9)
+
+
+def plot_hr_multi_comparison(
+        multi: fHRMultiOutput,
+        sot: SOTResult | None,
+        out: Path,
+        filename: str = "hr_comparison_multi.png",
+) -> None:
+    """One fetal-HR panel with every abdomen fiber's trace overlaid (plus an
+    optional maternal panel), for spotting overall trends across fibers."""
+    out = Path(out)
+    out.mkdir(parents=True, exist_ok=True)
+
+    if sot is not None:
+        t_start = float(min(
+            sot.ppg.time[0] if len(sot.ppg.time) else 0.0,
+            sot.mic.time[0] if len(sot.mic.time) else 0.0,
+        ))
+        t_end = float(max(
+            sot.ppg.time[-1] if len(sot.ppg.time) else 1.0,
+            sot.mic.time[-1] if len(sot.mic.time) else 1.0,
+        ))
+    else:
+        any_source = next(iter(multi.fetal_sources.values()))
+        t_start = float(any_source.time[0])
+        t_end = float(any_source.time[-1])
+
+    if multi.maternal_beats is not None:
+        fig, (ax_m, ax_f) = plt.subplots(2, 1, figsize=(14, 7), sharex=True,
+                                         constrained_layout=True)
+        _plot_hr_axis(
+            ax_m,
+            sot_beats=sot.ppg_beats if sot is not None else None,
+            pred_beats=multi.maternal_beats,
+            sot_color='tab:blue', pred_color='tab:orange',
+            sot_label='PPG (SOT)', pred_label='Fiber chest',
+            title="Maternal instantaneous HR — fiber vs SOT",
+            band=(30.0, 160.0),
+        )
+    else:
+        fig, ax_f = plt.subplots(1, 1, figsize=(14, 4.5), constrained_layout=True)
+
+    _plot_hr_axis_multi(
+        ax_f,
+        sot_beats=sot.mic_beats if sot is not None else None,
+        pred_beats=multi.fetal_beats,
+        sot_color='tab:red',
+        sot_label='Mic (SOT)',
+        title="Fetal instantaneous HR — all abdomen fibers",
+        band=(60.0, 240.0),
+    )
+
+    ax_f.set_xlabel("Time (s)", fontsize=8)
+    ax_f.set_xlim(t_start, t_end)
+    fig.suptitle("Instantaneous heart rate: all abdomen fibers vs SOT", fontsize=11)
+    plt.savefig(out / filename, dpi=150)
+    plt.close()
 
 
 def plot_hr_comparison(
@@ -162,3 +257,71 @@ def plot_hr(sot: SOTResult, out: Path):
 
     run_plot_hr.__name__ = "plot_hr"
     return run_plot_hr
+
+
+def plot_multi_hr(sot: SOTResult | None, out: Path):
+    """Pipeline stage: write the all-abdomen-fibers instantaneous-HR overlay
+    plot. Pass-through, like ``plot_hr``. ``sot`` is optional."""
+
+    def run_plot_multi_hr(result: fHRMultiOutput):
+        plot_hr_multi_comparison(result, sot, out)
+        return result
+
+    run_plot_multi_hr.__name__ = "plot_multi_hr"
+    return run_plot_multi_hr
+
+
+def _peak_rows(result):
+    """Normalize a fHRMultiOutput or fHROutput into (label, source, beats) rows."""
+    rows = []
+    if isinstance(result, fHRMultiOutput):
+        if result.maternal_source is not None:
+            rows.append(("maternal", result.maternal_source, result.maternal_beats))
+        rows.extend((name, source, result.fetal_beats[name]) for name, source in result.fetal_sources.items())
+    else:
+        if result.maternal_source is not None:
+            rows.append(("maternal", result.maternal_source, result.maternal_beats))
+        rows.append(("fetal", result.fetal_source, result.fetal_beats))
+    return rows
+
+
+def plot_peaks(out: Path, filename: str = "peaks.png"):
+    """Pipeline stage: plot each channel's waveform (stacked vertically, one
+    row per channel) with its detected beats marked on the trace. Accepts
+    either a fHRMultiOutput (one row per abdomen fiber, plus maternal if
+    present) or a single fHROutput (maternal + fetal rows)."""
+
+    def run_plot_peaks(result):
+        rows = _peak_rows(result)
+
+        out.mkdir(parents=True, exist_ok=True)
+        fig, axes = plt.subplots(len(rows), 1, figsize=(14, 3 * len(rows)), squeeze=False, sharex=True)
+
+        for row, (label, source, beats) in enumerate(rows):
+            ax = axes[row][0]
+            data = np.asarray(source.data, dtype=float)
+
+            mn = data.min()
+            mx = data.max()
+
+            ax.plot(source.time, data, lw=0.5, color="steelblue")
+            beats = np.asarray(beats, dtype=float) if beats is not None else np.array([])
+            if beats.size:
+                ax.vlines(beats, mn, mx, color="lightcoral", linestyles="--", label=f"peaks (n={beats.size})", lw=0.8)
+                ax.legend(loc='upper right', fontsize=7)
+            ax.set_title(label, fontsize=9)
+            ax.set_ylabel("Amplitude", fontsize=8)
+            ax.tick_params(labelsize=7)
+
+        axes[-1][0].set_xlabel("Time (s)", fontsize=8)
+        fig.suptitle("Detected peaks on waveform", fontsize=11)
+        fig.tight_layout()
+        out_file = out / filename
+        plt.savefig(out_file, dpi=150, bbox_inches="tight")
+        plt.close()
+        print(f"[plot_peaks] saved visualization → {out_file}")
+
+        return result
+
+    run_plot_peaks.__name__ = "plot_peaks"
+    return run_plot_peaks

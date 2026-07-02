@@ -7,6 +7,7 @@ from scipy.io.wavfile import write
 
 from constants import FIBER_BUNDLE_A, FIBER_BUNDLE_B, ABDOMEN_FIBER_NAMES
 
+
 @dataclass
 class Audio:
     time: npt.NDArray[np.float64]
@@ -24,6 +25,7 @@ class Audio:
     def write(self, path: str):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         write(path, self.hz, self.data)
+
 
 @dataclass
 class FiberData:
@@ -70,7 +72,6 @@ class FiberData:
         return run_all
 
 
-
 @dataclass
 class FiberPair:
     chest: Audio
@@ -86,6 +87,7 @@ class FiberPair:
 
         run_dual.__name__ = filter.__name__ + "_DUAL"
         return run_dual
+
 
 def load_fibers(path):
     raw_chest = np.load(path / FIBER_BUNDLE_A)
@@ -117,12 +119,61 @@ def load_fibers(path):
         abdomen,
     )
 
+
 def load_data(path):
     fibers = load_fibers(Path(path))
     print("Fiber data loaded: ")
     print(f"  Abdomen: {" | ".join([f"{name} ({audio.hz}hz)" for (name, audio) in fibers.abdomen.items()])}")
     print(f"  Chest ({fibers.chest.hz} hz)")
     return fibers
+
+
+def load_no_chest_data(path: str):
+    COLS = "2A", "2B", "2C"
+    path = Path(path)
+
+    raw_abdomen = np.load(path / FIBER_BUNDLE_B)
+    abdomen_time = raw_abdomen[:, 0]
+    abdomen_hz = round(1 / (abdomen_time[1] - abdomen_time[0]))
+    abdomen = {}
+
+    for i in range(1, raw_abdomen.shape[1]):
+        data = raw_abdomen[:, i]
+        abdomen[COLS[i - 1]] = Audio(
+            abdomen_time,
+            abdomen_hz,
+            data
+        )
+
+    # fft_x = abdomen["2A"].data
+    # N = fft_x.shape[0]
+    #
+    # fft_abdomen = np.fft.rfft(fft_x)
+    # fft_freq = np.fft.rfftfreq(N, d=1/abdomen_hz)
+    # magnitude = np.abs(fft_abdomen)
+    #
+    # fig, ax = plt.subplots(figsize=(10, 4))
+    #
+    # ax.plot(fft_freq, magnitude, linewidth=0.8, color="#2c7bb6")
+    # ax.set_xlim(0, 250)
+    # ax.set_xlabel("Frequency (Hz)", fontsize=12)
+    # ax.set_ylabel("Magnitude", fontsize=12)
+    # ax.set_title("FFT — Abdomen channel 2A", fontsize=13)
+    #
+    # # Light grid on y only; keeps it readable without clutter
+    # ax.yaxis.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
+    # ax.set_axisbelow(True)
+    # ax.spines[["top", "right"]].set_visible(False)
+    #
+    # fig.tight_layout()
+    # fig.savefig(out_path / "fft.png", dpi=150)
+    # plt.close(fig)
+
+    return FiberData(
+        None,
+        abdomen,
+    )
+
 
 def windowed(start, end):
     """Generic windowing stage: works on any value with a ``.window(start, end)``
@@ -134,6 +185,7 @@ def windowed(start, end):
         return data.window(start, end)
 
     return select_window
+
 
 def use_fiber(fiber):
     def select_fiber(data: FiberData):
