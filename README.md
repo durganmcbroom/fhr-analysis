@@ -55,7 +55,7 @@ Most entry points expect to be run with `src/` on `PYTHONPATH` (or run
 directly, since each script inserts it itself):
 
 ```bash
-.venv/bin/python src/analyze/main.py
+.venv/bin/python src/analyze/model.py
 .venv/bin/python src/bin/generate_training_snippets.py <clips.yaml> --out-dir out/
 ```
 

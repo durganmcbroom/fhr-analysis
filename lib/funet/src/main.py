@@ -1,78 +1,78 @@
-from torch import nn
-from torch.nn import Conv1d, ReLU, MaxPool1d, Sequential, ConvTranspose1d
+import os
+import sys
+
+import torch
+from torch import nn, optim
+
+from lib.funet.src.config import Config, load_config
+from lib.funet.src.data import make_dataloaders
+from lib.funet.src.model import FUNet
+from lib.funet.src.train import train
+from train import fit
+
+OPTIMIZERS = {
+    "SGD": optim.SGD,
+    "Adam": optim.Adam,
+    "AdamW": optim.AdamW,
+}
 
 
-def encoder(
-    in_channels: int,
-    out_channels: int,
-    convs: int = 3,
-    dilation = 1
-):
-    modules = []
-
-    for i in range(convs):
-        if i == 0:
-            inc = in_channels
-        else:
-            inc = out_channels
-        convolution = Conv1d(inc, out_channels, 4, dilation=dilation)
-        relu = ReLU()
-
-        modules.append(convolution)
-        modules.append(relu)
-
-    max_pool = MaxPool1d(2)
-    modules.append(max_pool)
-
-    return Sequential(*modules)
-
-def decoder(
-        in_channels: int,
-        out_channels: int,
-        convs: int = 3,
-        dilation= 1,
-):
-    modules = []
-
-    transpose = ConvTranspose1d(in_channels, out_channels, 4, stride=2)
-    modules.append(transpose)
-
-    for _ in range(convs):
-        convolution = Conv1d(out_channels, out_channels, 4, dilation=dilation)
-        relu = ReLU()
-
-        modules.append(convolution)
-        modules.append(relu)
-
-    return Sequential(*modules)
+def pick_device() -> torch.device:
+    """CUDA if present, else Apple MPS, else CPU. Set FUNET_DEVICE (e.g. "cpu") to override."""
+    forced = os.environ.get("FUNET_DEVICE")
+    if forced:
+        return torch.device(forced)
+    if torch.cuda.is_available():
+        return torch.device("cuda:0")
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
 
 
-class UNet(nn.Module):
-    def __init__(
-        self,
-        channels: int = 4,
-        dilations = [1, 1, 1, 2, 2, 4, 4],
-        bottleneck_dilations = [8, 8, 8]
-    ):
-        initial_conv = Conv1d(channels, 64, 4)
-        encoders = [encoder(in_channels=64 * 2**i, out_channels=64 * 2**(i+1)) for i in range(depth)]
-        decoders = [decoder(in_channels=64 * 2**i, out_channels=64 * 2**(i-1)) for i in range(depth, 0, -1)]
-        bottleneck = Sequential(
-
-        )
-
-        pass
-
-    def forward(self, x):
-        conv =
-
-def model(
-        channel_inp: int = 4,
-        layers: int = 7,
-):
-    modules = [
-    ]
+def build_optimiser(config: Config, model: nn.Module) -> optim.Optimizer:
+    try:
+        cls = OPTIMIZERS[config.train.optimizer]
+    except KeyError:
+        raise ValueError(f"Unknown optimizer: {config.train.optimizer!r}") from None
+    return cls(model.parameters(), lr=config.train.learning_rate, weight_decay=config.train.weight_decay)
 
 
-    for _ in range(layers):
-        modules.append()
+def main(config: Config):
+    device = pick_device()
+    print(f"Using device: {device}")
+
+    model = FUNet(
+        channels=config.model.channels,
+        dilations=config.model.dilations,
+        bottleneck_dilation=config.model.bottleneck_dilation,
+    )
+
+    if config.resume is not None:
+        print(f"Resuming from checkpoint: '{config.resume}'")
+        model.load_state_dict(torch.load(config.resume, map_location=device))
+
+    train_dl, val_dl = make_dataloaders(config)
+    optimiser = build_optimiser(config, model)
+    loss_fn = nn.KLDivLoss(reduction="batchmean")
+
+    os.makedirs(config.model_dir, exist_ok=True)
+
+    print("-------- Start of Training --------")
+    fit(
+        model=model,
+        train_data=train_dl,
+        val_data=val_dl,
+        optimiser=optimiser,
+        loss_fn=loss_fn,
+        epochs=config.train.epochs,
+        device=device,
+        config={"model_dir": config.model_dir},
+        clip=config.train.clip,
+    )
+
+
+if __name__ == "__main__":
+    config_path = sys.argv[1] if len(sys.argv) > 1 else "../fetal-config.yaml"
+    loaded = load_config(config_path)
+    print(f"Loaded config: '{config_path}'")
+    main(loaded)

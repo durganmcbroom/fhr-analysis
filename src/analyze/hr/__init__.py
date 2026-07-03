@@ -8,7 +8,8 @@ from numpy import typing as npt
 from analyze.data import FiberPair, Audio
 from analyze.filters import bp_filter
 from analyze.sot import SOTResult, SOTData, detect_ppg_beats
-from constants import MATERNAL_ACOUSTIC_BAND_HZ, MATERNAL_BPM_RANGE, FETAL_BPM_RANGE
+from constants import MATERNAL_ACOUSTIC_BAND_HZ, MATERNAL_BPM_RANGE, FETAL_BPM_RANGE, FETAL_ACOUSTIC_BAND_HZ
+
 
 def fiber_beats(
         detector,
@@ -77,9 +78,9 @@ def sot_beats(
     def run_detect_beats(data: SOTData) -> SOTResult:
         out.mkdir(parents=True, exist_ok=True)
 
-        # chest = bp_filter(data.chest, maternal_band[0], maternal_band[1])
+        mic = bp_filter(data.mic, FETAL_ACOUSTIC_BAND_HZ[0], FETAL_ACOUSTIC_BAND_HZ[1])
         maternal = detect_ppg_beats(data.ppg, maternal_bpm)# detector(chest, maternal_band, out, tag="maternal")
-        mic = detector(data.mic, fetal_bpm, out, tag="fetal_mic")
+        mic = detector(mic, fetal_bpm, out, tag="fetal_mic")
 
         return SOTResult(
             ppg=data.ppg,

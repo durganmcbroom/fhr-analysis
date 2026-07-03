@@ -13,7 +13,7 @@ from analyze.hr.detect_v3 import v3_beat_detector
 from analyze.ica import load_ica_data, prepare_signals, run_ica
 from analyze.mlcmed import run_mlcmed
 from analyze.mnmf import run_mnmf
-from analyze.neossnet import run_neossnet_pipeline, run_neossnet_no_sot
+from analyze.neossnet import run_neossnet_pipeline, run_neossnet_no_sot, run_neossnet_on_nst
 from analyze.nmcf import run_nmcf
 from analyze.pipeline import Pipeline
 from analyze.plot_hr import plot_hr, plot_peaks
@@ -209,10 +209,16 @@ def run_raw_bandpass_no_sot():
 # Try larger NST (SOT) window so that if lag is large, you can adjust into open space
 # ^^ Use step/sigmoid for scoring > better xcorr
 if __name__ == '__main__':
-    run_neossnet_pipeline(
-        PATIENT,
-        WINDOW,
-        DATA_DIR
+    # run_neossnet_pipeline(
+    #     PATIENT,
+    #     WINDOW,
+    #     DATA_DIR
+    # )
+
+    run_neossnet_on_nst(
+        "patient8-session1",
+        (170, 200),
+        f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/patient8-session1"
     )
     # run_neossnet_no_sot(
     #     PATIENT,

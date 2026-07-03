@@ -391,7 +391,7 @@ def evaluate(
     """Pipeline stage factory: cross-correlate fiber detections against SOT and score.
 
     Takes FetalHRResult (output of fetal_hr stage), returns EvaluationResult.
-    SOT is captured from the sot_pipe run in main.py.
+    SOT is captured from the sot_pipe run in model.py.
     """
 
     def run_evaluate(result: fHROutput) -> EvaluationResult:

@@ -239,7 +239,7 @@ def _estimate_window_lags(
     #     Reference beats come from the full SOT so the correlation is never
     #     truncated at the analysis-window edges.
     centers, lags, scores, edges = [], [], [], []
-    carry = 0.0            # running lag: baseline offset, then monotone drift
+    carry = 0.0  # running lag: baseline offset, then monotone drift
     baseline_locked = False
 
     for w0 in starts:
@@ -367,7 +367,7 @@ def _eval_channel_v2(
         correct_thr: float = 0.05,
         soft_tau: float = 0.05,
 ) -> ChannelEvalV2:
-    ref_full = np.asarray(ref_times, dtype=float)   # full SOT — for the lag search
+    ref_full = np.asarray(ref_times, dtype=float)  # full SOT — for the lag search
     pred_times = np.asarray(pred_times, dtype=float)
 
     win = _estimate_window_lags(
@@ -567,10 +567,9 @@ def plot_evaluation_v2(
     # shifted SOT still fills the panel) instead of plotting the whole recording.
     m = ev_result.maternal
     f = ev_result.fetal
-    m_t0, m_t1 = float(m.t_start), float(m.t_end)
+
     f_t0, f_t1 = float(f.t_start), float(f.t_end)
     pad = float(f.lag_bound_s) + 1.0
-    ppg_disp = sot.ppg.window(m_t0 - pad, m_t1 + pad)
     mic_disp = sot.mic.window(f_t0 - pad, f_t1 + pad)
 
     fig = plt.figure(figsize=(20, 8), constrained_layout=True)
@@ -584,17 +583,20 @@ def plot_evaluation_v2(
     ax_f_lag = fig.add_subplot(gs[1, 2])
     ax_f_dt = fig.add_subplot(gs[1, 3])
 
-    _plot_channel_v2(
-        ax_m_sig, ax_m_lag, ax_m_dt,
-        raw_signal=ev_result.fetal_result.maternal_source,
-        sot_signal=ppg_disp,
-        ref_times=m.ref_times,
-        pred_times=ev_result.fetal_result.maternal_beats,
-        ev=m,
-        ref_color='tab:blue', pred_color='tab:orange',
-        ref_label='PPG (SOT)', pred_label='Fiber chest',
-        t_start=m_t0, t_end=m_t1,
-    )
+    if m is not None:
+        m_t0, m_t1 = float(m.t_start), float(m.t_end)
+        ppg_disp = sot.ppg.window(m_t0 - pad, m_t1 + pad)
+        _plot_channel_v2(
+            ax_m_sig, ax_m_lag, ax_m_dt,
+            raw_signal=ev_result.fetal_result.maternal_source,
+            sot_signal=ppg_disp,
+            ref_times=m.ref_times,
+            pred_times=ev_result.fetal_result.maternal_beats,
+            ev=m,
+            ref_color='tab:blue', pred_color='tab:orange',
+            ref_label='PPG (SOT)', pred_label='Fiber chest',
+            t_start=m_t0, t_end=m_t1,
+        )
     _plot_channel_v2(
         ax_f_sig, ax_f_lag, ax_f_dt,
         raw_signal=ev_result.fetal_result.fetal_source,
@@ -608,8 +610,8 @@ def plot_evaluation_v2(
     )
 
     fig.suptitle(
-        f"Maternal — soft@50ms={ev_result.maternal.soft_recall:.1%}  "
-        f"acc@50ms={ev_result.maternal.recall:.1%}  F1={ev_result.maternal.f1:.2f}   |   "
+        f"Maternal — soft@50ms={m.soft_recall if m is not None else 0:.1%}  "
+        f"acc@50ms={ev_result.maternal.recall if m is not None else 0:.1%}  F1={ev_result.maternal.f1 if m is not None else 0:.2f}   |   "
         f"Fetal — soft@50ms={ev_result.fetal.soft_recall:.1%}  "
         f"acc@50ms={ev_result.fetal.recall:.1%}  F1={ev_result.fetal.f1:.2f}",
         fontsize=10,
@@ -652,19 +654,23 @@ def evaluate_v2(
 
         # Analysis window comes from the (already-windowed) fiber sources, per
         # channel — not from the now-full SOT.
-        m_t0, m_t1 = _span(result.maternal_source)
+        maternal_ev = None
+        if result.maternal_source is not None:
+            m_t0, m_t1 = _span(result.maternal_source)
+
+            maternal_ev = _eval_channel_v2(
+                "maternal",
+                ref_times=sot.ppg_beats,
+                pred_times=result.maternal_beats,
+                t_start=m_t0,
+                t_end=m_t1,
+                window_s=window_s,
+                hop_s=hop_s,
+                lag_bound_s=lag_bound_s,
+            )
+
         f_t0, f_t1 = _span(result.fetal_source)
 
-        maternal_ev = _eval_channel_v2(
-            "maternal",
-            ref_times=sot.ppg_beats,
-            pred_times=result.maternal_beats,
-            t_start=m_t0,
-            t_end=m_t1,
-            window_s=window_s,
-            hop_s=hop_s,
-            lag_bound_s=lag_bound_s,
-        )
         fetal_ev = _eval_channel_v2(
             "fetal",
             ref_times=sot.mic_beats,
@@ -680,13 +686,14 @@ def evaluate_v2(
         plot_evaluation_v2(result_v2, sot, out)
 
         for ev in (maternal_ev, fetal_ev):
-            print(
-                f"  {ev.label.capitalize():8s}  median-lag={ev.lag_s:+.3f}s"
-                f"  ref={ev.n_ref}  pred={ev.n_pred}"
-                f"  soft={ev.soft_correct:.1f}/{ev.n_ref} ({ev.soft_recall:.1%})"
-                f"  correct={ev.n_correct}/{ev.n_ref} ({ev.recall:.1%})"
-                f"  F1={ev.f1:.2f}"
-            )
+            if ev is not None:
+                print(
+                    f"  {ev.label.capitalize():8s}  median-lag={ev.lag_s:+.3f}s"
+                    f"  ref={ev.n_ref}  pred={ev.n_pred}"
+                    f"  soft={ev.soft_correct:.1f}/{ev.n_ref} ({ev.soft_recall:.1%})"
+                    f"  correct={ev.n_correct}/{ev.n_ref} ({ev.recall:.1%})"
+                    f"  F1={ev.f1:.2f}"
+                )
 
         return result_v2
 
@@ -704,7 +711,7 @@ def combine_evaluations_v2(
         combined_pred = np.concatenate([e.pred_times for e in ev])
         combined_pred_corr = np.concatenate([e.pred_times_corrected for e in ev])
         t_start = float(min(e.t_start for e in ev))  # type: ignore[arg-type]
-        t_end = float(max(e.t_end for e in ev))      # type: ignore[arg-type]
+        t_end = float(max(e.t_end for e in ev))  # type: ignore[arg-type]
 
         window_lags = np.concatenate([e.window_lags for e in ev])
         n_ref = sum(e.n_ref for e in ev)

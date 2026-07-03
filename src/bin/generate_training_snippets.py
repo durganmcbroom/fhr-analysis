@@ -7,6 +7,7 @@ Yaml format (same as lib/tune-ssnet/training_clips_mono.yaml):
     length: 10      # snippet length in seconds
     overlap: 3      # overlap in seconds between adjacent snippets within a section
     ppg_col: 0      # column of pvs.npy to use as maternal SOT (defaults to 0)
+    time_warp: False  # randomly stretch/compress the gaps between beats (defaults to off)
     data:
       "PT12_1":
         fibers:
@@ -282,14 +283,13 @@ def ensemble_heart(filtered, centers, half_width):
     template = normalized_template(np.mean(windows, axis=0))
     return stamp_template(template, centers, half_width, filtered, len(filtered))
 
-
 def heart_target(
         beat_evaluator,
         fibers,
         t,
         sot,
         band,
-        noise_magnitude=0.0
+        gaussian_impulses: bool = False
 ):
     # Single-channel clean heartbeat, centered on the reference fiber's own beats.
     evaluation = beat_evaluator(sot)
@@ -300,13 +300,25 @@ def heart_target(
     reference_fiber = fibers[0]
 
     sample_rate = round(1 / (t[1] - t[0]))  # reference_fiber.hz
-    filtered = bp_filter(Audio(t, sample_rate, reference_fiber), band[0], band[1], filter_type="butter").data
     ibi = np.diff(beat_times)
     half_width = half_width_samples(float(np.mean(ibi)), sample_rate)
+    filtered = bp_filter(Audio(t, sample_rate, reference_fiber), band[0], band[1], filter_type="butter").data
+
     centers = beat_centers(beat_times, t[0], sample_rate)
     centers = snap_centers_to_energy(fiber_energy(filtered, sample_rate),
                                      centers, int(round(SNAP_TOLERANCE_S * sample_rate)))
-    heart = gated_heart(filtered, centers, half_width, 0)  # swap to ensemble_heart(...) to revert
+    if gaussian_impulses:
+        heart = np.zeros_like(reference_fiber)
+        sigma = half_width / 4  # tight: pulse is essentially decayed to 0 by the window edge
+        for center in centers:
+            a = max(0, center - half_width)
+            b = min(len(heart), center + half_width)
+            x = np.arange(a, b)
+
+            gaussian_template = np.exp(-0.5 * ((x - center) / sigma) ** 2)
+            heart[a:b] += gaussian_template
+    else:
+        heart = gated_heart(filtered, centers, half_width, 0)  # swap to ensemble_heart(...) to revert
 
     # sos = cheby1(4, rp=1, Wn=band, fs=sample_rate, btype='bandpass', output='sos')
     # heart = sosfiltfilt(sos, heart, axis=0)
@@ -402,13 +414,13 @@ def time_warp(
     return data
 
 
-def write_snippet(out_dir, idx, beat_evaluator, fibers, sot, band, k=12, pad=300):
+def write_snippet(out_dir, idx, beat_evaluator, fibers, sot, band, gaussian_impulses=False, warp=False, k=12, pad=300):
     # One mix (mono or multi-channel) plus its single-channel heart/lung/noise targets, with a plot.
     mix = stack_resampled(fibers)
     t = fibers[0].time[0] + np.arange(len(mix[0])) / NEOSSNET_MODEL_HZ
 
     try:
-        heart, beat_times, half_width = heart_target(beat_evaluator, mix, t, sot, band)
+        heart, beat_times, half_width = heart_target(beat_evaluator, mix, t, sot, band, gaussian_impulses)
     except NoBeatException as error:
         warning(f"skipping snippet {idx}: {error}")
         return False
@@ -420,34 +432,34 @@ def write_snippet(out_dir, idx, beat_evaluator, fibers, sot, band, k=12, pad=300
     lung = lung_sound(reference)
     noise = noise_sound(reference, heart, lung)
 
-    rng = np.random.default_rng(42)
-    # Use ref fiber to get beat idxs
-    beat_idx = np.searchsorted(t, beat_times)
-    warp_sections = []
-    i = 0
-    half_width += pad
+    if warp:
+        rng = np.random.default_rng(42)
+        # Use ref fiber to get beat idxs
+        beat_idx = np.searchsorted(t, beat_times)
+        warp_sections = []
+        i = 0
+        padded_half_width = half_width + pad
 
-    for bidx in beat_idx:
-        start = max(0, bidx - half_width)
-        end = min(t.shape[0], bidx + half_width)
+        for bidx in beat_idx:
+            start = max(0, bidx - padded_half_width)
+            end = min(t.shape[0], bidx + padded_half_width)
 
-        if start > i:
-            scale = max((rng.random()) * k, 0.1)
-            new_len = round((start - i) * scale)
-            warp_sections.append((i, start, new_len))
-        i = end
+            if start > i:
+                scale = max((rng.random()) * k, 0.1)
+                new_len = round((start - i) * scale)
+                warp_sections.append((i, start, new_len))
+            i = end
 
-    mix = time_warp(mix[0], warp_sections)
-    heart = time_warp(heart, warp_sections)
-    lung = time_warp(lung, warp_sections)
-    noise = time_warp(noise, warp_sections)
+        mix = np.stack([time_warp(channel, warp_sections) for channel in mix])
+        heart = time_warp(heart, warp_sections)
+        lung = time_warp(lung, warp_sections)
+        noise = time_warp(noise, warp_sections)
 
-    write_mono(out_dir / f"{idx}_mix.wav", NEOSSNET_MODEL_HZ, mix)
-    # write_multichannel(out_dir / f"{idx}_mix.wav", MODEL_HZ, mix)
+    write_multichannel(out_dir / f"{idx}_mix.wav", NEOSSNET_MODEL_HZ, mix)
     write_mono(out_dir / f"{idx}_heart.wav", NEOSSNET_MODEL_HZ, heart)
     write_mono(out_dir / f"{idx}_lung.wav", NEOSSNET_MODEL_HZ, lung)
     write_mono(out_dir / f"{idx}_noise.wav", NEOSSNET_MODEL_HZ, noise)
-    plot_heart(out_dir / f"{idx}_heart.png", sot, mix, heart, NEOSSNET_MODEL_HZ, fibers[0].time[0], beat_times,
+    plot_heart(out_dir / f"{idx}_heart.png", sot, mix[0], heart, NEOSSNET_MODEL_HZ, fibers[0].time[0], beat_times,
                f"{out_dir.name} snippet {idx}")
     return True
 
@@ -478,16 +490,17 @@ def write_control_snippet(out_dir, idx, fibers):
     lung = lung_sound(reference)
 
     length = min(mix.shape[1], len(lung))
-    mix = mix[0][:length]
+    mix = mix[:, :length]
+    reference = reference[:length]
     lung = np.asarray(lung)[:length]
     heart = np.zeros(length)
-    noise = mix - lung - heart
+    noise = reference - lung - heart
 
-    write_mono(out_dir / f"{idx}_mix.wav", NEOSSNET_MODEL_HZ, mix)
+    write_multichannel(out_dir / f"{idx}_mix.wav", NEOSSNET_MODEL_HZ, mix)
     write_mono(out_dir / f"{idx}_heart.wav", NEOSSNET_MODEL_HZ, heart)
     write_mono(out_dir / f"{idx}_lung.wav", NEOSSNET_MODEL_HZ, lung)
     write_mono(out_dir / f"{idx}_noise.wav", NEOSSNET_MODEL_HZ, noise)
-    plot_control(out_dir / f"{idx}_heart.png", mix, heart, NEOSSNET_MODEL_HZ, fibers[0].time[0],
+    plot_control(out_dir / f"{idx}_heart.png", reference, heart, NEOSSNET_MODEL_HZ, fibers[0].time[0],
                  f"{out_dir.name} snippet {idx} (control)")
     return True
 
@@ -540,6 +553,9 @@ def main() -> None:
     length = cfg.get("length")  # None => each window becomes a single snippet
     overlap = cfg.get("overlap", 0.0)
     ppg_col = cfg.get("ppg_col", 0)
+    time_warp_enabled = cfg.get("time_warp", False)
+    gaussian_impulses_enabled = cfg.get("gaussian_impulses", False)
+
     spec: dict[str, dict] = cfg["data"]
 
     if overlap and length is not None and overlap >= length:
@@ -618,6 +634,8 @@ def main() -> None:
                     else:
                         fetal_ok = write_snippet(
                             fetal_dir, idx, detect_fetal_with_bp, group_fibers, mic_window, FETAL_ACOUSTIC_BAND_HZ,
+                            warp=time_warp_enabled,
+                            gaussian_impulses=gaussian_impulses_enabled,
                         )
                     # maternal_ok = write_snippet(
                     #     maternal_dir, idx, lambda x: detect_ppg_beats(x, (60, 120)), [chest], ppg_window, MATERNAL_ACOUSTIC_BAND_HZ,
