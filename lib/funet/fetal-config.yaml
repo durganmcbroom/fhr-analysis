@@ -13,7 +13,7 @@ train:
   batch_size: 8
   epochs: 40
   crop_len: 7   # time series in seconds
-  loss: 'snr'   # 'kldiv' (distribution over time) or 'snr' (SI-SNR signal loss)
+  loss: 'kldiv'   # 'kldiv' (distribution over time) or 'snr' (SI-SNR signal loss)
 
 data:
   train_dir: '../training/stereo_v1/fetal'
