@@ -6,6 +6,7 @@ from torch import nn, optim
 
 from lib.funet.src.config import Config, load_config
 from lib.funet.src.data import make_dataloaders
+from lib.funet.src.loss import SNRLoss
 from lib.funet.src.model import FUNet
 from lib.funet.src.train import train
 from train import fit
@@ -14,6 +15,12 @@ OPTIMIZERS = {
     "SGD": optim.SGD,
     "Adam": optim.Adam,
     "AdamW": optim.AdamW,
+}
+
+# loss name -> (loss module factory, matching model output head)
+LOSSES = {
+    "kldiv": (lambda: nn.KLDivLoss(reduction="batchmean"), "logprob"),
+    "snr": (SNRLoss, "signal"),
 }
 
 
@@ -41,10 +48,19 @@ def main(config: Config):
     device = pick_device()
     print(f"Using device: {device}")
 
+    try:
+        loss_factory, head = LOSSES[config.train.loss]
+    except KeyError:
+        raise ValueError(f"Unknown loss: {config.train.loss!r} (expected one of {list(LOSSES)})") from None
+    loss_fn = loss_factory()
+    print(f"Loss: {config.train.loss} (model head: {head})")
+
     model = FUNet(
         channels=config.model.channels,
         dilations=config.model.dilations,
         bottleneck_dilation=config.model.bottleneck_dilation,
+        base_channels=config.model.base_channels,
+        head=head,
     )
 
     if config.resume is not None:
@@ -53,7 +69,6 @@ def main(config: Config):
 
     train_dl, val_dl = make_dataloaders(config)
     optimiser = build_optimiser(config, model)
-    loss_fn = nn.KLDivLoss(reduction="batchmean")
 
     os.makedirs(config.model_dir, exist_ok=True)
 

@@ -20,7 +20,7 @@ def train(
     model.to(device)
     model.train()
 
-    last_loss = None
+    total_loss = 0.0
     max_grad_norm = 0.0
 
     for i, (inpt, target) in enumerate(data):
@@ -41,9 +41,10 @@ def train(
             max_grad_norm = max(max_grad_norm, grad_norm)
         optimiser.step()
 
-        last_loss = loss.item()
+        total_loss += loss.item()
 
-    return last_loss, max_grad_norm
+    # average over batches so it's comparable to test() and not dominated by one noisy batch
+    return total_loss / len(data), max_grad_norm
 
 def test(
         model: nn.Module,

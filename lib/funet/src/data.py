@@ -5,7 +5,6 @@ import numpy as np
 import torch
 import torchaudio
 from scipy.io import wavfile
-from scipy.signal import resample
 from torch.utils.data import DataLoader, Dataset
 
 from lib.funet.src.config import Config
@@ -90,13 +89,20 @@ class FetalPairs(Dataset):
         time -= time % self.divisor
         spectrogram = spectrogram[:, :freq, :time]
 
-        # heart is (1, time); drop the channel dim to match FUNet's (batch, time) output,
-        # clip resample ringing below 0, and normalize into a proper distribution (sums to
+        # Build the target on the SAME frame grid as the spectrogram so beats stay
+        # time-aligned with the input. A torchaudio frame t sits at sample t*hop_length,
+        # so the `time` kept frames span the first time*hop_length samples; pool the heart
+        # into those hop-sized bins. (The old approach resampled the whole crop into `time`
+        # points, stretching the target's time axis by ~hop/crop vs the spectrogram and
+        # destroying beat alignment -- the model then couldn't localize beats at all.)
+        # clamp_min(0) drops the gated/negative lobes; normalize to a distribution (sums to
         # 1) so it's a valid KLDivLoss target for the model's log-softmax output.
-        heart_target = np.clip(resample(heart, num=spectrogram.shape[-1], axis=-1)[0], 0, None)
+        covered = time * self.hop_length
+        heart_flat = self._pad(heart, covered)[0, :covered]      # (covered,)
+        heart_target = heart_flat.reshape(time, self.hop_length).clamp_min(0).mean(dim=-1)
         heart_target = heart_target / (heart_target.sum() + 1e-12)
 
-        return spectrogram, torch.from_numpy(heart_target).float()
+        return spectrogram, heart_target.float()
 
 def make_dataloaders(config: Config) -> tuple[DataLoader, DataLoader]:
     snippet_dir = config.data.train_dir

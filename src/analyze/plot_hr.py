@@ -35,6 +35,24 @@ def _inst_hr(
     bpm = uniform_filter1d(bpm, size=min(5, bpm.size), mode='nearest')
     return beats[1:], bpm
 
+    window_len = 5
+    step = 1
+    ret = []
+    max = round(beats.max())
+    for start_s in range(0, max, step):
+        end_s = min(start_s + window_len, max)
+
+        window = (beats > start_s) & (beats < end_s)
+        num = np.count_nonzero(window)
+
+        bpm_in_range = (num / window_len) * 60
+
+        tight_window = (beats > start_s) & (beats < min(start_s + step, max))
+        tight_num = np.count_nonzero(tight_window)
+        ret.extend([bpm_in_range] * tight_num)
+
+    return beats, np.array(ret)
+
 
 def _hr_ylim(traces, band: Tuple[float, float], pad: float = 0.1):
     """Robust y-limits from the values that fall inside a plausible HR band,
@@ -191,14 +209,18 @@ def plot_hr_comparison(
     out.mkdir(parents=True, exist_ok=True)
 
     if sot is not None:
-        t_start = float(min(
-            sot.ppg.time[0] if len(sot.ppg.time) else 0.0,
-            sot.mic.time[0] if len(sot.mic.time) else 0.0,
-        ))
-        t_end = float(max(
-            sot.ppg.time[-1] if len(sot.ppg.time) else 1.0,
-            sot.mic.time[-1] if len(sot.mic.time) else 1.0,
-        ))
+        if sot.ppg is not None:
+            t_start = float(min(
+                sot.ppg.time[0] if len(sot.ppg.time) else 0.0,
+                sot.mic.time[0] if len(sot.mic.time) else 0.0,
+            ))
+            t_end = float(max(
+                sot.ppg.time[-1] if len(sot.ppg.time) else 1.0,
+                sot.mic.time[-1] if len(sot.mic.time) else 1.0,
+            ))
+        else:
+            t_start = sot.mic.time[0]
+            t_end = sot.mic.time[-1]
     else:
         t = fetal_result.fetal_source.time
         t_start = t[0]

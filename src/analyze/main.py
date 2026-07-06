@@ -5,6 +5,7 @@ from analyze.data import FiberData, load_data, windowed, use_fiber, load_no_ches
 from analyze.evaluate import evaluate, combine_evaluations, plot_evaluation
 from analyze.evaluate_v2 import evaluate_v2
 from analyze.filters import abdomen_bp, bp, notch
+from analyze.funet import run_funet_pipeline
 from analyze.hr import fiber_beats, sot_beats
 from analyze.hr.classify import classify_sources
 from analyze.hr.detect import v1_beat_detector
@@ -13,7 +14,7 @@ from analyze.hr.detect_v3 import v3_beat_detector
 from analyze.ica import load_ica_data, prepare_signals, run_ica
 from analyze.mlcmed import run_mlcmed
 from analyze.mnmf import run_mnmf
-from analyze.neossnet import run_neossnet_pipeline, run_neossnet_no_sot, run_neossnet_on_nst
+from analyze.neossnet import run_neossnet_pipeline, run_neossnet_no_sot, run_neossnet_on_nst, run_neossnet_belly_machine
 from analyze.nmcf import run_nmcf
 from analyze.pipeline import Pipeline
 from analyze.plot_hr import plot_hr, plot_peaks
@@ -22,13 +23,13 @@ from analyze.util import run_neossnet
 from constants import PROJECT_DIR, FETAL_ACOUSTIC_BAND_HZ, BROADBAND_FILTER_HZ, POWERLINE_NOTCH_HZ
 
 # PATIENT = "fiber-horizontal"
-PATIENT = "PT13_1"
-# PATIENT = "patient8-session1"
+# PATIENT = "PT13_1"
+PATIENT = "patient8-session1"
 # PATIENT = "session-02"
 # PATIENT = "band_durgan_1"
 # WINDOW = 50, 70
 # WINDOW = 60, 70
-WINDOW = 179, 199
+WINDOW = 180, 190
 # WINDOW = 0, 40
 # WINDOW = 0, 20
 DATA_DIR = f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/{PATIENT}"
@@ -215,11 +216,34 @@ if __name__ == '__main__':
     #     DATA_DIR
     # )
 
-    run_neossnet_on_nst(
-        "patient8-session1",
-        (170, 200),
-        f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/patient8-session1"
+    # run_neossnet_on_nst(
+    #     "patient8-session1",
+    #     (170, 200),
+    #     f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/patient8-session1"
+    # )
+
+    # run_neossnet_belly_machine(
+    #     "belly_machine_9",
+    #     (0, 20),
+    #     f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/belly_machine_9"
+    # )
+    # run_neossnet_belly_machine(
+    #     "belly_machine_10",
+    #     (0, 20),
+    #     f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/belly_machine_10"
+    # )
+    # run_neossnet_belly_machine(
+    #     "belly_machine_11",
+    #     (0, 20),
+    #     f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/belly_machine_11"
+    # )
+
+    run_funet_pipeline(
+        patient=PATIENT,
+        window=WINDOW,
+        datadir=DATA_DIR
     )
+
     # run_neossnet_no_sot(
     #     PATIENT,
     #     WINDOW,

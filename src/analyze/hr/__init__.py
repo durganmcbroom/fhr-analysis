@@ -79,13 +79,16 @@ def sot_beats(
         out.mkdir(parents=True, exist_ok=True)
 
         mic = bp_filter(data.mic, FETAL_ACOUSTIC_BAND_HZ[0], FETAL_ACOUSTIC_BAND_HZ[1])
-        maternal = detect_ppg_beats(data.ppg, maternal_bpm)# detector(chest, maternal_band, out, tag="maternal")
         mic = detector(mic, fetal_bpm, out, tag="fetal_mic")
+
+        maternal = None
+        if data.ppg is not None:
+            maternal = detect_ppg_beats(data.ppg, maternal_bpm)# detector(chest, maternal_band, out, tag="maternal")
 
         return SOTResult(
             ppg=data.ppg,
             mic=data.mic,
-            ppg_beats=maternal["times"],
+            ppg_beats=maternal["times"] if maternal is not None else None,
             mic_beats=mic["times"],
         )
 

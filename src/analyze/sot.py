@@ -236,10 +236,36 @@ class SOTData:
 
     def window(self, start, end):
         return SOTData(
-            ppg=self.ppg.window(start, end),
+            ppg=self.ppg.window(start, end) if self.ppg is not None else None,
             mic=self.mic.window(start, end),
         )
 
+
+def load_sot_no_ppg(
+        fetal_band: Tuple[float, float] = FETAL_ACOUSTIC_BAND_HZ,
+):
+    def run_load_sot(data_dir: str) -> SOTResult:
+        path = normalize_path(data_dir)
+
+        # --- Microphone (microphone.wav) ---
+        mic_fs, mic_arr = wav_read(path + MIC_FILE)
+        mic_arr = mic_arr.astype(float)
+        if mic_arr.ndim > 1:
+            mic_arr = mic_arr[:, 0]
+        t_mic = np.arange(len(mic_arr)) / float(mic_fs)
+
+        mic = Audio(t_mic, mic_fs, mic_arr)
+
+        mic = bp_filter(mic, fetal_band[0], fetal_band[1], filter_type='cheby1')
+        mic = Audio(t_mic, mic_fs, mic.data)
+
+        return SOTData(
+            None,
+            mic
+        )
+
+    run_load_sot.__name__ = "load_sot"
+    return run_load_sot
 
 def load_sot(
         # out_dir: Path,
@@ -286,7 +312,6 @@ def load_sot(
 
         mic = bp_filter(mic, fetal_band[0], fetal_band[1], filter_type='cheby1')
         mic = Audio(t_mic, mic_fs, mic.data)# _suppress_transients(mic.data, float(mic_fs)))
-
 
         # mic_beats = detect_mic_fetal_beats(mic_hs_suppressed)
         #

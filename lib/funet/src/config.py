@@ -9,6 +9,7 @@ class ModelConfig:
     channels: int = 4
     dilations: List[int] = field(default_factory=lambda: [1, 1, 1, 2, 2, 4, 4])
     bottleneck_dilation: int = 8
+    base_channels: int = 64    # first-level width; every level doubles from here
 
 
 @dataclass
@@ -20,6 +21,7 @@ class TrainConfig:
     epochs: int = 40
     crop_len: int = 7          # seconds
     clip: float = 5.0          # max gradient norm
+    loss: str = "kldiv"        # 'kldiv' (distribution) or 'snr' (SI-SNR signal loss)
 
 
 @dataclass

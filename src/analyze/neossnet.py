@@ -11,7 +11,7 @@ from analyze.hr import sot_beats, fiber_beats, multi_fiber_beats
 from analyze.hr.detect_v2 import v2_beat_detector
 from analyze.pipeline import Pipeline
 from analyze.plot_hr import plot_hr, plot_multi_hr, plot_peaks
-from analyze.sot import load_sot, SOTData, SOTResult
+from analyze.sot import load_sot, SOTData, SOTResult, load_sot_no_ppg
 from analyze.util import run_neossnet, normalize_path, abdomen_sound
 from constants import (
     PROJECT_DIR, FETAL_MODEL_PATH, FETAL_MODEL_CFG,
@@ -40,6 +40,7 @@ def use_model(out):
             )
 
         _plot_separation(out, separations)
+        _plot_separation_15_3(out, separations)
 
         return FiberData(
             data.chest,
@@ -71,6 +72,29 @@ def _plot_separation(out: str, separations: list) -> None:
     fig.suptitle("ML source separation: input vs. heart vs. lung", fontsize=11, y=1.01)
     fig.tight_layout()
     out_file = os.path.join(out, "model_output.png")
+    plt.savefig(out_file, dpi=150, bbox_inches="tight")
+    plt.close()
+    print(f"[use_model] saved visualization → {out_file}")
+
+
+def _plot_separation_15_3(out: str, separations: list) -> None:
+    import matplotlib.pyplot as plt
+
+    n = len(separations)
+
+    fig, axes = plt.subplots(n, 1, figsize=(15, 3 * n), squeeze=False)
+
+    for row, (name, abdomen, heart, lung) in enumerate(separations):
+        ax = axes[row][0]
+        ax.plot(abdomen.time, heart, lw=0.5, color="steelblue")
+        ax.set_title(f"{name} — Model output: heart", fontsize=9)
+        ax.set_xlabel("Time (s)", fontsize=8)
+        ax.set_ylabel("Amplitude", fontsize=8)
+        ax.tick_params(labelsize=7)
+
+    fig.suptitle("ML source separation: heart", fontsize=11, y=1.01)
+    fig.tight_layout()
+    out_file = os.path.join(out, "model_output_15_3.png")
     plt.savefig(out_file, dpi=150, bbox_inches="tight")
     plt.close()
     print(f"[use_model] saved visualization → {out_file}")
@@ -169,7 +193,41 @@ def run_neossnet_on_nst(
         # multi_fiber_beats(v2_beat_detector, out_path, fetal_bpm=(110.0, 180.0)),
         # plot_peaks(out_path),
         plot_hr(sot, out_path),
-        evaluate_v2(sot, out_path, lag_bound_s=0.0),
+        evaluate_v2(sot, out_path),
     ], f"{PROJECT_DIR}/.out/{patient}/neossnet/cache/", play_sound=False)
 
     pipe.process(data)
+
+
+def run_neossnet_belly_machine(
+        patient,
+        window,
+        datadir
+):
+    out_path = Path(f"{PROJECT_DIR}.out/{patient}/neossnet/")
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    sot_pipe = Pipeline([
+        load_sot_no_ppg(),
+        windowed(window[0], window[1]),
+        sot_beats(v2_beat_detector, out_path)
+    ], f"{PROJECT_DIR}/.out/cache_sot/neossnet/{patient}", play_sound=False)
+    sot: SOTResult = sot_pipe.process(datadir)
+
+    pipe = Pipeline([
+        load_no_chest_data,
+        windowed(window[0], window[1]),
+        abdomen_bp(*FETAL_ACOUSTIC_BAND_HZ, "butter"),
+        use_model(out_path),  # NeoSSNet heart output (maternal-dominated cardiac), all abdomen fibers
+        abdomen_bp(*FETAL_ACOUSTIC_BAND_NARROW_HZ, "butter"),  # narrow to the fetal band AFTER the model
+        use_fiber("2A"),
+        abdomen_sound(out_path, "fetal_fiber"),
+        # abdomen_sound(out_path, tag="2B_fetal"),
+        fiber_beats(v2_beat_detector, out_path),
+        # multi_fiber_beats(v2_beat_detector, out_path, fetal_bpm=(110.0, 180.0)),
+        # plot_peaks(out_path),
+        plot_hr(sot, out_path),
+        evaluate_v2(sot, out_path, window_s=(window[1] - window[0])),
+    ], f"{PROJECT_DIR}/.out/{patient}/neossnet/cache/", play_sound=False)
+
+    pipe.process(datadir)
