@@ -9,14 +9,41 @@ from analyze.evaluate_v2 import evaluate_v2
 from analyze.filters import abdomen_bp
 from analyze.hr import sot_beats, fiber_beats, multi_fiber_beats
 from analyze.hr.detect_v2 import v2_beat_detector
+from analyze.hr.detect_v5 import v5_beat_detector
 from analyze.pipeline import Pipeline
 from analyze.plot_hr import plot_hr, plot_multi_hr, plot_peaks
-from analyze.sot import load_sot, SOTData, SOTResult, load_sot_no_ppg
+from analyze.sot import load_sot, SOTData, SOTResult, load_sot_no_ppg, plot_mic
 from analyze.util import run_neossnet, normalize_path, abdomen_sound
 from constants import (
     PROJECT_DIR, FETAL_MODEL_PATH, FETAL_MODEL_CFG,
     FIBER_BUNDLE_B, FETAL_ACOUSTIC_BAND_HZ, FETAL_ACOUSTIC_BAND_NARROW_HZ,
+    NEOSSNET_MAX_CHUNK_SECONDS,
 )
+
+
+def _run_neossnet_chunked(x, hz, model, config, max_seconds=NEOSSNET_MAX_CHUNK_SECONDS):
+    """Run NeoSSNet in <= max_seconds chunks and stitch the outputs back together.
+
+    run_neossnet resamples and feeds its whole input through the model in one
+    forward pass, which gets slow/memory-heavy on long recordings. Anything
+    longer than max_seconds is split into contiguous chunks (each run through
+    the model independently) and the heart/lung outputs are concatenated back
+    into arrays the same length as the input.
+    """
+    x = np.asarray(x, dtype=float).ravel()
+    chunk_len = int(round(max_seconds * hz))
+
+    if chunk_len <= 0 or len(x) <= chunk_len:
+        return run_neossnet(x, hz, model, config)
+
+    hearts, lungs = [], []
+    for start in range(0, len(x), chunk_len):
+        chunk = x[start:start + chunk_len]
+        heart, lung = run_neossnet(chunk, hz, model, config)
+        hearts.append(heart)
+        lungs.append(lung)
+
+    return np.concatenate(hearts), np.concatenate(lungs)
 
 
 def use_model(out):
@@ -29,7 +56,7 @@ def use_model(out):
         heart_sounds = {}
         separations = []
         for name, X in abdomen.items():
-            heart, lung = run_neossnet(X.data, X.hz, FETAL_MODEL_PATH, FETAL_MODEL_CFG)
+            heart, lung = _run_neossnet_chunked(X.data, X.hz, FETAL_MODEL_PATH, FETAL_MODEL_CFG)
 
             separations.append((name, X, heart, lung))
 
@@ -210,7 +237,8 @@ def run_neossnet_belly_machine(
     sot_pipe = Pipeline([
         load_sot_no_ppg(),
         windowed(window[0], window[1]),
-        sot_beats(v2_beat_detector, out_path)
+        plot_mic(out_path),
+        sot_beats(v5_beat_detector, out_path)
     ], f"{PROJECT_DIR}/.out/cache_sot/neossnet/{patient}", play_sound=False)
     sot: SOTResult = sot_pipe.process(datadir)
 
@@ -223,11 +251,11 @@ def run_neossnet_belly_machine(
         use_fiber("2A"),
         abdomen_sound(out_path, "fetal_fiber"),
         # abdomen_sound(out_path, tag="2B_fetal"),
-        fiber_beats(v2_beat_detector, out_path),
+        fiber_beats(v5_beat_detector, out_path),
         # multi_fiber_beats(v2_beat_detector, out_path, fetal_bpm=(110.0, 180.0)),
         # plot_peaks(out_path),
         plot_hr(sot, out_path),
-        evaluate_v2(sot, out_path, window_s=(window[1] - window[0])),
+        evaluate_v2(sot, out_path),
     ], f"{PROJECT_DIR}/.out/{patient}/neossnet/cache/", play_sound=False)
 
     pipe.process(datadir)

@@ -104,7 +104,7 @@ def run_funet(
             break
         chunk = chunk[:, :, :w]
         out = model(chunk.unsqueeze(0))[0]                # (w,)
-        out = out.exp() if is_logprob else out.clamp_min(0)
+        out = out.exp() if is_logprob else (-out).clamp_min(0)
         activity[start:start + w] = out.cpu().numpy()
 
     # Map frame activity (frame t centred at sample t*hop of the 4kHz signal) onto the

@@ -16,3 +16,24 @@ class SNRLoss(nn.Module):
     def forward(self, output: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
         snr = scale_invariant_signal_distortion_ratio(preds=output, target=target, zero_mean=False)
         return -snr.mean()
+
+
+class CorrelationLoss(nn.Module):
+    """1 - Pearson correlation between output and target (per item, averaged over batch).
+
+    Like SI-SNR it is scale-invariant -- only the *shape* of the output matters, which
+    is what worked well for signal-regression here. Unlike SI-SDR it is NOT sign-
+    invariant: maximizing correlation forces the beats to be positive peaks, so the
+    model can't settle on the negated comb (SI-SDR could, which clamp_min(0) at
+    inference then discarded). Expects output/target of shape (batch, time).
+    """
+
+    def __init__(self, eps: float = 1e-8):
+        super().__init__()
+        self.eps = eps
+
+    def forward(self, output: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        o = output - output.mean(dim=-1, keepdim=True)
+        t = target - target.mean(dim=-1, keepdim=True)
+        corr = (o * t).sum(dim=-1) / (o.norm(dim=-1) * t.norm(dim=-1) + self.eps)
+        return (1 - corr).mean()

@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Tuple
@@ -122,7 +123,7 @@ def detect_ppg_beats(
 
 def detect_mic_fetal_beats(
         mic_raw: Audio,
-        min_interval_s: float = 0.25,   # 240 bpm cap; 0.30 (200 bpm) suppressed real beats
+        min_interval_s: float = 0.25,  # 240 bpm cap; 0.30 (200 bpm) suppressed real beats
 ) -> dict:
     """Detect fetal HR peaks from microphone using adaptive local threshold.
 
@@ -244,7 +245,7 @@ class SOTData:
 def load_sot_no_ppg(
         fetal_band: Tuple[float, float] = FETAL_ACOUSTIC_BAND_HZ,
 ):
-    def run_load_sot(data_dir: str) -> SOTResult:
+    def run_load_sot(data_dir: str) -> SOTData:
         path = normalize_path(data_dir)
 
         # --- Microphone (microphone.wav) ---
@@ -256,8 +257,8 @@ def load_sot_no_ppg(
 
         mic = Audio(t_mic, mic_fs, mic_arr)
 
-        mic = bp_filter(mic, fetal_band[0], fetal_band[1], filter_type='cheby1')
-        mic = Audio(t_mic, mic_fs, mic.data)
+        # mic = bp_filter(mic, fetal_band[0], fetal_band[1], filter_type='cheby1')
+        # mic = Audio(t_mic, mic_fs, mic.data)
 
         return SOTData(
             None,
@@ -266,6 +267,7 @@ def load_sot_no_ppg(
 
     run_load_sot.__name__ = "load_sot"
     return run_load_sot
+
 
 def load_sot(
         # out_dir: Path,
@@ -311,7 +313,7 @@ def load_sot(
         mic = Audio(t_mic, mic_fs, mic_arr)
 
         mic = bp_filter(mic, fetal_band[0], fetal_band[1], filter_type='cheby1')
-        mic = Audio(t_mic, mic_fs, mic.data)# _suppress_transients(mic.data, float(mic_fs)))
+        mic = Audio(t_mic, mic_fs, mic.data)  # _suppress_transients(mic.data, float(mic_fs)))
 
         # mic_beats = detect_mic_fetal_beats(mic_hs_suppressed)
         #
@@ -357,3 +359,28 @@ def combine_sot_results(results: list[SOTResult]) -> SOTResult:
         ),
         mic_beats=np.concatenate([e.mic_beats for e in results]),
     )
+
+
+def plot_mic(out):
+    def plot_mic_runner(sot: SOTData):
+        import matplotlib.pyplot as plt
+
+        fig, axes = plt.subplots(1, 1, figsize=(15, 3), squeeze=False)
+
+        data = sot.mic
+
+        ax = axes[0][0]
+        ax.plot(data.time, data.data, lw=0.5, color="steelblue")
+        ax.set_title(f"Mic - output", fontsize=9)
+        ax.set_xlabel("Time (s)", fontsize=8)
+        ax.set_ylabel("Amplitude", fontsize=8)
+        ax.tick_params(labelsize=7)
+
+        fig.suptitle("ML source separation: heart", fontsize=11, y=1.01)
+        fig.tight_layout()
+        out_file = os.path.join(out, "mic_output.png")
+        plt.savefig(out_file, dpi=150, bbox_inches="tight")
+        plt.close()
+
+        return sot
+    return plot_mic_runner

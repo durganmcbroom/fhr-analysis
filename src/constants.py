@@ -20,7 +20,7 @@ NEOSSNET_MODEL_CFG = os.path.join(PROJECT_DIR, "lib/neossnet/models/model.yaml")
 
 # FUNet beat-activity model (lib/funet)
 FUNET_CONFIG = os.path.join(PROJECT_DIR, "lib/funet/fetal-config.yaml")
-FUNET_MODEL_PATH = os.path.join(PROJECT_DIR, "lib/funet/models/funet-v1/model_best.pt")
+FUNET_MODEL_PATH = os.path.join(PROJECT_DIR, "lib/funet/models/funet-v2/model_best.pt")
 
 FIBER_BUNDLE_A = "ps4000.npy"   # chest device bundle
 FIBER_BUNDLE_B = "ps3000a.npy"  # abdomen device bundle
@@ -33,6 +33,7 @@ ABDOMEN_FIBER_NAMES = ["1B", "2A", "2B", "2C", "2D"]
 NEOSSNET_MODEL_HZ = 4000           # NeoSSNet / tune-ssnet model sample rate
 XCORR_TARGET_FS = 200.0   # grid rate for impulse-train cross-correlation lag estimators
 
+NEOSSNET_MAX_CHUNK_SECONDS = 30.0  # longer inputs get split into chunks this long before inference
 
 MATERNAL_ACOUSTIC_BAND_HZ = (40.0, 80.0)        # chest bandpass before maternal beat detection
 FETAL_ACOUSTIC_BAND_HZ = (190.0, 220.0)         # abdomen bandpass for fetal cardiac detection
@@ -41,6 +42,5 @@ SOURCE_PREP_BAND_HZ = (40.0, 200.0)             # wideband prep filter before IC
 BROADBAND_FILTER_HZ = (20.0, 250.0)             # initial wideband filter before source separation
 POWERLINE_NOTCH_HZ = 50                         # mains hum notch frequency
 
-
 MATERNAL_BPM_RANGE = (45.0, 140.0)
-FETAL_BPM_RANGE = (90.0, 220.0)
+FETAL_BPM_RANGE = (90.0, 200.0)

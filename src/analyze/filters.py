@@ -4,7 +4,7 @@ from scipy.signal import cheby1, butter, filtfilt, sosfiltfilt, iirnotch
 from analyze.data import Audio, FiberData, FiberPair
 
 
-def bp_filter(audio, low, high, order=4, filter_type='cheby1', rp=1):
+def bp_filter(audio, low, high, order=3, filter_type='cheby1', rp=1):
     if filter_type == 'cheby1':
         sos = cheby1(order, rp=rp, Wn=[low, high], fs=audio.hz, btype='bandpass', output='sos')
     else:

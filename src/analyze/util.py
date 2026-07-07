@@ -47,6 +47,16 @@ def moving_average(x: np.ndarray, n: int) -> np.ndarray:
     kernel = np.ones(n, dtype=float) / n
     return np.convolve(x, kernel, mode='same')
 
+def moving_average_v2(y, window):
+    y = np.asarray(y, dtype=float)
+    w = int(window)
+    if w <= 1 or y.size == 0:
+        return y.copy()
+    kernel = np.ones(w)
+    counts = np.convolve(np.ones_like(y), kernel, mode="same") # points per window
+    sums = np.convolve(y, kernel, mode="same")
+    return sums / counts
+
 def running_rms(x: np.ndarray, fs: float, seconds: float) -> np.ndarray:
     n = max(1, int(round(seconds * fs)))
     return np.sqrt(np.maximum(moving_average(np.square(x), n), 0.0))

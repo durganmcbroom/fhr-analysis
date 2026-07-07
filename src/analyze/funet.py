@@ -160,12 +160,12 @@ def run_funet_pipeline(patient, window, datadir):
     pipe = Pipeline([
         load_data,
         windowed(window[0], window[1]),
-        use_funet(out_path, ["1B", "2A", "2B"]),
+        use_funet(out_path, ["2A", "2B", "2D"]),
         fiber_beats(v2_beat_detector, out_path),
         plot_hr(sot, out_path),
         # funet_beats(out_path),
         # fiber_beats(v2_beat_detector, out_path),
-        evaluate_v2(sot, out_path, lag_bound_s=0.0)
+        evaluate_v2(sot, out_path)
     ], f"{PROJECT_DIR}/.out/{patient}/funet/cache/", play_sound=False)
 
     return pipe.process(datadir)

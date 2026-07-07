@@ -1,0 +1,1 @@
+python3 plot_clips.py "../../../lib/tune-ssnet/training_clips.yaml" --out-dir="out/plotted-clips/"

@@ -23,13 +23,14 @@ from analyze.util import run_neossnet
 from constants import PROJECT_DIR, FETAL_ACOUSTIC_BAND_HZ, BROADBAND_FILTER_HZ, POWERLINE_NOTCH_HZ
 
 # PATIENT = "fiber-horizontal"
-# PATIENT = "PT13_1"
-PATIENT = "patient8-session1"
+PATIENT = "PT13_1"
+# PATIENT = "Patient 7"
+# PATIENT = "patient8-session1"
 # PATIENT = "session-02"
 # PATIENT = "band_durgan_1"
 # WINDOW = 50, 70
 # WINDOW = 60, 70
-WINDOW = 180, 190
+WINDOW = 180, 200
 # WINDOW = 0, 40
 # WINDOW = 0, 20
 DATA_DIR = f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/{PATIENT}"
@@ -232,17 +233,17 @@ if __name__ == '__main__':
     #     (0, 20),
     #     f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/belly_machine_10"
     # )
-    # run_neossnet_belly_machine(
-    #     "belly_machine_11",
-    #     (0, 20),
-    #     f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/belly_machine_11"
-    # )
-
-    run_funet_pipeline(
-        patient=PATIENT,
-        window=WINDOW,
-        datadir=DATA_DIR
+    run_neossnet_belly_machine(
+        "belly_machine_2_3",
+        (30, 60),
+        f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/belly_machine_2_3"
     )
+
+    # run_funet_pipeline(
+    #     patient=PATIENT,
+    #     window=WINDOW,
+    #     datadir=DATA_DIR
+    # )
 
     # run_neossnet_no_sot(
     #     PATIENT,

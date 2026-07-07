@@ -7,6 +7,20 @@ from scipy.ndimage import uniform_filter1d
 
 from analyze.hr import fHROutput, fHRMultiOutput
 from analyze.sot import SOTResult
+from analyze.util import moving_average, moving_average_v2
+from constants import FETAL_BPM_RANGE
+
+# ---------------------------------------------------------------------------
+# Every individual subplot in this module is 4:3 (width:height). Subplots are
+# stacked vertically and share a width, so the total figure height is just
+# n_rows subplot-heights.
+# ---------------------------------------------------------------------------
+FIG_ASPECT = 4.0 / 3.0  # per-subplot width:height
+
+
+def _figsize(n_rows: int, width: float = 8.0) -> Tuple[float, float]:
+    """Figsize so each of ``n_rows`` stacked subplots is 4:3 (width:height)."""
+    return width, n_rows * width / FIG_ASPECT
 
 
 # ---------------------------------------------------------------------------
@@ -15,6 +29,32 @@ from analyze.sot import SOTResult
 # Instantaneous HR is the beat-to-beat rate 60 / IBI, where IBI = diff(beats),
 # so each value is plotted at the *second* beat of its pair (beats[1:]) — the
 # same convention the SOT and detector code already use (60.0 / diff(times)).
+
+
+def _inst_hr_v2(
+        beats: np.ndarray,
+        band: Tuple[float, float],
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Instantaneous HR (60/IBI) as (time, bpm), clipped to ``band`` and smoothed.
+
+    Beats are sorted first so a stray out-of-order detection can't fold the line.
+    """
+    beats = np.sort(np.asarray(beats, dtype=float))
+    print(f"{beats} L:{len(beats)}")
+    if beats.size < 2:
+        return np.array([]), np.array([])
+
+    bpm = 60.0 / np.clip(np.diff(beats), 1e-6, None)
+    t = beats[1:]
+
+    keep = (bpm >= band[0]) & (bpm <= band[1])
+    bpm, t = bpm[keep], t[keep]
+
+    # bpm = np.clip(bpm, band[0], band[1])
+    # Centered average with edge replication (not zero-pad) so ends don't sag.
+    bpm = moving_average_v2(bpm, 5)
+    # bpm = uniform_filter1d(bpm, size=min(5, bpm.size), mode='nearest')
+    return t, bpm
 
 
 def _inst_hr(
@@ -26,12 +66,14 @@ def _inst_hr(
     Beats are sorted first so a stray out-of-order detection can't fold the line.
     """
     beats = np.sort(np.asarray(beats, dtype=float))
+    print(f"{beats} L:{len(beats)}")
     if beats.size < 2:
         return np.array([]), np.array([])
 
     bpm = 60.0 / np.clip(np.diff(beats), 1e-6, None)
     bpm = np.clip(bpm, band[0], band[1])
     # Centered average with edge replication (not zero-pad) so ends don't sag.
+    # bpm = moving_average_v2(bpm, 5)
     bpm = uniform_filter1d(bpm, size=min(5, bpm.size), mode='nearest')
     return beats[1:], bpm
 
@@ -78,9 +120,9 @@ def _plot_hr_axis(
         band: Tuple[float, float],
 ) -> None:
     if sot_beats is not None:
-        sot_t, sot_y = _inst_hr(sot_beats, band)
+        sot_t, sot_y = _inst_hr_v2(sot_beats, band)
 
-    pred_t, pred_y = _inst_hr(pred_beats, band)
+    pred_t, pred_y = _inst_hr_v2(pred_beats, band)
 
     if sot_beats is not None and sot_t.size:
         med = float(np.median(sot_y))
@@ -114,10 +156,10 @@ def _plot_hr_axis_multi(
     """Like ``_plot_hr_axis``, but overlays one trace per entry of ``pred_beats``
     (name -> beat times) instead of a single prediction."""
     cmap = plt.get_cmap("tab10")
-    traces = [(name, *_inst_hr(beats, band)) for name, beats in pred_beats.items()]
+    traces = [(name, *_inst_hr_v2(beats, band)) for name, beats in pred_beats.items()]
 
     if sot_beats is not None:
-        sot_t, sot_y = _inst_hr(sot_beats, band)
+        sot_t, sot_y = _inst_hr_v2(sot_beats, band)
         if sot_t.size:
             med = float(np.median(sot_y))
             ax.plot(sot_t, sot_y, color=sot_color, lw=1.4, marker='o', ms=3,
@@ -166,7 +208,7 @@ def plot_hr_multi_comparison(
         t_end = float(any_source.time[-1])
 
     if multi.maternal_beats is not None:
-        fig, (ax_m, ax_f) = plt.subplots(2, 1, figsize=(14, 7), sharex=True,
+        fig, (ax_m, ax_f) = plt.subplots(2, 1, figsize=_figsize(2), sharex=True,
                                          constrained_layout=True)
         _plot_hr_axis(
             ax_m,
@@ -178,7 +220,7 @@ def plot_hr_multi_comparison(
             band=(30.0, 160.0),
         )
     else:
-        fig, ax_f = plt.subplots(1, 1, figsize=(14, 4.5), constrained_layout=True)
+        fig, ax_f = plt.subplots(1, 1, figsize=_figsize(1), constrained_layout=True)
 
     _plot_hr_axis_multi(
         ax_f,
@@ -187,7 +229,7 @@ def plot_hr_multi_comparison(
         sot_color='tab:red',
         sot_label='Mic (SOT)',
         title="Fetal instantaneous HR — all abdomen fibers",
-        band=(60.0, 240.0),
+        band=FETAL_BPM_RANGE,
     )
 
     ax_f.set_xlabel("Time (s)", fontsize=8)
@@ -226,10 +268,10 @@ def plot_hr_comparison(
         t_start = t[0]
         t_end = t[-1]
 
-    fig, (ax_m, ax_f) = plt.subplots(2, 1, figsize=(14, 7), sharex=True,
+    fig, (ax_m, ax_f) = plt.subplots(2, 1, figsize=_figsize(2), sharex=True,
                                      constrained_layout=True)
 
-    # Top: maternal (fiber chest vs PPG SOT). Colours match evaluate.py.
+    # Top: maternal (fiber chest vs PPG SOT). Colors match evaluate.py.
     if fetal_result.maternal_beats is not None:
         _plot_hr_axis(
             ax_m,
@@ -249,7 +291,7 @@ def plot_hr_comparison(
         sot_color='tab:red', pred_color='tab:green',
         sot_label='Mic (SOT)', pred_label='Fiber fetal',
         title="Fetal instantaneous HR — fiber vs SOT",
-        band=(60.0, 240.0),
+        band=FETAL_BPM_RANGE,
     )
 
     ax_f.set_xlabel("Time (s)", fontsize=8)
@@ -317,7 +359,7 @@ def plot_peaks(out: Path, filename: str = "peaks.png"):
         rows = _peak_rows(result)
 
         out.mkdir(parents=True, exist_ok=True)
-        fig, axes = plt.subplots(len(rows), 1, figsize=(14, 3 * len(rows)), squeeze=False, sharex=True)
+        fig, axes = plt.subplots(len(rows), 1, figsize=_figsize(len(rows)), squeeze=False, sharex=True)
 
         for row, (label, source, beats) in enumerate(rows):
             ax = axes[row][0]

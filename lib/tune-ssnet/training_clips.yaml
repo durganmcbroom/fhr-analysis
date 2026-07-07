@@ -2,13 +2,13 @@ length: 10 # in seconds
 overlap: 3 # in seconds
 ppg_col: 1 # defaults to 0 if I don't declare
 mode: "mono"
+
+time_warp: False # randomly stretch/compress the gaps between beats (random intervals); False = off
+warp_strength: 12 # max random stretch factor for inter-beat gaps (only used when time_warp: True)
+warp_pad: 300 # samples left untouched around each beat before a gap is warped (only when time_warp: True)
+gate_width_ibi_fraction: 0.2 # heartbeat gate half-width as a fraction of mean IBI (bigger => wider gate)
+
 data:
-#  "band_durgan_2":
-#    is_control: True
-#    fibers:
-#      - "2A"  # ps3000a.npy data col 1; 1B needs the chest bundle ps4000.npy, absent for control dirs
-#    sections:
-#      - "0-420"
   "Patient 6":
     fibers:
       - "2D"
@@ -58,8 +58,3 @@ data:
       - "713-818"
       - "858-1245" # Low SNR
       - "1302-1450"
-      # No SOT after this point
-#      - "1475-1592" # Sus
-#      - "1595-1625" # Less sus, breaking it out just to have this metadata
-#      - "1625-1672"
-#      - "1690-1775"

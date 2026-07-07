@@ -7,7 +7,14 @@ Yaml format (same as lib/tune-ssnet/training_clips_mono.yaml):
     length: 10      # snippet length in seconds
     overlap: 3      # overlap in seconds between adjacent snippets within a section
     ppg_col: 0      # column of pvs.npy to use as maternal SOT (defaults to 0)
-    time_warp: False  # randomly stretch/compress the gaps between beats (defaults to off)
+    time_warp: False  # randomly stretch/compress the gaps between beats (the "random
+                      # intervals"); set False to turn it off (default off)
+    warp_strength: 12 # max random stretch factor applied to inter-beat gaps (only when
+                      # time_warp is on; default 12)
+    warp_pad: 300     # samples left untouched around each beat before a gap is warped
+                      # (only when time_warp is on; default 300)
+    gate_width_ibi_fraction: 0.3  # heartbeat gate half-width as a fraction of the mean
+                                  # inter-beat interval (bigger => wider gate; default 0.3)
     data:
       "PT12_1":
         fibers:
@@ -179,8 +186,8 @@ def beat_centers(beat_times, start_time, sample_rate):
     return [int(round((beat_time - start_time) * sample_rate)) for beat_time in beat_times]
 
 
-def half_width_samples(mean_ibi_s, sample_rate):
-    return int(round(mean_ibi_s * WINDOW_IBI_FRACTION * sample_rate))
+def half_width_samples(mean_ibi_s, sample_rate, ibi_fraction=WINDOW_IBI_FRACTION):
+    return int(round(mean_ibi_s * ibi_fraction * sample_rate))
 
 
 def extract_window(signal, center, half_width):
@@ -289,7 +296,8 @@ def heart_target(
         t,
         sot,
         band,
-        gaussian_impulses: bool = False
+        gaussian_impulses: bool = False,
+        gate_width_ibi_fraction: float = WINDOW_IBI_FRACTION,
 ):
     # Single-channel clean heartbeat, centered on the reference fiber's own beats.
     evaluation = beat_evaluator(sot)
@@ -301,7 +309,7 @@ def heart_target(
 
     sample_rate = round(1 / (t[1] - t[0]))  # reference_fiber.hz
     ibi = np.diff(beat_times)
-    half_width = half_width_samples(float(np.mean(ibi)), sample_rate)
+    half_width = half_width_samples(float(np.mean(ibi)), sample_rate, gate_width_ibi_fraction)
     filtered = bp_filter(Audio(t, sample_rate, reference_fiber), band[0], band[1], filter_type="butter").data
 
     centers = beat_centers(beat_times, t[0], sample_rate)
@@ -414,13 +422,18 @@ def time_warp(
     return data
 
 
-def write_snippet(out_dir, idx, beat_evaluator, fibers, sot, band, gaussian_impulses=False, warp=False, k=12, pad=300):
+def write_snippet(out_dir, idx, beat_evaluator, fibers, sot, band, gaussian_impulses=False, warp=False, k=12, pad=300,
+                  gate_width_ibi_fraction=WINDOW_IBI_FRACTION):
     # One mix (mono or multi-channel) plus its single-channel heart/lung/noise targets, with a plot.
+    # `warp` randomly stretches/compresses the gaps between beats (k = max stretch factor,
+    # pad = samples kept untouched around each beat); `gate_width_ibi_fraction` sets the
+    # heartbeat gate half-width as a fraction of the mean inter-beat interval.
     mix = stack_resampled(fibers)
     t = fibers[0].time[0] + np.arange(len(mix[0])) / NEOSSNET_MODEL_HZ
 
     try:
-        heart, beat_times, half_width = heart_target(beat_evaluator, mix, t, sot, band, gaussian_impulses)
+        heart, beat_times, half_width = heart_target(beat_evaluator, mix, t, sot, band, gaussian_impulses,
+                                                     gate_width_ibi_fraction)
     except NoBeatException as error:
         warning(f"skipping snippet {idx}: {error}")
         return False
@@ -555,6 +568,11 @@ def main() -> None:
     ppg_col = cfg.get("ppg_col", 0)
     time_warp_enabled = cfg.get("time_warp", False)
     gaussian_impulses_enabled = cfg.get("gaussian_impulses", False)
+    # Random inter-beat interval warping controls (only used when time_warp is on).
+    warp_strength = cfg.get("warp_strength", 12)  # max random stretch factor for inter-beat gaps
+    warp_pad = cfg.get("warp_pad", 300)           # samples kept untouched around each beat
+    # Heartbeat gate half-width = this fraction of the mean IBI (bigger => wider gate).
+    gate_width_ibi_fraction = cfg.get("gate_width_ibi_fraction", WINDOW_IBI_FRACTION)
 
     spec: dict[str, dict] = cfg["data"]
 
@@ -636,6 +654,9 @@ def main() -> None:
                             fetal_dir, idx, detect_fetal_with_bp, group_fibers, mic_window, FETAL_ACOUSTIC_BAND_HZ,
                             warp=time_warp_enabled,
                             gaussian_impulses=gaussian_impulses_enabled,
+                            k=warp_strength,
+                            pad=warp_pad,
+                            gate_width_ibi_fraction=gate_width_ibi_fraction,
                         )
                     # maternal_ok = write_snippet(
                     #     maternal_dir, idx, lambda x: detect_ppg_beats(x, (60, 120)), [chest], ppg_window, MATERNAL_ACOUSTIC_BAND_HZ,

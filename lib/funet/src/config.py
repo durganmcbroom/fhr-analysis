@@ -21,7 +21,7 @@ class TrainConfig:
     epochs: int = 40
     crop_len: int = 7          # seconds
     clip: float = 5.0          # max gradient norm
-    loss: str = "kldiv"        # 'kldiv' (distribution) or 'snr' (SI-SNR signal loss)
+    loss: str = "kldiv"        # 'kldiv' (distribution), 'snr' (SI-SNR, sign-invariant), or 'corr' (sign-sensitive)
 
 
 @dataclass

@@ -6,7 +6,7 @@ from torch import nn, optim
 
 from lib.funet.src.config import Config, load_config
 from lib.funet.src.data import make_dataloaders
-from lib.funet.src.loss import SNRLoss
+from lib.funet.src.loss import SNRLoss, CorrelationLoss
 from lib.funet.src.model import FUNet
 from lib.funet.src.train import train
 from train import fit
@@ -21,6 +21,7 @@ OPTIMIZERS = {
 LOSSES = {
     "kldiv": (lambda: nn.KLDivLoss(reduction="batchmean"), "logprob"),
     "snr": (SNRLoss, "signal"),
+    "corr": (CorrelationLoss, "signal"),   # sign-sensitive; fixes the SI-SNR sign-flip
 }
 
 
