@@ -22,6 +22,29 @@ from train import get_optimizer, get_loss_fn, fit  # noqa: E402
 MODEL_HZ = 4000
 VAL_FRACTION = 0.1   # fraction of snippets (by index, held out at the end) used for validation
 
+# Config keys whose values are filesystem paths. They are resolved relative to the
+# directory the config yaml lives in (see resolve_config_paths), so the same yaml
+# works regardless of where python is invoked from.
+PATH_CONFIG_KEYS = ("train_dir", "model_dir", "train_resume")
+
+
+def resolve_config_paths(config, base_dir):
+    """Resolve the config's path fields relative to ``base_dir`` (the config yaml's
+    own directory), in place, and return ``config``.
+
+    Absolute paths are left as-is; ``..`` segments are normalised. Missing or null
+    keys are skipped. This makes every path inside the yaml relative to the yaml,
+    not to the process's current working directory.
+    """
+    base_dir = Path(base_dir).resolve()
+    for key in PATH_CONFIG_KEYS:
+        value = config.get(key)
+        if value is None:
+            continue
+        # `base_dir / value` yields `value` unchanged when it is already absolute.
+        config[key] = str((base_dir / value).resolve())
+    return config
+
 
 def pick_device() -> torch.device:
     """CUDA if present, else Apple MPS, else CPU. Avoids train.py's hardcoded cuda:0.
@@ -189,8 +212,10 @@ def main(config):
 
 
 if __name__ == "__main__":
-    config_path = sys.argv[1] if len(sys.argv) > 1 else "fetal-tune-config.yaml"
+    config_path = Path(sys.argv[1] if len(sys.argv) > 1 else "fetal-tune-config.yaml").resolve()
     with open(config_path, "r") as f:
         print(f"Loaded Config: '{config_path}'")
         config = yaml.safe_load(f)
+    # Resolve every path in the yaml relative to the yaml's own directory.
+    resolve_config_paths(config, config_path.parent)
     main(config)
