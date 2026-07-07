@@ -52,7 +52,7 @@ def _inst_hr_v2(
 
     # bpm = np.clip(bpm, band[0], band[1])
     # Centered average with edge replication (not zero-pad) so ends don't sag.
-    bpm = moving_average_v2(bpm, 5)
+    bpm = moving_average_v2(bpm, 10)
     # bpm = uniform_filter1d(bpm, size=min(5, bpm.size), mode='nearest')
     return t, bpm
 

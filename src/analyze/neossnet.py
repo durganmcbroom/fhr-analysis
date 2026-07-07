@@ -200,7 +200,7 @@ def run_neossnet_on_nst(
     sot_pipe = Pipeline([
         load_sot(),
         windowed(window[0], window[1]),
-        sot_beats(v2_beat_detector, out_path)
+        sot_beats(v5_beat_detector, out_path)
     ], f"{PROJECT_DIR}/.out/cache_sot/neossnet/{patient}", play_sound=False)
     sot: SOTResult = sot_pipe.process(datadir)
 
@@ -215,10 +215,7 @@ def run_neossnet_on_nst(
         use_model(out_path),  # NeoSSNet heart output (maternal-dominated cardiac), all abdomen fibers
         abdomen_bp(*FETAL_ACOUSTIC_BAND_NARROW_HZ, "butter"),  # narrow to the fetal band AFTER the model
         use_fiber("mic"),
-        # abdomen_sound(out_path, tag="2B_fetal"),
-        fiber_beats(v2_beat_detector, out_path),
-        # multi_fiber_beats(v2_beat_detector, out_path, fetal_bpm=(110.0, 180.0)),
-        # plot_peaks(out_path),
+        fiber_beats(v5_beat_detector, out_path),
         plot_hr(sot, out_path),
         evaluate_v2(sot, out_path),
     ], f"{PROJECT_DIR}/.out/{patient}/neossnet/cache/", play_sound=False)

@@ -10,6 +10,7 @@ gate_width_ibi_fraction: 0.2 # heartbeat gate half-width as a fraction of mean I
 
 data:
   "Patient 6":
+    mode: train   # 'train' or 'test' -> routes this patient to fetal-train/ or fetal-test/
     fibers:
       - "2D"
       - "2C"
@@ -38,6 +39,7 @@ data:
       - "1330-1353"
       - "1405-1415" # No SOT beyond point
   "Patient 7":
+    mode: train
     fibers:
       - "2A"
       - "2B"

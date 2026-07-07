@@ -5,7 +5,7 @@ import torch
 from torch import nn, optim
 
 from lib.funet.src.config import Config, load_config
-from lib.funet.src.data import make_dataloaders
+from lib.funet.src.data import make_train_dataloader, make_test_dataloader
 from lib.funet.src.loss import SNRLoss, CorrelationLoss
 from lib.funet.src.model import FUNet
 from lib.funet.src.train import train
@@ -68,7 +68,8 @@ def main(config: Config):
         print(f"Resuming from checkpoint: '{config.resume}'")
         model.load_state_dict(torch.load(config.resume, map_location=device))
 
-    train_dl, val_dl = make_dataloaders(config)
+    train_dl = make_train_dataloader(config)
+    val_dl = make_test_dataloader(config)
     optimiser = build_optimiser(config, model)
 
     os.makedirs(config.model_dir, exist_ok=True)

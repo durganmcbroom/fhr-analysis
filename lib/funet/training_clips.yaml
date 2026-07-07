@@ -6,10 +6,13 @@ warp: False
 gaussian_impulses: True
 data:
   "Patient 6":
+    mode: train   # 'train' or 'test' -> routes this patient to fetal-train/ or fetal-test/
     fibers:
-      - "2D"
-      - "2C"
+      - "1B"
+      - "2A"
       - "2B"
+      - "2C"
+      - "2D"
     sections:
       - "21-38"
       - "50-80"
@@ -34,9 +37,12 @@ data:
       - "1330-1353"
       - "1405-1415" # No SOT beyond point
   "Patient 7":
+    mode: train
     fibers:
+      - "1B"
       - "2A"
       - "2B"
+      - "2C"
       - "2D"
     sections:
       - "25-40"
@@ -54,8 +60,27 @@ data:
       - "713-818"
       - "858-1245" # Low SNR
       - "1302-1450"
-      # No SOT after this point
-#      - "1475-1592" # Sus
-#      - "1595-1625" # Less sus, breaking it out just to have this metadata
-#      - "1625-1672"
-#      - "1690-1775"
+  "patient8-session1":
+    mode: test
+    fibers:
+      - "1B"
+      - "2A"
+      - "2B"
+      - "2C"
+      - "2D"
+    sections:
+      - "228-392"
+      - "395-422"
+      - "422-478"
+      - "480-525"
+      - "560-590"
+      - "625-685"
+      - "772-835"
+      - "930-955"
+      - "960-998"
+      - "1045-1135"
+      - "1160-1225"
+      - "1258-1380"
+      - "1430-1695"
+      - "1720-1762"
+

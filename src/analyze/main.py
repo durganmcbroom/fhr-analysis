@@ -217,11 +217,11 @@ if __name__ == '__main__':
     #     DATA_DIR
     # )
 
-    # run_neossnet_on_nst(
-    #     "patient8-session1",
-    #     (170, 200),
-    #     f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/patient8-session1"
-    # )
+    run_neossnet_on_nst(
+        f"belly_machine (CONTROL)",
+        (30, 90),
+        f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/PT12_2"
+    )
 
     # run_neossnet_belly_machine(
     #     "belly_machine_9",
@@ -233,11 +233,20 @@ if __name__ == '__main__':
     #     (0, 20),
     #     f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/belly_machine_10"
     # )
-    run_neossnet_belly_machine(
-        "belly_machine_2_3",
-        (30, 60),
-        f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/belly_machine_2_3"
-    )
+    for i in range(0, 6):
+        run_neossnet_belly_machine(
+            f"belly_machine_3_{i + 1}",
+            (30, 90),
+            f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/belly_machine_3_{i + 1}"
+        )
+
+    # run_neossnet_belly_machine(
+    #     "belly_machine_2_3",
+    #     (30, 60),
+    #     f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/belly_machine_2_3"
+    # )
+
+
 
     # run_funet_pipeline(
     #     patient=PATIENT,

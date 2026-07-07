@@ -17,31 +17,27 @@ Yaml format (same as lib/tune-ssnet/training_clips_mono.yaml):
                                   # inter-beat interval (bigger => wider gate; default 0.3)
     data:
       "PT12_1":
-        fibers:
+        mode: train       # required: 'train' or 'test' -> routes this patient's
+        fibers:           # snippets to the <out-dir>/fetal-train/ or fetal-test/ dir
           - "2A"
           - "2B"
         sections:
           - "130-150"
           - "170-178"
       "PT14_1":
+        mode: test
         fibers:
           - "2A"
         sections:
           - "20-90"
 
 Each "start-end" section is cut into `length`-second snippets stepping by
-`length - overlap`, once per listed fiber (each fiber is its own mono
-fetal_hr wav). Snippet index N is the same across all four output
-directories, so they stay paired: fetal_hr/N.wav, fetal_sot/N.wav,
-maternal_hr/N.wav, maternal_sot/N.wav.
-
-A patient entry may set `is_control: True`. Control data is pure-noise belly
-recording with NO fetus, used to confirm the model doesn't hallucinate beats.
-It has no ground truth: only `ps3000a.npy` exists (no chest bundle, mic, or
-pvs). Fibers map to `ps3000a.npy` data columns with the same convention as
-data.load_fibers (col i -> ABDOMEN_FIBER_NAMES[i]). For control snippets the
-four outputs are: `mix` = the raw pure-noise input, `heart` = zeros,
-`lung` = the model's lung output, `noise` = mix - lung - heart.
+`length - overlap`. Every patient declares mode: 'train' or 'test', which routes
+all of its snippets to `<out-dir>/fetal-train/` or `<out-dir>/fetal-test/` -- a
+whole patient is held out for testing, with no within-patient leakage. Snippet
+indices restart from 0 within each split. In stereo mode all listed fibers are
+stacked as channels into one snippet per window; in mono mode each fiber is its
+own snippet.
 """
 
 import argparse
@@ -82,9 +78,6 @@ from constants import (
     NEOSSNET_MODEL_PATH, NEOSSNET_MODEL_CFG,
 )  # noqa: E402
 
-FETAL_DIR = "fetal"
-MATERNAL_DIR = "maternal"
-
 WINDOW_IBI_FRACTION = 0.3  # half-window per beat = this * mean IBI
 SNAP_TOLERANCE_S = 0.040  # how far a beat may be nudged to the fiber's own energy peak
 
@@ -117,18 +110,6 @@ def load_mic(path: str) -> Audio:
     arr = arr if arr.ndim == 1 else arr[:, 0]
     t = np.arange(len(arr)) / float(fs)
     return Audio(t, fs, arr)
-
-
-def load_control_fibers(path: Path) -> dict[str, Audio]:
-    # Control dirs only have ps3000a.npy ([time, ch1, ch2, ...]); no chest/mic/pvs.
-    # Map data columns to fiber names exactly like data.load_fibers: col i -> ABDOMEN_FIBER_NAMES[i].
-    raw = np.load(Path(path) / FIBER_BUNDLE_B)
-    time = raw[:, 0]
-    hz = round(1 / (time[1] - time[0]))
-    return {
-        ABDOMEN_FIBER_NAMES[i]: Audio(time, hz, raw[:, i])
-        for i in range(1, raw.shape[1])
-    }
 
 
 def load_ppg(path: str, ppg_col: int) -> Audio:
@@ -477,47 +458,6 @@ def write_snippet(out_dir, idx, beat_evaluator, fibers, sot, band, gaussian_impu
     return True
 
 
-def plot_control(path, raw, heart, heart_hz, start_time, title):
-    # Two-panel waveform for control snippets: raw pure-noise mix on top, flat-zero heart below.
-    t = start_time + np.arange(len(raw)) / heart_hz
-    figure, (top, bottom) = plt.subplots(2, 1, figsize=(12, 4), sharex=True)
-
-    top.plot(t, raw, color="tab:blue", lw=0.6)
-    top.set_ylabel("mix (control noise)")
-    top.set_title(title, fontsize=9)
-
-    bottom.plot(t, heart, color="tab:green", lw=0.6)
-    bottom.set_ylabel("generated heart")
-    bottom.set_xlabel("time (s)")
-    bottom.set_xlim(float(t[0]), float(t[-1]))
-
-    figure.tight_layout()
-    figure.savefig(path, dpi=120)
-    plt.close(figure)
-
-
-def write_control_snippet(out_dir, idx, fibers):
-    # Pure-noise control: no fetus, no SOT, no beats. heart=0, lung from model, noise=mix-lung-heart.
-    mix = stack_resampled(fibers)
-    reference = mix.mean(axis=0)
-    lung = lung_sound(reference)
-
-    length = min(mix.shape[1], len(lung))
-    mix = mix[:, :length]
-    reference = reference[:length]
-    lung = np.asarray(lung)[:length]
-    heart = np.zeros(length)
-    noise = reference - lung - heart
-
-    write_multichannel(out_dir / f"{idx}_mix.wav", NEOSSNET_MODEL_HZ, mix)
-    write_mono(out_dir / f"{idx}_heart.wav", NEOSSNET_MODEL_HZ, heart)
-    write_mono(out_dir / f"{idx}_lung.wav", NEOSSNET_MODEL_HZ, lung)
-    write_mono(out_dir / f"{idx}_noise.wav", NEOSSNET_MODEL_HZ, noise)
-    plot_control(out_dir / f"{idx}_heart.png", reference, heart, NEOSSNET_MODEL_HZ, fibers[0].time[0],
-                 f"{out_dir.name} snippet {idx} (control)")
-    return True
-
-
 def fiber_groups(named_fibers, mode):
     # stereo: one group with every fiber as a channel; mono: one group per fiber.
     if mode == "stereo":
@@ -529,6 +469,14 @@ def require_mode(cfg):
     mode = cfg.get("mode")
     if mode not in ("mono", "stereo"):
         raise ValueError(f"config 'mode' is required and must be 'mono' or 'stereo', got {mode!r}")
+    return mode
+
+
+def require_split_mode(name, dir_spec):
+    # Per-patient train/test split -> routes to the fetal-train/ or fetal-test/ output dir.
+    mode = dir_spec.get("mode")
+    if mode not in ("train", "test"):
+        raise ValueError(f"patient {name!r} must declare mode: 'train' or 'test' (got {mode!r})")
     return mode
 
 
@@ -582,16 +530,16 @@ def main() -> None:
     data_dir = normalize_path(args.data_dir)
     out_dir = args.out_dir
 
-    fetal_dir = out_dir / FETAL_DIR
-    maternal_dir = out_dir / MATERNAL_DIR
-
-    idx = 0
-    created: list[tuple[int, str, str, str]] = []  # (index, dir_name, window_spec, fiber)
+    # Each patient's mode routes its snippets to a held-out train/test split dir.
+    fetal_dirs = {"train": out_dir / "fetal-train", "test": out_dir / "fetal-test"}
+    idxs = {"train": 0, "test": 0}   # snippet indices restart from 0 within each split
+    created: list[tuple[str, int, str, str, str]] = []  # (split, index, dir_name, window_spec, fiber)
 
     for dir_name, dir_spec in spec.items():
         fiber_names = dir_spec["fibers"]
         windows = dir_spec["sections"]
-        is_control = dir_spec.get("is_control", False)
+        split = require_split_mode(dir_name, dir_spec)   # "train" or "test"
+        fetal_dir = fetal_dirs[split]
 
         unknown = [f for f in fiber_names if f not in ABDOMEN_FIBER_NAMES]
         if unknown:
@@ -600,19 +548,10 @@ def main() -> None:
             )
 
         patient_path = normalize_path(f"{data_dir}{dir_name}")
-        print(f"\nLoading {dir_name} ...{' (control)' if is_control else ''}")
-        if is_control:
-            control_fibers = load_control_fibers(Path(patient_path))
-            missing = [f for f in fiber_names if f not in control_fibers]
-            if missing:
-                raise ValueError(
-                    f"{dir_name}: control fiber(s) {missing} not in {FIBER_BUNDLE_B} "
-                    f"(available: {list(control_fibers)})"
-                )
-        else:
-            fibers = load_fibers(Path(patient_path))
-            mic = load_mic(patient_path)
-            ppg = load_ppg(patient_path, ppg_col)
+        print(f"\nLoading {dir_name} ... (-> {split})")
+        fibers = load_fibers(Path(patient_path))
+        mic = load_mic(patient_path)
+        ppg = load_ppg(patient_path, ppg_col)
 
         for window_spec in windows:
             start, end = parse_window(window_spec)
@@ -632,44 +571,35 @@ def main() -> None:
                 window_end = window_start + win_length
 
                 # Fetal input is the abdomen fibers; maternal is the chest bundle.
-                if is_control:
-                    named_fibers = [(name, window_audio(control_fibers[name], window_start, window_end))
-                                    for name in fiber_names]
-                else:
-                    named_fibers = [(name, window_audio(fibers.abdomen[name], window_start, window_end)) for name in
-                                    fiber_names]
-                    chest = window_audio(fibers.chest, window_start, window_end)
-                    mic_window = window_audio(mic, window_start, window_end)
-                    ppg_window = window_audio(ppg, window_start, window_end)
+                named_fibers = [(name, window_audio(fibers.abdomen[name], window_start, window_end))
+                                for name in fiber_names]
+                chest = window_audio(fibers.chest, window_start, window_end)
+                mic_window = window_audio(mic, window_start, window_end)
+                ppg_window = window_audio(ppg, window_start, window_end)
 
                 for group in fiber_groups(named_fibers, mode):
-                    print(f"Computing sample {idx}")
+                    idx = idxs[split]
+                    print(f"Computing {split} sample {idx} ({dir_name})")
                     group_names = [name for name, _ in group]
                     group_fibers = [fiber for _, fiber in group]
 
-                    if is_control:
-                        fetal_ok = write_control_snippet(fetal_dir, idx, group_fibers)
-                    else:
-                        fetal_ok = write_snippet(
-                            fetal_dir, idx, detect_fetal_with_bp, group_fibers, mic_window, FETAL_ACOUSTIC_BAND_HZ,
-                            warp=time_warp_enabled,
-                            gaussian_impulses=gaussian_impulses_enabled,
-                            k=warp_strength,
-                            pad=warp_pad,
-                            gate_width_ibi_fraction=gate_width_ibi_fraction,
-                        )
-                    # maternal_ok = write_snippet(
-                    #     maternal_dir, idx, lambda x: detect_ppg_beats(x, (60, 120)), [chest], ppg_window, MATERNAL_ACOUSTIC_BAND_HZ,
-                    # )
+                    fetal_ok = write_snippet(
+                        fetal_dir, idx, detect_fetal_with_bp, group_fibers, mic_window, FETAL_ACOUSTIC_BAND_HZ,
+                        warp=time_warp_enabled,
+                        gaussian_impulses=gaussian_impulses_enabled,
+                        k=warp_strength,
+                        pad=warp_pad,
+                        gate_width_ibi_fraction=gate_width_ibi_fraction,
+                    )
 
-                    if fetal_ok: #and maternal_ok:
-                        created.append((idx, dir_name, f"{window_start:.3f}-{window_end:.3f}", "+".join(group_names)))
-                        idx += 1
+                    if fetal_ok:
+                        created.append((split, idx, dir_name, f"{window_start:.3f}-{window_end:.3f}", "+".join(group_names)))
+                        idxs[split] += 1
 
-    print(f"\nCreated {idx} snippets in {out_dir}/")
+    print(f"\nCreated {idxs['train']} train + {idxs['test']} test snippets in {out_dir}/")
     print("\nIndex map:")
-    for i, dir_name, window, fiber_name in created:
-        print(f"  {i}: {dir_name} [{window}] fiber={fiber_name}")
+    for split, i, dir_name, window, fiber_name in created:
+        print(f"  [{split}] {i}: {dir_name} [{window}] fiber={fiber_name}")
 
 
 if __name__ == "__main__":

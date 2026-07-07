@@ -43,4 +43,4 @@ BROADBAND_FILTER_HZ = (20.0, 250.0)             # initial wideband filter before
 POWERLINE_NOTCH_HZ = 50                         # mains hum notch frequency
 
 MATERNAL_BPM_RANGE = (45.0, 140.0)
-FETAL_BPM_RANGE = (90.0, 200.0)
+FETAL_BPM_RANGE = (110.0, 180.0)
