@@ -1,3 +1,3 @@
 [submodule "lib/neossnet"]
 	path = lib/neossnet
-	url = git@github.com:durganmcbroom/Neonatal-Chest-Sound-Separation-using-Deep-Learning.git
+	url = https://github.com/durganmcbroom/Neonatal-Chest-Sound-Separation-using-Deep-Learning.git
