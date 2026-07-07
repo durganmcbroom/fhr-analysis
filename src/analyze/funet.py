@@ -25,10 +25,10 @@ from analyze.plot_hr import plot_hr
 from analyze.sot import load_sot
 from constants import PROJECT_DIR, FUNET_CONFIG, FUNET_MODEL_PATH, FETAL_BPM_RANGE
 
-# lib/funet uses absolute `lib.funet.src.*` imports; put the repo root on the path.
-sys.path.insert(0, PROJECT_DIR)
-from lib.funet.src.config import load_config          # noqa: E402
-from lib.funet.src.inference import load_funet, run_funet  # noqa: E402
+# lib/funet/src is a flat module dir (bare imports); put it on the path to import from.
+sys.path.insert(0, str(Path(PROJECT_DIR) / "lib" / "funet" / "src"))
+from config import load_config          # noqa: E402
+from inference import load_funet, run_funet  # noqa: E402
 
 
 def _pick_device() -> torch.device:

@@ -31,6 +31,9 @@ def _figsize(n_rows: int, width: float = 8.0) -> Tuple[float, float]:
 # same convention the SOT and detector code already use (60.0 / diff(times)).
 
 
+def _current_hr_func():
+    return _inst_hr_v3
+
 def _inst_hr_v2(
         beats: np.ndarray,
         band: Tuple[float, float],
@@ -77,6 +80,10 @@ def _inst_hr(
     bpm = uniform_filter1d(bpm, size=min(5, bpm.size), mode='nearest')
     return beats[1:], bpm
 
+def _inst_hr_v3(
+            beats: np.ndarray,
+            band: Tuple[float, float],
+) -> Tuple[np.ndarray, np.ndarray]:
     window_len = 5
     step = 1
     ret = []
@@ -120,9 +127,9 @@ def _plot_hr_axis(
         band: Tuple[float, float],
 ) -> None:
     if sot_beats is not None:
-        sot_t, sot_y = _inst_hr_v2(sot_beats, band)
+        sot_t, sot_y = _current_hr_func()(sot_beats, band)
 
-    pred_t, pred_y = _inst_hr_v2(pred_beats, band)
+    pred_t, pred_y = _current_hr_func()(pred_beats, band)
 
     if sot_beats is not None and sot_t.size:
         med = float(np.median(sot_y))
@@ -156,10 +163,10 @@ def _plot_hr_axis_multi(
     """Like ``_plot_hr_axis``, but overlays one trace per entry of ``pred_beats``
     (name -> beat times) instead of a single prediction."""
     cmap = plt.get_cmap("tab10")
-    traces = [(name, *_inst_hr_v2(beats, band)) for name, beats in pred_beats.items()]
+    traces = [(name, *_current_hr_func()(beats, band)) for name, beats in pred_beats.items()]
 
     if sot_beats is not None:
-        sot_t, sot_y = _inst_hr_v2(sot_beats, band)
+        sot_t, sot_y = _current_hr_func()(sot_beats, band)
         if sot_t.size:
             med = float(np.median(sot_y))
             ax.plot(sot_t, sot_y, color=sot_color, lw=1.4, marker='o', ms=3,

@@ -4,11 +4,10 @@ import sys
 import torch
 from torch import nn, optim
 
-from lib.funet.src.config import Config, load_config
-from lib.funet.src.data import make_train_dataloader, make_test_dataloader
-from lib.funet.src.loss import SNRLoss, CorrelationLoss
-from lib.funet.src.model import FUNet
-from lib.funet.src.train import train
+from config import Config, load_config
+from data import make_train_dataloader, make_test_dataloader
+from loss import SNRLoss, CorrelationLoss
+from model import FUNet
 from train import fit
 
 OPTIMIZERS = {
@@ -89,7 +88,7 @@ def main(config: Config):
 
 
 if __name__ == "__main__":
-    config_path = sys.argv[1] if len(sys.argv) > 1 else "../fetal-config.yaml"
+    config_path = sys.argv[1] if len(sys.argv) > 1 else "fetal-config.yaml"
     loaded = load_config(config_path)
     print(f"Loaded config: '{config_path}'")
     main(loaded)

@@ -16,9 +16,9 @@ import torch
 import torchaudio
 from scipy.signal import resample_poly
 
-from lib.funet.src.config import Config
-from lib.funet.src.data import SAMPLE_RATE
-from lib.funet.src.model import FUNet
+from config import Config
+from data import SAMPLE_RATE
+from model import FUNet
 
 
 def _head_for(config: Config) -> str:
