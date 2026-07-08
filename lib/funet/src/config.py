@@ -32,6 +32,7 @@ class DataConfig:
     num_workers: int = 4
     n_fft: int = 1024
     hop_length: int = 256
+    augment: List[str] = field(default_factory=list)  # train-only: subset of channel_dropout|gain|noise
 
 
 @dataclass

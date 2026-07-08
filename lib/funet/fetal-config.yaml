@@ -9,7 +9,7 @@ model:
 train:
   optimizer: 'AdamW'   # SGD, Adam, AdamW
   learning_rate: 3.e-4
-  weight_decay: 0.1
+  weight_decay: 0.2
   batch_size: 8
   epochs: 80
   crop_len: 7   # time series in seconds
@@ -22,6 +22,7 @@ data:
   num_workers: 8
   n_fft: 1024
   hop_length: 256
+  augment: ['channel_dropout', 'gain', 'noise']   # train-only; remove names to disable
 
-model_dir: 'models/funet-v3/'
+model_dir: 'models/funet-v4/'
 #resume: 'models/funet-v1/model_best.pt'
