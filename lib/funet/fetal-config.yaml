@@ -17,8 +17,8 @@ train:
 
 data:
   # paths resolve relative to this config file's directory (lib/funet/), not the CWD
-  train_dir: 'training/stereo_v2/fetal-train'
-  test_dir: 'training/stereo_v2/fetal-test'
+  train_dir: 'training/stereo_v3/fetal-train'
+  test_dir: 'training/stereo_v3/fetal-test'
   num_workers: 8
   n_fft: 1024
   hop_length: 256
