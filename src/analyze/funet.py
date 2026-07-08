@@ -16,14 +16,16 @@ import torch
 from matplotlib import pyplot as plt
 from scipy.signal import find_peaks
 
-from analyze.data import Audio, FiberData, load_data, windowed, FiberPair
+from analyze.data import Audio, FiberData, load_data, windowed, FiberPair, load_no_chest_data
 from analyze.evaluate_v2 import evaluate_v2
+from analyze.filters import abdomen_bp
 from analyze.hr import sot_beats, fiber_beats
 from analyze.hr.detect_v2 import v2_beat_detector
+from analyze.hr.detect_v5 import v5_beat_detector
 from analyze.pipeline import Pipeline
 from analyze.plot_hr import plot_hr
-from analyze.sot import load_sot
-from constants import PROJECT_DIR, FUNET_CONFIG, FUNET_MODEL_PATH, FETAL_BPM_RANGE
+from analyze.sot import load_sot, load_sot_no_ppg, plot_mic, SOTResult
+from constants import PROJECT_DIR, FUNET_CONFIG, FUNET_MODEL_PATH, FETAL_BPM_RANGE, FETAL_ACOUSTIC_BAND_NARROW_HZ
 
 # lib/funet/src is a flat module dir (bare imports); put it on the path to import from.
 sys.path.insert(0, str(Path(PROJECT_DIR) / "lib" / "funet" / "src"))
@@ -160,12 +162,37 @@ def run_funet_pipeline(patient, window, datadir):
     pipe = Pipeline([
         load_data,
         windowed(window[0], window[1]),
-        use_funet(out_path, ["2A", "2B", "2D"]),
+        use_funet(out_path, ["1B", "2A", "2B", "2C", "2D"]),
         fiber_beats(v2_beat_detector, out_path),
         plot_hr(sot, out_path),
-        # funet_beats(out_path),
-        # fiber_beats(v2_beat_detector, out_path),
         evaluate_v2(sot, out_path)
     ], f"{PROJECT_DIR}/.out/{patient}/funet/cache/", play_sound=False)
 
     return pipe.process(datadir)
+
+def run_funet_belly_machine(
+        patient,
+        window,
+        datadir
+):
+    out_path = Path(f"{PROJECT_DIR}.out/{patient}/funet/")
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    sot_pipe = Pipeline([
+        load_sot_no_ppg(),
+        windowed(window[0], window[1]),
+        plot_mic(out_path),
+        sot_beats(v2_beat_detector, out_path)
+    ], f"{PROJECT_DIR}/.out/cache_sot/funet/{patient}", play_sound=False)
+    sot: SOTResult = sot_pipe.process(datadir)
+
+    pipe = Pipeline([
+        load_no_chest_data,
+        windowed(window[0], window[1]),
+        use_funet(out_path, ["1B", "2A", "2B", "2C", "2D"]),
+        fiber_beats(v2_beat_detector, out_path),
+        plot_hr(sot, out_path),
+        evaluate_v2(sot, out_path, lag_bound_s=0.0),
+    ], f"{PROJECT_DIR}/.out/{patient}/funet/cache/", play_sound=False)
+
+    pipe.process(datadir)

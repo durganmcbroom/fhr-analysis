@@ -32,7 +32,7 @@ def _figsize(n_rows: int, width: float = 8.0) -> Tuple[float, float]:
 
 
 def _current_hr_func():
-    return _inst_hr_v3
+    return _inst_hr
 
 def _inst_hr_v2(
         beats: np.ndarray,

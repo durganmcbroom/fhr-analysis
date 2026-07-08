@@ -3,7 +3,7 @@ from matplotlib import pyplot as plt
 from scipy.signal import hilbert, find_peaks
 
 from analyze.data import Audio
-from analyze.util import moving_average
+from analyze.util import moving_average, moving_average_v2
 
 
 def _shannon_energy(data):
@@ -14,7 +14,7 @@ def _shannon_energy(data):
 
 
 def _envelope(X: np.ndarray) -> np.ndarray:
-    X = moving_average(X, 100)
+    X = moving_average_v2(X, 100)
     return np.abs(hilbert(X))
 
 
@@ -34,6 +34,7 @@ def v2_beat_detector(
         out,
         energy_range=0.5,
         tag="",
+        use_floor=False
 ):
     energy = _shannon_energy(X.data)
     envelope = _envelope(energy)
@@ -47,13 +48,19 @@ def v2_beat_detector(
     # end = min(start + window_len, len(X.data))
     # data = envelope[start:end]
 
-    floor = _local_floor(envelope, floor_k=1e-20)
+    floor = _local_floor(envelope, floor_k=2)
     # floors.append((start, end, floor))
 
-    peaks, _ = find_peaks(envelope, distance=min_dist,
-                                 # prominence=floor
-                                 )
-    # peaks.extend(peak_idx + start)
+    if use_floor:
+        peaks, _ = find_peaks(envelope,
+                              distance=min_dist,
+                              prominence=floor
+                              )
+    else:
+        if use_floor:
+            peaks, _ = find_peaks(envelope,
+                                  distance=min_dist,
+                                  )
 
     normalized_peaks = []
     beats = []
@@ -87,7 +94,8 @@ def v2_beat_detector(
     normalized_peaks = np.unique(normalized_peaks)  # sorted + de-duped
 
     if out is not None:
-        _plot_stages(X.time, X.data, beats, energy, envelope, peaks, [(0, len(X.time), floor)], normalized_peaks, out, tag)
+        _plot_stages(X.time, X.data, beats, energy, envelope, peaks, [(0, len(X.time), floor)], normalized_peaks, out,
+                     tag)
 
     beat_times = X.time[normalized_peaks] if len(normalized_peaks) else np.array([], dtype=float)
 

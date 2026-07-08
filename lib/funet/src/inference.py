@@ -21,9 +21,18 @@ from data import SAMPLE_RATE
 from model import FUNet
 
 
+# Which output head each loss trains (mirrors the LOSSES table in main.py). kldiv is a
+# distribution (log_softmax); snr and corr are signal-regression (raw output).
+_LOSS_HEADS = {"kldiv": "logprob", "snr": "signal", "corr": "signal"}
+
+
 def _head_for(config: Config) -> str:
-    # Mirrors the LOSSES table in main.py: SNR uses a raw-signal head, else log-probs.
-    return "signal" if config.train.loss == "snr" else "logprob"
+    try:
+        return _LOSS_HEADS[config.train.loss]
+    except KeyError:
+        raise ValueError(
+            f"unknown loss {config.train.loss!r}; expected one of {list(_LOSS_HEADS)}"
+        ) from None
 
 
 def load_funet(config: Config, checkpoint: str, device: torch.device = None) -> FUNet:
@@ -92,22 +101,36 @@ def run_funet(
     S = S[:, :freq, :]
     total_frames = S.shape[-1]
 
-    # Process in windows the size of a training crop so GroupNorm sees a familiar extent.
+    # Process in windows the size of a training crop so GroupNorm sees the same spatial
+    # extent it trained on. Pad the time axis up to a whole number of windows first, so
+    # EVERY window is exactly `window` frames: a partial final window is out-of-
+    # distribution (fewer frames shift GroupNorm's per-sample statistics), which inflated
+    # the tail of the output. The padded frames are trimmed off at the end.
     window = max(divisor, ((config.train.crop_len * SAMPLE_RATE) // hop) // divisor * divisor)
 
-    activity = np.zeros(total_frames, dtype=np.float32)
+    pad_frames = (-total_frames) % window
+    if pad_frames:
+        # reflect so the boundary looks like signal continuing (falls back to zeros if the
+        # clip is too short to reflect that many frames).
+        mode = "reflect" if total_frames > pad_frames else "constant"
+        S = torch.nn.functional.pad(S, (0, pad_frames), mode=mode)
+    padded_frames = total_frames + pad_frames
+
+    activity = np.zeros(padded_frames, dtype=np.float32)
     S = S.to(device)
-    for start in range(0, total_frames, window):
-        chunk = S[:, :, start:start + window]
-        w = chunk.shape[-1] - chunk.shape[-1] % divisor   # last window may be short; crop to divisor
-        if w == 0:
-            break
-        chunk = chunk[:, :, :w]
-        out = model(chunk.unsqueeze(0))[0]                # (w,)
-        # logprob head -> exp to probabilities; signal head -> beats are positive peaks
-        # (the 'corr' loss enforces the sign, so no flip is needed here).
-        out = out.exp() if is_logprob else out.clamp_min(0)
-        activity[start:start + w] = out.cpu().numpy()
+    for start in range(0, padded_frames, window):
+        chunk = S[:, :, start:start + window]             # always exactly `window` frames
+        out = model(chunk.unsqueeze(0))[0]                # (window,)
+        # Both heads become a per-window softmax activity envelope: logprob already applied
+        # log_softmax in forward (exp -> softmax); the signal head (corr/snr) is affine-
+        # invariant -- corr never pins a baseline or scale -- so softmax normalizes its
+        # arbitrary offset away into a clean positive envelope. Full-size windows keep the
+        # normalization consistent across them. NOTE: inference-only; training optimizes the
+        # raw signal-head output, not this softmax.
+        out = out.exp() if is_logprob else out.softmax(dim=-1)
+        activity[start:start + window] = out.cpu().numpy()
+
+    activity = activity[:total_frames]                    # drop the padded tail
 
     # Map frame activity (frame t centred at sample t*hop of the 4kHz signal) onto the
     # native time axis so it aligns with the input waveform.

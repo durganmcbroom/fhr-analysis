@@ -5,7 +5,7 @@ from analyze.data import FiberData, load_data, windowed, use_fiber, load_no_ches
 from analyze.evaluate import evaluate, combine_evaluations, plot_evaluation
 from analyze.evaluate_v2 import evaluate_v2
 from analyze.filters import abdomen_bp, bp, notch
-from analyze.funet import run_funet_pipeline
+from analyze.funet import run_funet_pipeline, run_funet_belly_machine
 from analyze.hr import fiber_beats, sot_beats
 from analyze.hr.classify import classify_sources
 from analyze.hr.detect import v1_beat_detector
@@ -25,7 +25,7 @@ from constants import PROJECT_DIR, FETAL_ACOUSTIC_BAND_HZ, BROADBAND_FILTER_HZ, 
 # PATIENT = "fiber-horizontal"
 PATIENT = "PT13_1"
 # PATIENT = "Patient 7"
-# PATIENT = "patient8-session1"
+# PATIENT = "patient8-session2"
 # PATIENT = "session-02"
 # PATIENT = "band_durgan_1"
 # WINDOW = 50, 70
@@ -34,6 +34,7 @@ WINDOW = 180, 200
 # WINDOW = 0, 40
 # WINDOW = 0, 20
 DATA_DIR = f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/{PATIENT}"
+
 
 def ica():
     out = f"{PROJECT_DIR}.out/{PATIENT}/ica"
@@ -107,6 +108,7 @@ def run_mlcmed_pipeline():
     print("---- Overall ----")
     print(f"Correct: {evaluation.fetal.n_correct / evaluation.fetal.n_ref:.1%}")
 
+
 def run_nmcf_pipeline():
     out = f"{PROJECT_DIR}.out/{PATIENT}/scbss_2015"
     Path(out).mkdir(parents=True, exist_ok=True)
@@ -131,6 +133,7 @@ def run_nmcf_pipeline():
     ], f"{out}/cache")
 
     ica_pipe.process(DATA_DIR)
+
 
 def run_mnmf_pipeline():
     out = f"{PROJECT_DIR}.out/{PATIENT}/mnmf"
@@ -184,6 +187,7 @@ def run_raw_bandpass():
 
     band_pipe.process(DATA_DIR)
 
+
 def run_raw_bandpass_no_sot():
     out = f"{PROJECT_DIR}.out/{PATIENT}/raw_bandpass_190_220"
     Path(out).mkdir(parents=True, exist_ok=True)
@@ -211,42 +215,39 @@ def run_raw_bandpass_no_sot():
 # Try larger NST (SOT) window so that if lag is large, you can adjust into open space
 # ^^ Use step/sigmoid for scoring > better xcorr
 if __name__ == '__main__':
-    # run_neossnet_pipeline(
-    #     PATIENT,
-    #     WINDOW,
-    #     DATA_DIR
-    # )
-
-    run_neossnet_on_nst(
-        f"belly_machine (CONTROL)",
-        (30, 90),
-        f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/PT12_2"
+    run_funet_pipeline(
+        PATIENT,
+        WINDOW,
+        DATA_DIR,
     )
+    run_neossnet_pipeline(
+        PATIENT,
+        WINDOW,
+        DATA_DIR,
+    )
+    # run_funet_belly_machine(
+    #     "belly_machine_2_3",
+    #     (30, 60),
+    #     f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/belly_machine_2_3"
+    # )
+    # run_neossnet_on_nst(
+    #     f"belly_machine (CONTROL)",
+    #     (30, 90),
+    #     f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/PT12_2"
+    # )
 
-    # run_neossnet_belly_machine(
-    #     "belly_machine_9",
-    #     (0, 20),
-    #     f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/belly_machine_9"
-    # )
-    # run_neossnet_belly_machine(
-    #     "belly_machine_10",
-    #     (0, 20),
-    #     f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/belly_machine_10"
-    # )
-    for i in range(0, 6):
-        run_neossnet_belly_machine(
-            f"belly_machine_3_{i + 1}",
-            (30, 90),
-            f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/belly_machine_3_{i + 1}"
-        )
+    # for i in range(0, 6):
+    #     run_neossnet_belly_machine(
+    #         f"belly_machine_3_{i + 1}",
+    #         (30, 90),
+    #         f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/belly_machine_3_{i + 1}"
+    #     )
 
     # run_neossnet_belly_machine(
     #     "belly_machine_2_3",
     #     (30, 60),
     #     f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/belly_machine_2_3"
     # )
-
-
 
     # run_funet_pipeline(
     #     patient=PATIENT,
@@ -261,4 +262,3 @@ if __name__ == '__main__':
     # )
 
     # run_raw_bandpass_no_sot()
-

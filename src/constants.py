@@ -20,7 +20,7 @@ NEOSSNET_MODEL_CFG = os.path.join(PROJECT_DIR, "lib/neossnet/models/model.yaml")
 
 # FUNet beat-activity model (lib/funet)
 FUNET_CONFIG = os.path.join(PROJECT_DIR, "lib/funet/fetal-config.yaml")
-FUNET_MODEL_PATH = os.path.join(PROJECT_DIR, "lib/funet/models/funet-v2/model_best.pt")
+FUNET_MODEL_PATH = os.path.join(PROJECT_DIR, "lib/funet/models/funet-v4/model_best.pt")
 
 FIBER_BUNDLE_A = "ps4000.npy"   # chest device bundle
 FIBER_BUNDLE_B = "ps3000a.npy"  # abdomen device bundle
@@ -43,4 +43,4 @@ BROADBAND_FILTER_HZ = (20.0, 250.0)             # initial wideband filter before
 POWERLINE_NOTCH_HZ = 50                         # mains hum notch frequency
 
 MATERNAL_BPM_RANGE = (45.0, 140.0)
-FETAL_BPM_RANGE = (110.0, 180.0)
+FETAL_BPM_RANGE = (90.0, 210.0)

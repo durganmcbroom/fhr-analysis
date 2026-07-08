@@ -53,6 +53,7 @@ import yaml
 from scipy.io import wavfile
 from scipy.signal import detrend, resample_poly
 
+
 matplotlib.use("Agg")
 from matplotlib import pyplot as plt
 from matplotlib.transforms import blended_transform_factory
@@ -63,8 +64,11 @@ sys.path.insert(0, str(SRC_DIR))
 MODEL_DIR = Path(__file__).resolve().parent.parent.parent / "lib" / "neossnet"
 sys.path.insert(0, str(MODEL_DIR))
 
+from analyze.hr.detect import v1_beat_detector
 from analyze.hr.detect_v2 import v2_beat_detector
 from analyze.sot import _robust_clip, _moving_avg
+from analyze.hr.detect_v5 import v5_beat_detector
+from analyze.hr.detect_v6 import v6_beat_detector
 
 from analyze.anc import nlms_filter
 from analyze.filters import bp_filter
@@ -480,16 +484,20 @@ def require_split_mode(name, dir_spec):
     return mode
 
 
-def detect_fetal_with_bp(raw_audio):
+def fetal_detector(out, idx):
     # Match load_sot's detection signal: detrend + robust-clip before peak finding.
-    prepared = _robust_clip(detrend(raw_audio.data))
-    return v2_beat_detector(
-        Audio(raw_audio.time, raw_audio.hz, prepared),
-        FETAL_BPM_RANGE,
-        None,
-        tag="fetal"
-    )
-    # return detect_mic_fetal_beats(Audio(raw_audio.time, raw_audio.hz, prepared))
+    # v6 is period-locked (one heart sound per cardiac cycle), so the SOT labels
+    # don't flip between S1 and S2 the way v2/v5's tallest-lobe picking does;
+    # see analyze/hr/detect_v6.py.
+    def det(raw_audio):
+        prepared = _robust_clip(detrend(raw_audio.data))
+        return v6_beat_detector(
+            Audio(raw_audio.time, raw_audio.hz, prepared),
+            FETAL_BPM_RANGE,
+            out,
+            tag=f"{idx}_detections",
+        )
+    return det
 
 
 def main() -> None:
@@ -573,9 +581,9 @@ def main() -> None:
                 # Fetal input is the abdomen fibers; maternal is the chest bundle.
                 named_fibers = [(name, window_audio(fibers.abdomen[name], window_start, window_end))
                                 for name in fiber_names]
-                chest = window_audio(fibers.chest, window_start, window_end)
+                # chest = window_audio(fibers.chest, window_start, window_end)
                 mic_window = window_audio(mic, window_start, window_end)
-                ppg_window = window_audio(ppg, window_start, window_end)
+                # ppg_window = window_audio(ppg, window_start, window_end)
 
                 for group in fiber_groups(named_fibers, mode):
                     idx = idxs[split]
@@ -584,7 +592,7 @@ def main() -> None:
                     group_fibers = [fiber for _, fiber in group]
 
                     fetal_ok = write_snippet(
-                        fetal_dir, idx, detect_fetal_with_bp, group_fibers, mic_window, FETAL_ACOUSTIC_BAND_HZ,
+                        fetal_dir, idx, fetal_detector(fetal_dir, idx), group_fibers, mic_window, FETAL_ACOUSTIC_BAND_HZ,
                         warp=time_warp_enabled,
                         gaussian_impulses=gaussian_impulses_enabled,
                         k=warp_strength,
