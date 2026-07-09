@@ -1,8 +1,8 @@
 model:
   channels: 5
-  dilations: [1, 2, 2, 4]
+  dilations: [1, 1, 2, 4]
   bottleneck_dilation: 1
-  base_channels: 24
+  base_channels: 16
 
 train:
   optimizer: 'AdamW'   # SGD, Adam, AdamW
@@ -21,4 +21,4 @@ data:
   hop_length: 256
   augment: ['channel_dropout', 'gain', 'noise']
 
-model_dir: 'models/funet-v8/'
+model_dir: 'models/funet-v7/'
