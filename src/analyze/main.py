@@ -235,12 +235,19 @@ if __name__ == '__main__':
     #     (30, 90),
     #     f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/PT12_2"
     # )
-
+    #
     # for i in range(0, 6):
     #     run_neossnet_belly_machine(
     #         f"belly_machine_3_{i + 1}",
     #         (30, 90),
     #         f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/belly_machine_3_{i + 1}"
+    #     )
+
+    # for i in range(0, 4):
+    #     run_neossnet_belly_machine(
+    #         f"July9_{i + 1}",
+    #         (30, 90),
+    #         f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/July9_{i + 1}"
     #     )
 
     # run_neossnet_belly_machine(

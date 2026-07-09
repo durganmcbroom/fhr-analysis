@@ -32,7 +32,7 @@ def _figsize(n_rows: int, width: float = 8.0) -> Tuple[float, float]:
 
 
 def _current_hr_func():
-    return _inst_hr
+    return _inst_hr_v3
 
 def _inst_hr_v2(
         beats: np.ndarray,
@@ -80,28 +80,39 @@ def _inst_hr(
     bpm = uniform_filter1d(bpm, size=min(5, bpm.size), mode='nearest')
     return beats[1:], bpm
 
+# def _inst_hr_v3(
+#         beats: np.ndarray,
+#         band: Tuple[float, float],
+# ) -> Tuple[np.ndarray, np.ndarray]:
+#     beats = np.sort(beats)
+#     window_len = 5.0
+#     half = window_len / 2
+#
+#     left = np.searchsorted(beats, beats - half, side="left")
+#     right = np.searchsorted(beats, beats + half, side="right")
+#     counts = right - left
+#
+#     bpm = counts / window_len * 60.0          # one value per beat
+#
+#     keep = (bpm >= band[0]) & (bpm <= band[1])
+#     bpm, beats = bpm[keep], beats[keep]
+#
+#     bpm = moving_average_v2(bpm, 10)          # 10-beat window, same length as beats
+#
+#     return beats, bpm
+
 def _inst_hr_v3(
-            beats: np.ndarray,
-            band: Tuple[float, float],
+        beats: np.ndarray,
+        band: Tuple[float, float],
 ) -> Tuple[np.ndarray, np.ndarray]:
-    window_len = 5
-    step = 1
-    ret = []
-    max = round(beats.max())
-    for start_s in range(0, max, step):
-        end_s = min(start_s + window_len, max)
+    window_len = 5.0
+    edges = np.arange(0, beats.max() + window_len, window_len)
+    counts, _ = np.histogram(beats, bins=edges)
 
-        window = (beats > start_s) & (beats < end_s)
-        num = np.count_nonzero(window)
+    bpm = counts / window_len * 60.0
+    t = edges[:-1] + window_len / 2
 
-        bpm_in_range = (num / window_len) * 60
-
-        tight_window = (beats > start_s) & (beats < min(start_s + step, max))
-        tight_num = np.count_nonzero(tight_window)
-        ret.extend([bpm_in_range] * tight_num)
-
-    return beats, np.array(ret)
-
+    return t, bpm
 
 def _hr_ylim(traces, band: Tuple[float, float], pad: float = 0.1):
     """Robust y-limits from the values that fall inside a plausible HR band,
