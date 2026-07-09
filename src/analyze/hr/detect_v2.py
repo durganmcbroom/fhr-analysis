@@ -57,10 +57,9 @@ def v2_beat_detector(
                               prominence=floor
                               )
     else:
-        if use_floor:
-            peaks, _ = find_peaks(envelope,
-                                  distance=min_dist,
-                                  )
+        peaks, _ = find_peaks(envelope,
+                              distance=min_dist,
+                              )
 
     normalized_peaks = []
     beats = []

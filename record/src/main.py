@@ -4,15 +4,15 @@ from threading import Thread
 from bleak import BleakClient, BleakScanner
 import numpy as np
 from bitstring import BitArray
-from PyQt5.QtWidgets import QApplication, QMainWindow
+from PyQt5.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QPushButton, QComboBox, QLabel, QFileDialog, QDoubleSpinBox
+)
 from PyQt5.QtCore import pyqtSignal, QObject
 from qasync import QEventLoop, asyncClose
 import pyqtgraph as pg
-import pyaudio
 import time
-import sys
 import ctypes
-import wave
 import threading
 import os
 from picosdk.ps3000a import ps3000a
@@ -160,45 +160,6 @@ class PolarVeritySense:
         )
 
 
-class Microphone:
-    FORMAT = pyaudio.paInt16
-    CHANNELS = 1 if sys.platform == 'darwin' else 2
-    RATE = 8000
-    MAX_EMIT_LEN = DISPLAY_TIME * RATE
-
-    def __init__(self, signal, session_dir):
-        self.signal = signal
-
-        self.p = pyaudio.PyAudio()
-        self.wf = wave.open(session_dir + '/microphone.wav', 'wb')
-        self.wf.setnchannels(Microphone.CHANNELS)
-        self.wf.setsampwidth(self.p.get_sample_size(Microphone.FORMAT))
-        self.wf.setframerate(Microphone.RATE)
-
-        self.total_frames = 0
-        self.t = []
-        self.frames = []
-
-        self.stream = self.p.open(format=Microphone.FORMAT, channels=Microphone.CHANNELS, rate=Microphone.RATE, input=True, stream_callback=self.callback)
-        self.start_time = time.time()
-
-    def callback(self, in_data, frame_count, time_info, status):
-        self.frames = np.concatenate((self.frames, np.frombuffer(in_data, dtype=np.int16)))[-Microphone.MAX_EMIT_LEN:]
-        self.total_frames += frame_count
-
-        self.t = np.linspace((self.total_frames - len(self.frames)) / Microphone.RATE, self.total_frames / Microphone.RATE, num=len(self.frames), endpoint=False)
-
-        self.signal.data.emit(np.stack((self.t, self.frames), axis=1))
-
-        self.wf.writeframes(in_data)
-        return (in_data, pyaudio.paContinue)
-    
-    def close(self):
-        self.stream.close()
-        self.p.terminate() 
-        self.wf.close()
-
-
 class PicoScope:
     channel_range = 8  # 10MV, 20MV, 50MV, 100MV, 200MV, 500MV, 1V, 2V, 5V, 10V, 20V, 50V
     v_range = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200][channel_range]
@@ -223,6 +184,9 @@ class PicoScope:
         self.status = {}
 
         self.kill = False
+        self.opened = threading.Event()  # unit is open and configured
+        self.go = threading.Event()      # released to start streaming
+        self.ready = threading.Event()   # streaming has begun
 
     def open(self):
         if self.ps == ps3000a:
@@ -322,6 +286,12 @@ class PicoScope:
             )
             assert_pico_ok(self.status["setDataBuffersB"])
     
+    def close_unit(self):
+        if self.ps == ps3000a:
+            self.ps.ps3000aCloseUnit(self.chandle)
+        else:
+            self.ps.ps4000CloseUnit(self.chandle)
+
     def streaming_callback(self, handle, noOfSamples, startIndex, overflow, triggerAt, triggered, autoStop, param):
         self.wasCalledBack = True
         destEnd = self.nextSample + noOfSamples
@@ -370,6 +340,7 @@ class PicoScope:
         self.t = time.time() - self.global_start_time + np.linspace(0, (PicoScope.totalSamples - 1) * PicoScope.actualSampleInterval, num=PicoScope.totalSamples)
         self.save_t = 0
         self.save_index = 0
+        self.ready.set()
 
         self.bufferCompleteA = np.zeros(shape=PicoScope.totalSamples)
         self.bufferCompleteB = np.zeros(shape=PicoScope.totalSamples)
@@ -439,6 +410,49 @@ class PicoScope:
             np.save(self.session_dir + "/" + self.ps.name, np.stack((self.t, self.bufferCompleteA, self.bufferCompleteB), axis=1), allow_pickle=False)
 
 
+class SoundPlayer:
+    BLOCKSIZE = 1024  # ~128 ms latency at 8 kHz; raise if playback glitches
+
+    def __init__(self, path, device, volume_db):
+        self.fs, arr = wav_read(path)
+        arr = arr.astype(float)
+        if arr.ndim > 1:
+            arr = arr[:, 0]
+        self.arr = arr / np.max(np.abs(arr))
+
+        self.device = device
+        self.volume = 10 ** (volume_db / 20)
+        self.idx = 0
+        self.stream = None
+
+    def set_volume_db(self, volume_db):
+        self.volume = 10 ** (volume_db / 20)
+
+    def open(self):
+        self.stream = sd.OutputStream(
+            device=self.device, channels=1, samplerate=self.fs,
+            callback=self.callback, blocksize=SoundPlayer.BLOCKSIZE
+        )
+
+    def play(self):
+        self.stream.start()
+        print("Playing sound on device", self.device, "at", self.fs, "Hz")
+
+    def callback(self, outdata, frames, time_info, status):
+        chunk = self.arr[self.idx:self.idx + frames] * self.volume
+        outdata[:len(chunk), 0] = chunk
+        if len(chunk) < frames:
+            outdata[len(chunk):] = 0
+            raise sd.CallbackStop
+        self.idx += frames
+
+    def close(self):
+        if self.stream is not None:
+            self.stream.stop()
+            self.stream.close()
+            self.stream = None
+
+
 class Signal(QObject):
     data = pyqtSignal(object)
 
@@ -449,22 +463,76 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         self.pvs = None
-        self.microphone = None
         self.ps4000 = None
         self.ps3000a = None
 
+        self.sound_file = None
+        self.sound_player = None
+        self.pico_threads = []
+
+        self.running = False
+        self.run_id = 0
+
+        central = QWidget()
+        layout = QVBoxLayout(central)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.setCentralWidget(central)
+
+        controls = QHBoxLayout()
+        controls.setContentsMargins(8, 8, 8, 0)
+
+        self.sound_file_button = QPushButton("Choose Sound File...")
+        self.sound_file_button.clicked.connect(self.choose_sound_file)
+        controls.addWidget(self.sound_file_button)
+
+        self.sound_file_label = QLabel("No sound file selected")
+        controls.addWidget(self.sound_file_label)
+
+        controls.addStretch()
+
+        controls.addWidget(QLabel("Playback device:"))
+        self.device_combo = QComboBox()
+        for i, d in enumerate(sd.query_devices()):
+            if d['max_output_channels'] > 0:
+                self.device_combo.addItem(f"{i}: {d['name']} ({d['max_output_channels']} out)", i)
+        default_output = sd.default.device[1]
+        default_index = self.device_combo.findData(default_output)
+        if default_index != -1:
+            self.device_combo.setCurrentIndex(default_index)
+        controls.addWidget(self.device_combo)
+
+        controls.addWidget(QLabel("Volume:"))
+        self.volume_spinbox = QDoubleSpinBox()
+        self.volume_spinbox.setRange(-80.0, 0.0)
+        self.volume_spinbox.setDecimals(1)
+        self.volume_spinbox.setSingleStep(0.5)
+        self.volume_spinbox.setValue(-44.4)
+        self.volume_spinbox.setSuffix(" dB")
+        self.volume_spinbox.valueChanged.connect(self.change_volume)
+        controls.addWidget(self.volume_spinbox)
+
+        self.start_button = QPushButton("Start")
+        self.start_button.clicked.connect(lambda: asyncio.ensure_future(self.start()))
+        controls.addWidget(self.start_button)
+
+        self.stop_button = QPushButton("Stop")
+        self.stop_button.setEnabled(False)
+        self.stop_button.clicked.connect(lambda: asyncio.ensure_future(self.stop()))
+        controls.addWidget(self.stop_button)
+
+        layout.addLayout(controls)
+
         self.graphWidget = pg.GraphicsLayoutWidget()
-        self.setCentralWidget(self.graphWidget)
+        layout.addWidget(self.graphWidget)
 
         self.plots = {
             "PPG0": self.graphWidget.addPlot(row=0, col=0),
-            "Microphone": self.graphWidget.addPlot(row=1, col=0),
-            "1A": self.graphWidget.addPlot(row=2, col=0),
-            "1B": self.graphWidget.addPlot(row=3, col=0),
-            "2A": self.graphWidget.addPlot(row=4, col=0),
-            "2B": self.graphWidget.addPlot(row=5, col=0),
-            "2C": self.graphWidget.addPlot(row=6, col=0),
-            "2D": self.graphWidget.addPlot(row=7, col=0)
+            "1A": self.graphWidget.addPlot(row=1, col=0),
+            "1B": self.graphWidget.addPlot(row=2, col=0),
+            "2A": self.graphWidget.addPlot(row=3, col=0),
+            "2B": self.graphWidget.addPlot(row=4, col=0),
+            "2C": self.graphWidget.addPlot(row=5, col=0),
+            "2D": self.graphWidget.addPlot(row=6, col=0)
         }
 
         self.curves = {}
@@ -472,8 +540,8 @@ class MainWindow(QMainWindow):
             plot.setLabel("left", name)
             plot.setMouseEnabled(x=False, y=False)
 
-            if name != "Microphone":
-                plot.setXLink(self.plots["Microphone"])
+            if name != "2A":
+                plot.setXLink(self.plots["2A"])
 
             if name[0] == "1":
                 self.curves[name] = plot.plot([], [], pen=(225, 109, 103))
@@ -485,7 +553,20 @@ class MainWindow(QMainWindow):
             if name != "PPG0":
                 self.curves[name].setDownsampling(ds=50, method='peak')
         
+    def choose_sound_file(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Choose Sound File", "", "WAV files (*.wav);;All files (*)")
+        if path:
+            self.sound_file = path
+            self.sound_file_label.setText(os.path.basename(path))
+
     async def start(self):
+        self.start_button.setEnabled(False)
+        self.sound_file_button.setEnabled(False)
+        self.device_combo.setEnabled(False)
+        self.running = True
+        self.run_id += 1
+        run_id = self.run_id
+
         i = 1
         while True:
             session_dir = f"session-{i:02d}"
@@ -495,22 +576,14 @@ class MainWindow(QMainWindow):
                 break
             i += 1
 
-        microphone_signal = Signal()
-        microphone_signal.data.connect(self.update_microphone_graph)
-        self.microphone = Microphone(microphone_signal, session_dir)
-        global_start_time = self.microphone.start_time
+        # open the output stream up front so playback can begin the instant
+        # the scopes are streaming
+        if self.sound_file is not None:
+            self.sound_player = SoundPlayer(self.sound_file, self.device_combo.currentData(), self.volume_spinbox.value())
+            self.sound_player.open()
 
-        device = await BleakScanner.find_device_by_name("Polar Sense DE957E2E", timeout=3)
-        if device is None:
-            print("Polar Sense DE957E2E not found")
-        else:
-            pvs_signal = Signal()
-            pvs_signal.data.connect(self.update_pvs_graph)
-            self.pvs = PolarVeritySense(device, pvs_signal, global_start_time, session_dir)
-            await self.pvs.connect()
-            print("Battery:", await self.pvs.get_battery_level())
-            await self.pvs.start_ppg_stream()
-        
+        global_start_time = time.time()
+
         ps4000_signal = Signal()
         ps4000_signal.data.connect(self.update_ps4000_graph)
         # self.ps4000 = PicoScope(ps4000, ps4000_signal, global_start_time, session_dir)
@@ -519,44 +592,122 @@ class MainWindow(QMainWindow):
         ps3000a_signal.data.connect(self.update_ps3000a_graph)
         self.ps3000a = PicoScope(ps3000a, ps3000a_signal, global_start_time, session_dir)
 
-        t1 = threading.Thread(target=self.run_ps4000)
-        t1.start()
-        
-        t2 = threading.Thread(target=self.run_ps3000a)
-        t2.start()
-    
-    def run_ps4000(self):
-        try:
-            self.ps4000.open()
-            self.ps4000.run()
-        except Exception as e:
-            print("ps4000 failed: ", e)
-    
-    def run_ps3000a(self):
-        try:
-            self.ps3000a.open()
-            self.ps3000a.run()
-        except Exception as e:
-            print("ps3000a failed: ", e)
-    
-    @asyncClose
-    async def closeEvent(self, event):
+        scopes = []
+        for scope in (self.ps4000, self.ps3000a):
+            if scope is not None:
+                thread = threading.Thread(target=self.run_scope, args=(scope,))
+                thread.start()
+                scopes.append((scope, thread))
+        self.pico_threads = [thread for _, thread in scopes]
+
+        self.stop_button.setEnabled(True)
+
+        # wait for every scope to finish opening (usually a few seconds); a
+        # scope that fails to open is skipped so the others can run without it
+        for scope, thread in scopes:
+            while thread.is_alive() and not scope.opened.is_set():
+                if not self.running or self.run_id != run_id:
+                    return
+                await asyncio.sleep(0.05)
+
+        # release all open scopes at once so they start streaming together
+        for scope, _ in scopes:
+            if scope.opened.is_set():
+                scope.go.set()
+
+        # wait until they are actually streaming before starting playback
+        for scope, thread in scopes:
+            if not scope.opened.is_set():
+                continue
+            while thread.is_alive() and not scope.ready.is_set():
+                if not self.running or self.run_id != run_id:
+                    return
+                await asyncio.sleep(0.05)
+            if not scope.ready.is_set():
+                print(scope.ps.name + " never started streaming")
+
+        if not self.running or self.run_id != run_id:
+            return
+
+        if self.sound_player is not None:
+            self.sound_player.play()
+
+        device = await BleakScanner.find_device_by_name("Polar Sense DE957E2E", timeout=3)
+        if device is None:
+            print("Polar Sense DE957E2E not found")
+        elif self.running and self.run_id == run_id:
+            pvs_signal = Signal()
+            pvs_signal.data.connect(self.update_pvs_graph)
+            pvs = PolarVeritySense(device, pvs_signal, global_start_time, session_dir)
+            await pvs.connect()
+            print("Battery:", await pvs.get_battery_level())
+            await pvs.start_ppg_stream()
+            if self.running and self.run_id == run_id:
+                self.pvs = pvs
+            else:
+                # stopped while the sensor was connecting; shut it back down
+                await pvs.stop_ppg_stream()
+                await pvs.disconnect()
+
+    async def stop(self):
+        self.running = False
+        self.stop_button.setEnabled(False)
+
+        if self.sound_player is not None:
+            self.sound_player.close()
+            self.sound_player = None
+
         if self.pvs is not None:
             await self.pvs.stop_ppg_stream()
             await self.pvs.disconnect()
-        if self.microphone is not None:
-            self.microphone.close()
+            self.pvs = None
+
         if self.ps4000 is not None:
             self.ps4000.kill = True
         if self.ps3000a is not None:
             self.ps3000a.kill = True
+        for t in self.pico_threads:
+            await asyncio.get_event_loop().run_in_executor(None, t.join)
+        self.pico_threads = []
+        self.ps4000 = None
+        self.ps3000a = None
+
+        self.start_button.setEnabled(True)
+        self.sound_file_button.setEnabled(True)
+        self.device_combo.setEnabled(True)
+
+    def change_volume(self, volume_db):
+        if self.sound_player is not None:
+            self.sound_player.set_volume_db(volume_db)
+
+    def run_scope(self, scope):
+        name = scope.ps.name
+        try:
+            scope.open()
+        except Exception as e:
+            print(name + " failed to open: ", e)
+            return
+        scope.opened.set()
+
+        # rendezvous: hold here until every open scope is released together
+        while not scope.go.is_set() and not scope.kill:
+            time.sleep(0.01)
+        if scope.kill:
+            scope.close_unit()
+            return
+
+        try:
+            scope.run()
+        except Exception as e:
+            print(name + " failed: ", e)
+    
+    @asyncClose
+    async def closeEvent(self, event):
+        await self.stop()
     
     def update_pvs_graph(self, data):
         self.curves["PPG0"].setData(data[:, 0], data[:, 1])
 
-    def update_microphone_graph(self, data):
-        self.curves["Microphone"].setData(data[:, 0], data[:, 1])
-    
     def update_ps4000_graph(self, data):
         self.curves["1A"].setData(data[:, 0], data[:, 1])
         self.curves["1B"].setData(data[:, 0], data[:, 2])
@@ -567,8 +718,6 @@ class MainWindow(QMainWindow):
         self.curves["2C"].setData(data[:, 0], data[:, 3])
         self.curves["2D"].setData(data[:, 0], data[:, 4])
 
-playback_idx = 0
-
 if __name__ == "__main__":
     app = QApplication([])
 
@@ -577,44 +726,9 @@ if __name__ == "__main__":
 
     app_close_event = asyncio.Event()
     app.aboutToQuit.connect(app_close_event.set)
-    
+
     main_window = MainWindow()
     main_window.show()
-
-    event_loop.create_task(main_window.start())
-
-    def do_sound():
-        devices = sd.query_devices()
-        for i, d in enumerate(devices):
-            if d['max_output_channels'] > 0:
-                print(f"{i}: {d['name']} ({d['max_output_channels']} out)")
-
-        mic_fs, mic_arr = wav_read("../../Banner_data/patient8-session1/microphone.wav")
-        mic_arr = mic_arr.astype(float)
-        mic_arr = mic_arr / np.max(mic_arr)
-
-        volume_db = -44.4
-        volume = 10 ** (volume_db / 20)
-        mic_arr = mic_arr * volume
-
-        def callback(outdata, frames, time, status):
-            global playback_idx
-            chunk = mic_arr[playback_idx:playback_idx + frames]
-            outdata[:len(chunk), 0] = chunk
-            if len(chunk) < frames:
-                outdata[len(chunk):] = 0
-                raise sd.CallbackStop
-            playback_idx += frames
-
-        stream = sd.OutputStream(channels=1, samplerate=mic_fs,
-                                 callback=callback, blocksize=4096)  # generous buffer
-        stream.start()
-
-        print(mic_fs)
-        # sd.play(mic_arr * volume, mic_fs, device=devices[3]["name"])
-        # sd.wait()
-
-    do_sound()
 
     event_loop.run_until_complete(app_close_event.wait())
 

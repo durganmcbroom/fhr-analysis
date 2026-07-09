@@ -2,8 +2,8 @@
 model:
   channels: 5   # mix is mono in the tune-ssnet snippet format
   dilations: [1, 1, 2, 4]
-  bottleneck_dilation: 1
-  base_channels: 16
+  bottleneck_dilation: 2
+  base_channels: 24
 
 # training (see train() in src/train.py)
 train:
@@ -24,5 +24,5 @@ data:
   hop_length: 256
   augment: ['channel_dropout', 'gain', 'noise']   # train-only; remove names to disable
 
-model_dir: 'models/funet-v6/'
+model_dir: 'models/funet-v5/'
 #resume: 'models/funet-v1/model_best.pt'
