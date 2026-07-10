@@ -19,7 +19,7 @@ from scipy.signal import find_peaks
 from analyze.data import Audio, FiberData, load_data, windowed, FiberPair, load_no_chest_data_FULL
 from analyze.evaluate_v2 import evaluate_v2
 from analyze.filters import abdomen_bp
-from analyze.hr import sot_beats, fiber_beats
+from analyze.hr import sot_beats, fiber_beats, phase_continuity
 from analyze.hr.detect_v2 import v2_beat_detector
 from analyze.hr.detect_v5 import v5_beat_detector
 from analyze.hr.detect_v8 import v8_beat_detector
@@ -192,6 +192,7 @@ def run_funet_belly_machine(
         windowed(window[0], window[1]),
         use_funet(out_path, ["1A", "1B", "2A", "2B", "2C"]),
         fiber_beats(v8_beat_detector, out_path),
+        phase_continuity(out_path),   # stitch S1<->S2 phase slips so HR doesn't lag/spike
         plot_hr(sot, out_path),
         evaluate_v2(sot, out_path, lag_bound_s=0.0),
     ], f"{PROJECT_DIR}/.out/{patient}/funet/cache/", play_sound=False)

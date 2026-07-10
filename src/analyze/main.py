@@ -214,6 +214,12 @@ def run_raw_bandpass_no_sot():
 
 # Try larger NST (SOT) window so that if lag is large, you can adjust into open space
 # ^^ Use step/sigmoid for scoring > better xcorr
+
+# To Try for models:
+# - larger window size for ssnet
+# - no energy snapping
+# - mark both s1 / s2 on impulses
+
 if __name__ == '__main__':
     # run_funet_pipeline(
     #     PATIENT,

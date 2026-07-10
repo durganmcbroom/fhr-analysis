@@ -285,6 +285,7 @@ def heart_target(
         band,
         impulse_mode: str = "gate",
         gate_width_ibi_fraction: float = WINDOW_IBI_FRACTION,
+        snap_to_energy: bool = True,
 ):
     # Single-channel clean heartbeat, centered on the reference fiber's own beats.
     evaluation = beat_evaluator(sot)
@@ -302,8 +303,12 @@ def heart_target(
     filtered = bp_filter(Audio(t, sample_rate, reference_fiber), band[0], band[1], filter_type="butter").data
 
     centers = beat_centers(beat_times, t[0], sample_rate)
-    centers = snap_centers_to_energy(fiber_energy(filtered, sample_rate),
-                                     centers, int(round(SNAP_TOLERANCE_S * sample_rate)))
+    if snap_to_energy:
+        # Nudge each detected beat to the reference fiber's nearby energy peak. This can
+        # shift the label off the acoustic onset toward the loudest lobe; toggle off to
+        # keep the detector's own timing.
+        centers = snap_centers_to_energy(fiber_energy(filtered, sample_rate),
+                                         centers, int(round(SNAP_TOLERANCE_S * sample_rate)))
     if impulse_mode == "gaussian":
         heart = np.zeros_like(reference_fiber)
         sigma = half_width / 4  # tight: pulse is essentially decayed to 0 by the window edge
@@ -414,7 +419,7 @@ def time_warp(
 
 
 def write_snippet(out_dir, idx, beat_evaluator, fibers, sot, band, impulse_mode="gate", warp=False, k=12, pad=300,
-                  gate_width_ibi_fraction=WINDOW_IBI_FRACTION):
+                  gate_width_ibi_fraction=WINDOW_IBI_FRACTION, snap_to_energy=True):
     # One mix (mono or multi-channel) plus its single-channel heart/lung/noise targets, with a plot.
     # `warp` randomly stretches/compresses the gaps between beats (k = max stretch factor,
     # pad = samples kept untouched around each beat); `gate_width_ibi_fraction` sets the
@@ -424,7 +429,7 @@ def write_snippet(out_dir, idx, beat_evaluator, fibers, sot, band, impulse_mode=
 
     try:
         heart, beat_times, half_width = heart_target(beat_evaluator, mix, t, sot, band, impulse_mode,
-                                                     gate_width_ibi_fraction)
+                                                     gate_width_ibi_fraction, snap_to_energy)
     except NoBeatException as error:
         warning(f"skipping snippet {idx}: {error}")
         return False
@@ -537,6 +542,7 @@ def main() -> None:
     warp_pad = cfg.get("warp_pad", 300)           # samples kept untouched around each beat
     # Heartbeat gate half-width = this fraction of the mean IBI (bigger => wider gate).
     gate_width_ibi_fraction = cfg.get("gate_width_ibi_fraction", WINDOW_IBI_FRACTION)
+    snap_to_energy = cfg.get("snap_to_energy", True)  # snap beat labels to the fiber energy peak
 
     spec: dict[str, dict] = cfg["data"]
 
@@ -606,6 +612,7 @@ def main() -> None:
                         k=warp_strength,
                         pad=warp_pad,
                         gate_width_ibi_fraction=gate_width_ibi_fraction,
+                        snap_to_energy=snap_to_energy,
                     )
 
                     if fetal_ok:

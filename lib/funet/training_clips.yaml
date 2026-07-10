@@ -5,6 +5,7 @@ mode: "stereo"
 warp: False
 
 impulse_mode: "gaussian" # 'gaussian' or 'gate'
+snap_to_energy: false # snap beat labels to the nearby fiber energy peak (false = keep detector timing)
 
 data:
   "Patient 6":

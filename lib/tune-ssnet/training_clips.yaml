@@ -4,6 +4,7 @@ ppg_col: 1 # defaults to 0 if I don't declare
 mode: "mono"
 
 impulse_mode: "gate" # 'gaussian' or 'gate'
+snap_to_energy: false # snap beat labels to the nearby fiber energy peak (false = keep detector timing)
 time_warp: False # randomly stretch/compress the gaps between beats (random intervals); False = off
 warp_strength: 12 # max random stretch factor for inter-beat gaps (only used when time_warp: True)
 warp_pad: 300 # samples left untouched around each beat before a gap is warped (only when time_warp: True)
