@@ -225,26 +225,27 @@ if __name__ == '__main__':
     #     WINDOW,
     #     DATA_DIR,
     # )
+    w = (30, 60)
     run_funet_belly_machine(
         "5ch_belly_machine_1",
-        (0, 180),
+        w,
         f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/5ch_belly_machine_1"
     )
-    run_funet_belly_machine(
-        "5ch_belly_machine_2",
-        (0, 180),
-        f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/5ch_belly_machine_2"
-    )
+    # run_funet_belly_machine(
+    #     "5ch_belly_machine_2",
+    #     w,
+    #     f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/5ch_belly_machine_2"
+    # )
     run_neossnet_belly_machine(
         f"5ch_belly_machine_1",
-        (0, 180),
+        w,
         f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/5ch_belly_machine_1"
     )
-    run_neossnet_belly_machine(
-        f"5ch_belly_machine_2",
-        (0, 180),
-        f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/5ch_belly_machine_2"
-    )
+    # run_neossnet_belly_machine(
+    #     f"5ch_belly_machine_2",
+    #     w,
+    #     f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/5ch_belly_machine_2"
+    # )
     # run_funet_belly_machine(
     #     "belly_machine_2_3",
     #     (30, 60),

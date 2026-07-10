@@ -10,6 +10,7 @@ from analyze.filters import abdomen_bp
 from analyze.hr import sot_beats, fiber_beats, multi_fiber_beats
 from analyze.hr.detect_v2 import v2_beat_detector
 from analyze.hr.detect_v5 import v5_beat_detector
+from analyze.hr.detect_v8 import v8_beat_detector
 from analyze.pipeline import Pipeline
 from analyze.plot_hr import plot_hr, plot_multi_hr, plot_peaks
 from analyze.sot import load_sot, SOTData, SOTResult, load_sot_no_ppg, plot_mic
@@ -235,7 +236,7 @@ def run_neossnet_belly_machine(
         load_sot_no_ppg(),
         windowed(window[0], window[1]),
         plot_mic(out_path),
-        sot_beats(v5_beat_detector, out_path)
+        sot_beats(v8_beat_detector, out_path)
     ], f"{PROJECT_DIR}/.out/cache_sot/neossnet/{patient}", play_sound=False)
     sot: SOTResult = sot_pipe.process(datadir)
 
@@ -245,14 +246,11 @@ def run_neossnet_belly_machine(
         abdomen_bp(*FETAL_ACOUSTIC_BAND_HZ, "butter"),
         use_model(out_path),  # NeoSSNet heart output (maternal-dominated cardiac), all abdomen fibers
         abdomen_bp(*FETAL_ACOUSTIC_BAND_NARROW_HZ, "butter"),  # narrow to the fetal band AFTER the model
-        use_fiber("2A"),
+        use_fiber("1B"),
         abdomen_sound(out_path, "fetal_fiber"),
-        # abdomen_sound(out_path, tag="2B_fetal"),
-        fiber_beats(v5_beat_detector, out_path),
-        # multi_fiber_beats(v2_beat_detector, out_path, fetal_bpm=(110.0, 180.0)),
-        # plot_peaks(out_path),
+        fiber_beats(v8_beat_detector, out_path),
         plot_hr(sot, out_path),
-        evaluate_v2(sot, out_path),
+        evaluate_v2(sot, out_path, lag_bound_s=0.0),
     ], f"{PROJECT_DIR}/.out/{patient}/neossnet/cache/", play_sound=False)
 
     pipe.process(datadir)

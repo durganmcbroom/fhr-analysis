@@ -22,6 +22,7 @@ from analyze.filters import abdomen_bp
 from analyze.hr import sot_beats, fiber_beats
 from analyze.hr.detect_v2 import v2_beat_detector
 from analyze.hr.detect_v5 import v5_beat_detector
+from analyze.hr.detect_v8 import v8_beat_detector
 from analyze.pipeline import Pipeline
 from analyze.plot_hr import plot_hr
 from analyze.sot import load_sot, load_sot_no_ppg, plot_mic, SOTResult
@@ -182,7 +183,7 @@ def run_funet_belly_machine(
         load_sot_no_ppg(),
         windowed(window[0], window[1]),
         plot_mic(out_path),
-        sot_beats(v2_beat_detector, out_path)
+        sot_beats(v8_beat_detector, out_path)
     ], f"{PROJECT_DIR}/.out/cache_sot/funet/{patient}", play_sound=False)
     sot: SOTResult = sot_pipe.process(datadir)
 
@@ -190,7 +191,7 @@ def run_funet_belly_machine(
         load_no_chest_data_FULL,
         windowed(window[0], window[1]),
         use_funet(out_path, ["1A", "1B", "2A", "2B", "2C"]),
-        fiber_beats(v2_beat_detector, out_path),
+        fiber_beats(v8_beat_detector, out_path),
         plot_hr(sot, out_path),
         evaluate_v2(sot, out_path, lag_bound_s=0.0),
     ], f"{PROJECT_DIR}/.out/{patient}/funet/cache/", play_sound=False)
