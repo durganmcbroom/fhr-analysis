@@ -145,6 +145,37 @@ def load_no_chest_data(path: str):
             data
         )
 
+
+def load_no_chest_data_FULL(path: str):
+    COLS = "1A", "1B", "2A", "2B", "2C", "2D"
+    path = Path(path)
+
+    abdomen = {}
+
+    raw_chest = np.load(path / FIBER_BUNDLE_A)
+    chest_time = raw_chest[:, 0]
+    chest_hz = round(1 / (chest_time[1] - chest_time[0]))
+
+    for i in range(1, raw_chest.shape[1]):
+        data = raw_chest[:, i]
+        abdomen[COLS[i - 1]] = Audio(
+            chest_time,
+            chest_hz,
+            data
+        )
+
+    raw_abdomen = np.load(path / FIBER_BUNDLE_B)
+    abdomen_time = raw_abdomen[:, 0]
+    abdomen_hz = round(1 / (abdomen_time[1] - abdomen_time[0]))
+
+    for i in range(1, raw_abdomen.shape[1]):
+        data = raw_abdomen[:, i]
+        abdomen[COLS[i - 1 + 2]] = Audio(
+            abdomen_time,
+            abdomen_hz,
+            data
+        )
+
     # fft_x = abdomen["2A"].data
     # N = fft_x.shape[0]
     #

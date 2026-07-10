@@ -69,6 +69,8 @@ from analyze.hr.detect_v2 import v2_beat_detector
 from analyze.sot import _robust_clip, _moving_avg
 from analyze.hr.detect_v5 import v5_beat_detector
 from analyze.hr.detect_v6 import v6_beat_detector
+from analyze.hr.detect_v8 import v8_beat_detector
+
 
 from analyze.anc import nlms_filter
 from analyze.filters import bp_filter
@@ -281,14 +283,16 @@ def heart_target(
         t,
         sot,
         band,
-        gaussian_impulses: bool = False,
+        impulse_mode: str = "gate",
         gate_width_ibi_fraction: float = WINDOW_IBI_FRACTION,
 ):
     # Single-channel clean heartbeat, centered on the reference fiber's own beats.
     evaluation = beat_evaluator(sot)
     beat_times = evaluation["times"]
-    if len(beat_times) < 1:
-        raise NoBeatException(f"no beats detected in {t[0]}-{t[-1]}")
+    # Need >= 2 beats: a single beat gives an empty np.diff, so mean(ibi) is NaN
+    # (RuntimeWarning "Mean of empty slice") and half_width becomes NaN downstream.
+    if len(beat_times) < 2:
+        raise NoBeatException(f"fewer than 2 beats detected in {t[0]}-{t[-1]}")
 
     reference_fiber = fibers[0]
 
@@ -300,7 +304,7 @@ def heart_target(
     centers = beat_centers(beat_times, t[0], sample_rate)
     centers = snap_centers_to_energy(fiber_energy(filtered, sample_rate),
                                      centers, int(round(SNAP_TOLERANCE_S * sample_rate)))
-    if gaussian_impulses:
+    if impulse_mode == "gaussian":
         heart = np.zeros_like(reference_fiber)
         sigma = half_width / 4  # tight: pulse is essentially decayed to 0 by the window edge
         for center in centers:
@@ -310,8 +314,10 @@ def heart_target(
 
             gaussian_template = np.exp(-0.5 * ((x - center) / sigma) ** 2)
             heart[a:b] += gaussian_template
-    else:
+    elif impulse_mode == "gate":
         heart = gated_heart(filtered, centers, half_width, 0)  # swap to ensemble_heart(...) to revert
+    else:
+        raise ValueError(f"impulse_mode must be 'gaussian' or 'gate', got {impulse_mode!r}")
 
     # sos = cheby1(4, rp=1, Wn=band, fs=sample_rate, btype='bandpass', output='sos')
     # heart = sosfiltfilt(sos, heart, axis=0)
@@ -407,7 +413,7 @@ def time_warp(
     return data
 
 
-def write_snippet(out_dir, idx, beat_evaluator, fibers, sot, band, gaussian_impulses=False, warp=False, k=12, pad=300,
+def write_snippet(out_dir, idx, beat_evaluator, fibers, sot, band, impulse_mode="gate", warp=False, k=12, pad=300,
                   gate_width_ibi_fraction=WINDOW_IBI_FRACTION):
     # One mix (mono or multi-channel) plus its single-channel heart/lung/noise targets, with a plot.
     # `warp` randomly stretches/compresses the gaps between beats (k = max stretch factor,
@@ -417,7 +423,7 @@ def write_snippet(out_dir, idx, beat_evaluator, fibers, sot, band, gaussian_impu
     t = fibers[0].time[0] + np.arange(len(mix[0])) / NEOSSNET_MODEL_HZ
 
     try:
-        heart, beat_times, half_width = heart_target(beat_evaluator, mix, t, sot, band, gaussian_impulses,
+        heart, beat_times, half_width = heart_target(beat_evaluator, mix, t, sot, band, impulse_mode,
                                                      gate_width_ibi_fraction)
     except NoBeatException as error:
         warning(f"skipping snippet {idx}: {error}")
@@ -491,7 +497,7 @@ def fetal_detector(out, idx):
     # see analyze/hr/detect_v6.py.
     def det(raw_audio):
         prepared = _robust_clip(detrend(raw_audio.data))
-        return v6_beat_detector(
+        return v8_beat_detector(
             Audio(raw_audio.time, raw_audio.hz, prepared),
             FETAL_BPM_RANGE,
             out,
@@ -523,7 +529,9 @@ def main() -> None:
     overlap = cfg.get("overlap", 0.0)
     ppg_col = cfg.get("ppg_col", 0)
     time_warp_enabled = cfg.get("time_warp", False)
-    gaussian_impulses_enabled = cfg.get("gaussian_impulses", False)
+    impulse_mode = cfg.get("impulse_mode", "gate")
+    if impulse_mode not in ("gaussian", "gate"):
+        raise ValueError(f"config 'impulse_mode' must be 'gaussian' or 'gate', got {impulse_mode!r}")
     # Random inter-beat interval warping controls (only used when time_warp is on).
     warp_strength = cfg.get("warp_strength", 12)  # max random stretch factor for inter-beat gaps
     warp_pad = cfg.get("warp_pad", 300)           # samples kept untouched around each beat
@@ -594,7 +602,7 @@ def main() -> None:
                     fetal_ok = write_snippet(
                         fetal_dir, idx, fetal_detector(fetal_dir, idx), group_fibers, mic_window, FETAL_ACOUSTIC_BAND_HZ,
                         warp=time_warp_enabled,
-                        gaussian_impulses=gaussian_impulses_enabled,
+                        impulse_mode=impulse_mode,
                         k=warp_strength,
                         pad=warp_pad,
                         gate_width_ibi_fraction=gate_width_ibi_fraction,

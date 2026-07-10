@@ -3,6 +3,7 @@ overlap: 3 # in seconds
 ppg_col: 1 # defaults to 0 if I don't declare
 mode: "mono"
 
+impulse_mode: "gate" # 'gaussian' or 'gate'
 time_warp: False # randomly stretch/compress the gaps between beats (random intervals); False = off
 warp_strength: 12 # max random stretch factor for inter-beat gaps (only used when time_warp: True)
 warp_pad: 300 # samples left untouched around each beat before a gap is warped (only when time_warp: True)
@@ -12,13 +13,12 @@ data:
   "Patient 6":
     mode: train   # 'train' or 'test' -> routes this patient to fetal-train/ or fetal-test/
     fibers:
-      - "2D"
-      - "2C"
+      - "1B"
+      - "2A"
       - "2B"
+      - "2C"
+      - "2D"
     sections:
-      - "21-38"
-      - "50-80"
-      - "85-118"
       - "140-172"
       - "178-194"
       - "210-250"
@@ -41,11 +41,12 @@ data:
   "Patient 7":
     mode: train
     fibers:
+      - "1B"
       - "2A"
       - "2B"
+      - "2C"
       - "2D"
     sections:
-      - "25-40"
       - "98-122"
       - "132-152"
       - "158-179"
@@ -60,3 +61,26 @@ data:
       - "713-818"
       - "858-1245" # Low SNR
       - "1302-1450"
+#  "patient8-session1":
+#    mode: test
+#    fibers:
+#      - "1B"
+#      - "2A"
+#      - "2B"
+#      - "2C"
+#      - "2D"
+#    sections:
+#      - "228-392"
+#      - "395-422"
+#      - "422-478"
+#      - "480-525"
+#      - "560-590"
+#      - "625-685"
+#      - "772-835"
+#      - "930-955"
+#      - "960-998"
+#      - "1045-1135"
+#      - "1160-1225"
+#      - "1258-1380"
+#      - "1430-1695"
+#      - "1720-1762"

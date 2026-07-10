@@ -215,15 +215,35 @@ def run_raw_bandpass_no_sot():
 # Try larger NST (SOT) window so that if lag is large, you can adjust into open space
 # ^^ Use step/sigmoid for scoring > better xcorr
 if __name__ == '__main__':
-    run_funet_pipeline(
-        PATIENT,
-        WINDOW,
-        DATA_DIR,
+    # run_funet_pipeline(
+    #     PATIENT,
+    #     WINDOW,
+    #     DATA_DIR,
+    # )
+    # run_neossnet_pipeline(
+    #     PATIENT,
+    #     WINDOW,
+    #     DATA_DIR,
+    # )
+    run_funet_belly_machine(
+        "5ch_belly_machine_1",
+        (0, 180),
+        f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/5ch_belly_machine_1"
     )
-    run_neossnet_pipeline(
-        PATIENT,
-        WINDOW,
-        DATA_DIR,
+    run_funet_belly_machine(
+        "5ch_belly_machine_2",
+        (0, 180),
+        f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/5ch_belly_machine_2"
+    )
+    run_neossnet_belly_machine(
+        f"5ch_belly_machine_1",
+        (0, 180),
+        f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/5ch_belly_machine_1"
+    )
+    run_neossnet_belly_machine(
+        f"5ch_belly_machine_2",
+        (0, 180),
+        f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/5ch_belly_machine_2"
     )
     # run_funet_belly_machine(
     #     "belly_machine_2_3",

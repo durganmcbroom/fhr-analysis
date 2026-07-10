@@ -3,7 +3,9 @@ overlap: 3 # in seconds
 ppg_col: 1 # defaults to 0 if I don't declare
 mode: "stereo"
 warp: False
-gaussian_impulses: True
+
+impulse_mode: "gaussian" # 'gaussian' or 'gate'
+
 data:
   "Patient 6":
     mode: train   # 'train' or 'test' -> routes this patient to fetal-train/ or fetal-test/
@@ -14,9 +16,6 @@ data:
       - "2C"
       - "2D"
     sections:
-      - "21-38"
-      - "50-80"
-      - "85-118"
       - "140-172"
       - "178-194"
       - "210-250"
@@ -45,7 +44,6 @@ data:
       - "2C"
       - "2D"
     sections:
-      - "25-40"
       - "98-122"
       - "132-152"
       - "158-179"

@@ -16,7 +16,7 @@ import torch
 from matplotlib import pyplot as plt
 from scipy.signal import find_peaks
 
-from analyze.data import Audio, FiberData, load_data, windowed, FiberPair, load_no_chest_data
+from analyze.data import Audio, FiberData, load_data, windowed, FiberPair, load_no_chest_data_FULL
 from analyze.evaluate_v2 import evaluate_v2
 from analyze.filters import abdomen_bp
 from analyze.hr import sot_beats, fiber_beats
@@ -187,9 +187,9 @@ def run_funet_belly_machine(
     sot: SOTResult = sot_pipe.process(datadir)
 
     pipe = Pipeline([
-        load_no_chest_data,
+        load_no_chest_data_FULL,
         windowed(window[0], window[1]),
-        use_funet(out_path, ["1B", "2A", "2B", "2C", "2D"]),
+        use_funet(out_path, ["1A", "1B", "2A", "2B", "2C"]),
         fiber_beats(v2_beat_detector, out_path),
         plot_hr(sot, out_path),
         evaluate_v2(sot, out_path, lag_bound_s=0.0),

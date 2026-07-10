@@ -14,11 +14,11 @@ train:
   loss: 'corr'   # 'kldiv' (distribution) | 'snr' (SI-SNR, sign-invariant) | 'corr' (sign-sensitive correlation)
 
 data:
-  train_dir: 'training/stereo_v2/fetal-train'
-  test_dir: 'training/stereo_v2/fetal-test'
+  train_dir: 'training/stereo_v5/fetal-train'
+  test_dir: 'training/stereo_v5/fetal-test'
   num_workers: 8
   n_fft: 1024
   hop_length: 256
   augment: ['channel_dropout', 'gain', 'noise']
 
-model_dir: 'models/funet-v8/'
+model_dir: 'models/funet-v9/'

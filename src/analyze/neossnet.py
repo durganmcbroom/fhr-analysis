@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 from matplotlib import pyplot as plt
 
-from analyze.data import Audio, load_data, windowed, use_fiber, FiberData, load_no_chest_data
+from analyze.data import Audio, load_data, windowed, use_fiber, FiberData, load_no_chest_data, load_no_chest_data_FULL
 from analyze.evaluate_v2 import evaluate_v2
 from analyze.filters import abdomen_bp
 from analyze.hr import sot_beats, fiber_beats, multi_fiber_beats
@@ -240,7 +240,7 @@ def run_neossnet_belly_machine(
     sot: SOTResult = sot_pipe.process(datadir)
 
     pipe = Pipeline([
-        load_no_chest_data,
+        load_no_chest_data_FULL,
         windowed(window[0], window[1]),
         abdomen_bp(*FETAL_ACOUSTIC_BAND_HZ, "butter"),
         use_model(out_path),  # NeoSSNet heart output (maternal-dominated cardiac), all abdomen fibers
