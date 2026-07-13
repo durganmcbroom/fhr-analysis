@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Beat Marker</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <header id="toolbar">
+    <div class="group">
+      <label class="filebtn">
+        Open WAV
+        <input type="file" id="file-input" accept="audio/*,.wav" hidden />
+      </label>
+      <span id="file-name" class="muted">no file loaded</span>
+    </div>
+
+    <div class="group" id="transport" hidden>
+      <button id="play-btn" class="primary" title="Play / pause (Space)">▶ Play</button>
+      <button id="stop-btn" title="Stop and reset cursor">■ Stop</button>
+      <label class="lbl" title="Playback speed — pitch is preserved">Speed
+        <select id="speed-select">
+          <option value="0.25">0.25×</option>
+          <option value="0.5">0.5×</option>
+          <option value="0.75">0.75×</option>
+          <option value="1" selected>1×</option>
+          <option value="1.5">1.5×</option>
+          <option value="2">2×</option>
+        </select>
+      </label>
+      <span id="time-readout" class="mono muted">0.000 s</span>
+      <span id="loop-indicator" class="loop-badge" title="Zoomed in: playback loops over the visible window" hidden>⟳ loops window</span>
+    </div>
+
+    <div class="group" id="detect-group" hidden>
+      <label class="lbl">Detector</label>
+      <select id="detector-select" title="Beat detectors from src/analyze/hr"></select>
+      <button id="detect-btn">Detect beats</button>
+      <span class="bpm">
+        BPM
+        <input type="number" id="bpm-min" class="num" min="1" step="1" title="min BPM" />
+        –
+        <input type="number" id="bpm-max" class="num" min="1" step="1" title="max BPM" />
+      </span>
+      <span id="detect-status" class="muted"></span>
+    </div>
+
+    <div class="group" id="edit-group" hidden>
+      <label class="chk" title="When adding or moving a beat, snap it to the nearest local energy peak">
+        <input type="checkbox" id="snap-toggle" checked /> Snap to energy
+      </label>
+      <span id="beat-count" class="muted">0 beats</span>
+      <button id="clear-btn" title="Remove all beats">Clear</button>
+      <button id="hr-window-btn" title="Open the HR graph in a separate window (drag it to a second screen)">HR window ↗</button>
+    </div>
+
+    <div class="group" id="io-group" hidden>
+      <label class="filebtn small">
+        Load .npy
+        <input type="file" id="npy-input" accept=".npy" hidden />
+      </label>
+      <select id="export-format" title="Export format">
+        <option value="yaml">YAML</option>
+        <option value="npy">.npy</option>
+      </select>
+      <button id="export-btn">Export</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="viewer" hidden>
+      <canvas id="wave"></canvas>
+      <div id="scrollbar"><div id="scroll-thumb"></div></div>
+      <div id="zoom-controls">
+        <button id="zoom-out" title="Zoom out">–</button>
+        <button id="zoom-in" title="Zoom in">+</button>
+        <button id="zoom-fit" title="Fit whole file">Fit</button>
+      </div>
+    </div>
+
+    <div id="dropzone">
+      <div class="dz-inner">
+        <div class="dz-title">Open a waveform audio file to begin</div>
+        <div class="dz-sub">Click <strong>Open WAV</strong> above, or drop a <code>.wav</code> here</div>
+        <ul class="dz-help">
+          <li><strong>Scroll</strong> to pan · <strong>Shift+Scroll</strong> to zoom · or use the scrollbar</li>
+          <li><strong>Click</strong> empty space to set the play cursor</li>
+          <li><strong>Double-click</strong> to add a beat · <strong>drag</strong> a beat to move it</li>
+          <li><strong>Right-click</strong> a beat (or select + <strong>Delete</strong>) to remove it</li>
+        </ul>
+      </div>
+    </div>
+  </main>
+
+  <footer id="hint" hidden>
+    <span><strong>Scroll</strong> pan · <strong>Shift+Scroll</strong> zoom · <strong>Click</strong> = play cursor · <strong>Dbl-click</strong> = add beat · <strong>Drag</strong> = move · <strong>Right-click</strong>/<strong>Del</strong> = remove · <strong>Space</strong> = play/pause</span>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

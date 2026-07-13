@@ -192,7 +192,7 @@ def run_funet_belly_machine(
         windowed(window[0], window[1]),
         use_funet(out_path, ["1A", "1B", "2A", "2B", "2C"]),
         fiber_beats(v8_beat_detector, out_path),
-        phase_continuity(out_path),   # stitch S1<->S2 phase slips so HR doesn't lag/spike
+        # phase_continuity(out_path),   # stitch S1<->S2 phase slips so HR doesn't lag/spike
         plot_hr(sot, out_path),
         evaluate_v2(sot, out_path, lag_bound_s=0.0),
     ], f"{PROJECT_DIR}/.out/{patient}/funet/cache/", play_sound=False)

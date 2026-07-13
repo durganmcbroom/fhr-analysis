@@ -8,7 +8,7 @@ DEFAULT_DATA_DIR = PROJECT_DIR + BANNER_TEST_DIR
 
 # Fine-tuned SSNet checkpoints (lib/tune-ssnet)
 # FETAL_MODEL = "tuned-model-v7 (SASDR)"
-FETAL_MODEL = "tuned-model-v3"
+FETAL_MODEL = "tuned-model-v10"
 FETAL_MODEL_PATH = os.path.join(PROJECT_DIR, f"lib/tune-ssnet/models/{FETAL_MODEL}/model_best.pt")
 FETAL_MODEL_CFG = os.path.join(PROJECT_DIR, f"lib/tune-ssnet/models/{FETAL_MODEL}/model.yaml")
 MATERNAL_MODEL_PATH = os.path.join(PROJECT_DIR, "lib/tune-ssnet/models/maternal-tuned-model-v2/model_best.pt")
@@ -20,8 +20,8 @@ NEOSSNET_MODEL_CFG = os.path.join(PROJECT_DIR, "lib/neossnet/models/model.yaml")
 
 # FUNet beat-activity model (lib/funet)
 # FUNET_CONFIG = os.path.join(PROJECT_DIR, "lib/funet/fetal-config.yaml")
-FUNET_CONFIG = os.path.join(PROJECT_DIR, "lib/funet/models/funet-v10/fetal-config.yaml")
-FUNET_MODEL_PATH = os.path.join(PROJECT_DIR, "lib/funet/models/funet-v10/model_best.pt")
+FUNET_CONFIG = os.path.join(PROJECT_DIR, "lib/funet/models/funet-v11/fetal-config.yaml")
+FUNET_MODEL_PATH = os.path.join(PROJECT_DIR, "lib/funet/models/funet-v11/model_best.pt")
 
 FIBER_BUNDLE_A = "ps4000.npy"   # chest device bundle
 FIBER_BUNDLE_B = "ps3000a.npy"  # abdomen device bundle

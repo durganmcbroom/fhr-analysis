@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HR — Beat Marker</title>
+  <style>
+    :root {
+      --bg: #0e1116; --panel: #1c2129; --border: #313a47;
+      --text: #e6eaf0; --muted: #8892a0; --hr: #46e6a0; --playhead: #ffd23f;
+      --grid: rgba(120,140,170,0.14);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+      font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { display: flex; flex-direction: column; height: 100vh; }
+    header { display: flex; align-items: baseline; gap: 14px; padding: 8px 14px;
+      background: var(--panel); border-bottom: 1px solid var(--border); }
+    header #title { font-weight: 600; }
+    header #stats { color: var(--muted); font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+    #hr { flex: 1; width: 100%; min-height: 0; display: block; }
+    footer { padding: 4px 14px; color: var(--muted); font-size: 11.5px;
+      background: var(--panel); border-top: 1px solid var(--border); min-height: 22px; }
+  </style>
+</head>
+<body>
+  <header>
+    <span id="title">Heart rate — 60 / IBI</span>
+    <span id="stats"></span>
+  </header>
+  <canvas id="hr"></canvas>
+  <footer id="msg">Waiting for the main window…</footer>
+
+  <script>
+  "use strict";
+  // Synced with the main Beat Marker window over a same-origin BroadcastChannel.
+  const channel = new BroadcastChannel("beatmarker-hr");
+  let data = { beats: [], view: { start: 0, end: 1 }, duration: 0, name: "" };
+  let playhead = null;
+
+  const canvas = document.getElementById("hr");
+  const ctx = canvas.getContext("2d");
+  const elTitle = document.getElementById("title");
+  const elStats = document.getElementById("stats");
+  const elMsg = document.getElementById("msg");
+  let cssW = 1, cssH = 1;
+
+  function resize() {
+    const r = canvas.getBoundingClientRect();
+    cssW = Math.max(1, Math.floor(r.width));
+    cssH = Math.max(1, Math.floor(r.height));
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.floor(cssW * dpr);
+    canvas.height = Math.floor(cssH * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    draw();
+  }
+  new ResizeObserver(resize).observe(canvas);
+
+  channel.onmessage = (e) => {
+    const d = e.data;
+    if (!d) return;
+    if (d.type === "state") { data = d; draw(); }
+    else if (d.type === "playhead") { playhead = d.t; draw(); }
+  };
+  // Ask the main window to send its current state (it also pushes on every change).
+  channel.postMessage({ type: "ready" });
+
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+  // Instantaneous HR: one point per consecutive beat pair, at the pair's midpoint.
+  function computeHR(beats) {
+    const pts = [];
+    for (let i = 0; i < beats.length - 1; i++) {
+      const ibi = beats[i + 1] - beats[i];
+      if (ibi > 1e-6) pts.push({ t: (beats[i] + beats[i + 1]) / 2, hr: 60 / ibi });
+    }
+    return pts;
+  }
+
+  function niceStep(raw) {
+    const pow = Math.pow(10, Math.floor(Math.log10(raw)));
+    const f = raw / pow;
+    return (f >= 5 ? 5 : f >= 2 ? 2 : 1) * pow;
+  }
+
+  function draw() {
+    ctx.clearRect(0, 0, cssW, cssH);
+    const view = data.view || { start: 0, end: 1 };
+    const x0 = view.start, x1 = view.end;
+    const span = Math.max(1e-6, x1 - x0);
+
+    const pts = computeHR((data.beats || []).slice().sort((a, b) => a - b));
+    const visible = pts.filter((p) => p.t >= x0 && p.t <= x1);
+
+    elTitle.textContent = "Heart rate — 60 / IBI" + (data.name ? "  ·  " + data.name : "");
+
+    const M = { l: 54, r: 16, t: 14, b: 34 };
+    const pw = cssW - M.l - M.r;
+    const ph = cssH - M.t - M.b;
+    if (pw <= 0 || ph <= 0) return;
+
+    if (visible.length === 0) {
+      elStats.textContent = "";
+      elMsg.textContent = (data.beats && data.beats.length)
+        ? "No beats in the current window — pan/zoom the main view."
+        : "No beats yet — run a detector or load a .npy in the main window.";
+      // still draw an empty frame for context
+    } else {
+      const mean = visible.reduce((s, p) => s + p.hr, 0) / visible.length;
+      const hrs = visible.map((p) => p.hr).sort((a, b) => a - b);
+      const median = hrs[Math.floor(hrs.length / 2)];
+      elStats.textContent =
+        `${visible.length} pts · mean ${mean.toFixed(1)} · median ${median.toFixed(1)} bpm`;
+      elMsg.textContent = `window ${x0.toFixed(2)}–${x1.toFixed(2)} s`;
+    }
+
+    // y-domain from visible HR values (fall back to a sane default).
+    let lo, hi;
+    if (visible.length) {
+      lo = Math.min(...visible.map((p) => p.hr));
+      hi = Math.max(...visible.map((p) => p.hr));
+    } else {
+      lo = 60; hi = 200;
+    }
+    const pad = Math.max(5, 0.08 * (hi - lo));
+    lo = Math.max(0, Math.floor((lo - pad) / 10) * 10);
+    hi = Math.ceil((hi + pad) / 10) * 10;
+    if (hi - lo < 20) hi = lo + 20;
+
+    const tx = (t) => M.l + (t - x0) / span * pw;
+    const ty = (hr) => M.t + (1 - (hr - lo) / (hi - lo)) * ph;
+
+    // grid + axes
+    ctx.font = "11px ui-monospace, Menlo, monospace";
+    ctx.textBaseline = "middle";
+    // y grid
+    const yStep = niceStep((hi - lo) / 5);
+    for (let v = Math.ceil(lo / yStep) * yStep; v <= hi + 1e-6; v += yStep) {
+      const y = Math.round(ty(v)) + 0.5;
+      ctx.strokeStyle = "rgba(120,140,170,0.14)";
+      ctx.beginPath(); ctx.moveTo(M.l, y); ctx.lineTo(M.l + pw, y); ctx.stroke();
+      ctx.fillStyle = "#8892a0";
+      ctx.textAlign = "right";
+      ctx.fillText(String(Math.round(v)), M.l - 8, y);
+    }
+    // x grid
+    const xStep = niceStep(span / Math.max(3, Math.floor(pw / 90)));
+    const decimals = Math.max(0, -Math.floor(Math.log10(xStep)) + (xStep < 1 ? 1 : 0));
+    ctx.textAlign = "center";
+    for (let t = Math.ceil(x0 / xStep) * xStep; t <= x1 + 1e-9; t += xStep) {
+      const x = Math.round(tx(t)) + 0.5;
+      ctx.strokeStyle = "rgba(120,140,170,0.14)";
+      ctx.beginPath(); ctx.moveTo(x, M.t); ctx.lineTo(x, M.t + ph); ctx.stroke();
+      ctx.fillStyle = "#8892a0";
+      ctx.fillText(t.toFixed(decimals) + "s", x, M.t + ph + 14);
+    }
+    // axis labels
+    ctx.fillStyle = "#8892a0";
+    ctx.textAlign = "center";
+    ctx.fillText("Time (s)", M.l + pw / 2, cssH - 6);
+    ctx.save();
+    ctx.translate(12, M.t + ph / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillText("HR (bpm)", 0, 0);
+    ctx.restore();
+
+    // frame
+    ctx.strokeStyle = "#313a47";
+    ctx.strokeRect(M.l + 0.5, M.t + 0.5, pw, ph);
+
+    // HR line + markers (clipped to the plot rect so edge segments show partially)
+    ctx.save();
+    ctx.beginPath(); ctx.rect(M.l, M.t, pw, ph); ctx.clip();
+    if (pts.length >= 2) {
+      ctx.strokeStyle = "#46e6a0";
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      pts.forEach((p, i) => {
+        const X = tx(p.t), Y = ty(p.hr);
+        if (i === 0) ctx.moveTo(X, Y); else ctx.lineTo(X, Y);
+      });
+      ctx.stroke();
+    }
+    ctx.fillStyle = "#46e6a0";
+    for (const p of visible) {
+      ctx.beginPath();
+      ctx.arc(tx(p.t), ty(p.hr), 2.6, 0, 2 * Math.PI);
+      ctx.fill();
+    }
+    // playhead
+    if (playhead != null && playhead >= x0 && playhead <= x1) {
+      const x = Math.round(tx(playhead)) + 0.5;
+      ctx.strokeStyle = "#ffd23f";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(x, M.t); ctx.lineTo(x, M.t + ph); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  window.addEventListener("beforeunload", () => channel.close());
+  resize();
+  </script>
+</body>
+</html>
