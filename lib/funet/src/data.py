@@ -29,7 +29,8 @@ class FetalPairs(Dataset):
     """
 
     def __init__(self, snippet_dir: str, indices: list, crop_samples: int, train: bool,
-                 n_fft: int, hop_length: int, divisor: int = 1, augment=()):
+                 n_fft: int, hop_length: int, divisor: int = 1, augment=(),
+                 freq_mask: int = 0, time_mask: int = 0):
         self.dir = Path(snippet_dir)
         self.indices = indices
         self.crop_samples = crop_samples
@@ -38,6 +39,11 @@ class FetalPairs(Dataset):
         self.divisor = divisor  # FUNet needs freq/time both divisible by 2**depth; see make_dataloaders
         self.augmenter = Augmenter(augment)
         self.spectrogram = torchaudio.transforms.Spectrogram(n_fft=n_fft, hop_length=hop_length)
+        # SpecAugment-style masking (train-only): each sample gets one random-width band of
+        # freq bins / time frames zeroed, width uniform in [0, param). 0 disables. Applied
+        # after log1p, where 0 == log1p(0) == silence.
+        self.freq_masking = torchaudio.transforms.FrequencyMasking(freq_mask) if train and freq_mask > 0 else None
+        self.time_masking = torchaudio.transforms.TimeMasking(time_mask) if train and time_mask > 0 else None
 
     def __len__(self):
         return len(self.indices)
@@ -66,6 +72,14 @@ class FetalPairs(Dataset):
         # Power spectrogram magnitudes span orders of magnitude (raw audio, unnormalized);
         # log1p compresses that to a learnable range before it hits the first conv.
         spectrogram = torch.log1p(self.spectrogram(mix))
+
+        # SpecAugment masks go on the input only -- the target still expects beats inside a
+        # time-masked span, deliberately: the model must interpolate through the gap from
+        # rhythm context instead of memorizing band- or frame-specific cues.
+        if self.freq_masking is not None:
+            spectrogram = self.freq_masking(spectrogram)
+        if self.time_masking is not None:
+            spectrogram = self.time_masking(spectrogram)
 
         # Crop freq/time down to a multiple of `divisor` so FUNet's pool/transpose-conv
         # levels exactly invert each other (see the ValueError raised in FUNet.forward).
@@ -110,7 +124,8 @@ def _make_dataloader(config: Config, snippet_dir: str, *, train: bool) -> DataLo
     # Augment the training set only; the test loader gets an empty list (no-op).
     ds = FetalPairs(snippet_dir, indices, crop_samples, train=train,
                     n_fft=config.data.n_fft, hop_length=config.data.hop_length, divisor=divisor,
-                    augment=config.data.augment if train else ())
+                    augment=config.data.augment if train else (),
+                    freq_mask=config.data.freq_mask, time_mask=config.data.time_mask)
 
     print(f"Loaded {len(indices)} {'train' if train else 'test'} snippets from {snippet_dir}")
     return DataLoader(ds, batch_size=config.train.batch_size, shuffle=train,

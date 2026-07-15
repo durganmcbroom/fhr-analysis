@@ -179,11 +179,12 @@ def run_funet_belly_machine(
     out_path = Path(f"{PROJECT_DIR}.out/{patient}/funet/")
     out_path.mkdir(parents=True, exist_ok=True)
 
+    # sot_beats prefers a hand-marked mic_beats.npy in datadir over the v8 detector.
     sot_pipe = Pipeline([
         load_sot_no_ppg(),
         windowed(window[0], window[1]),
         plot_mic(out_path),
-        sot_beats(v8_beat_detector, out_path)
+        sot_beats(v8_beat_detector, out_path, data_dir=datadir)
     ], f"{PROJECT_DIR}/.out/cache_sot/funet/{patient}", play_sound=False)
     sot: SOTResult = sot_pipe.process(datadir)
 

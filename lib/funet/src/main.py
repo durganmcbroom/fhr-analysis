@@ -44,6 +44,16 @@ def build_optimiser(config: Config, model: nn.Module) -> optim.Optimizer:
     return cls(model.parameters(), lr=config.train.learning_rate, weight_decay=config.train.weight_decay)
 
 
+def build_scheduler(config: Config, optimiser: optim.Optimizer):
+    """None for a constant LR, or cosine annealing learning_rate -> min_lr over the run."""
+    if config.train.lr_schedule == "none":
+        return None
+    if config.train.lr_schedule == "cosine":
+        return optim.lr_scheduler.CosineAnnealingLR(
+            optimiser, T_max=config.train.epochs, eta_min=config.train.min_lr)
+    raise ValueError(f"Unknown lr_schedule: {config.train.lr_schedule!r} (expected 'none' or 'cosine')")
+
+
 def main(config: Config):
     device = pick_device()
     print(f"Using device: {device}")
@@ -61,6 +71,7 @@ def main(config: Config):
         bottleneck_dilation=config.model.bottleneck_dilation,
         base_channels=config.model.base_channels,
         head=head,
+        dropout=config.model.dropout,
     )
 
     if config.resume is not None:
@@ -70,6 +81,7 @@ def main(config: Config):
     train_dl = make_train_dataloader(config)
     val_dl = make_test_dataloader(config)
     optimiser = build_optimiser(config, model)
+    scheduler = build_scheduler(config, optimiser)
 
     os.makedirs(config.model_dir, exist_ok=True)
 
@@ -84,6 +96,7 @@ def main(config: Config):
         device=device,
         config={"model_dir": config.model_dir},
         clip=config.train.clip,
+        scheduler=scheduler,
     )
 
 

@@ -44,6 +44,9 @@ def load_funet(config: Config, checkpoint: str, device: torch.device = None) -> 
         bottleneck_dilation=config.model.bottleneck_dilation,
         base_channels=config.model.base_channels,
         head=_head_for(config),
+        # Inactive under eval(), but dropout>0 shifts Sequential state_dict keys, so the
+        # architecture must match the checkpoint's training config to load it.
+        dropout=config.model.dropout,
     )
     model.load_state_dict(torch.load(checkpoint, map_location=device))
     model.to(device).eval()

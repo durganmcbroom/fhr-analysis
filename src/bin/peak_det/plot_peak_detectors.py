@@ -33,6 +33,8 @@ from pathlib import Path
 
 import numpy as np
 from matplotlib import pyplot as plt
+from scipy.signal import resample
+from sympy.stats.sampling.sample_numpy import numpy
 
 # bin/peak_det/plot_peak_detectors.py -> parents[2] == src/
 SRC_DIR = Path(__file__).resolve().parents[2]
@@ -235,6 +237,13 @@ def plot_hr(results, sot_times, patient: str, start: float, end: float,
             # so the SOT's variability reads identically to a detector trace.
             ax.plot(sot_t, sot_hr_s, color="black", lw=1.2, marker=".", ms=3,
                     alpha=0.85, zorder=5, label="SOT (mic_beats)")
+
+        if sot_t.size and d_hr.size:
+            sot_interp = np.interp(d_t, sot_t, sot_hr_s)
+
+            corr = np.corrcoef(sot_interp, d_hr)[0, 1]
+        else:
+            corr = 0.0
         ax.set_ylabel(label, rotation=0, ha="right", va="center", fontsize=11, fontweight="bold")
         ax.set_ylim(lo_y, hi_y)
         ax.margins(x=0)
@@ -244,7 +253,8 @@ def plot_hr(results, sot_times, patient: str, start: float, end: float,
         if err is None:
             sot_med = median_bpm(sot_times) if sot_times is not None else float("nan")
             title = (f"{label}_beat_detector  |  median {det_med:.1f} BPM"
-                     + (f"  (SOT {sot_med:.1f})" if sot_t.size else ""))
+                     + (f"  (SOT {sot_med:.1f})" if sot_t.size else "")
+                     + f" | Correlation: {corr:.4f}")
             tcolor = "black"
         else:
             title = f"{label}_beat_detector  |  ERROR: {err}"

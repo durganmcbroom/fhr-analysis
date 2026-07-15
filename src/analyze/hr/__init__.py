@@ -7,8 +7,11 @@ from numpy import typing as npt
 
 from analyze.data import FiberPair, Audio
 from analyze.filters import bp_filter
-from analyze.sot import SOTResult, SOTData, detect_ppg_beats
-from constants import MATERNAL_ACOUSTIC_BAND_HZ, MATERNAL_BPM_RANGE, FETAL_BPM_RANGE, FETAL_ACOUSTIC_BAND_HZ
+from analyze.sot import SOTResult, SOTData, detect_ppg_beats, _load_beat_npy
+from constants import (
+    MATERNAL_ACOUSTIC_BAND_HZ, MATERNAL_BPM_RANGE, FETAL_BPM_RANGE, FETAL_ACOUSTIC_BAND_HZ,
+    MIC_BEATS_FILE,
+)
 
 
 def fiber_beats(
@@ -69,17 +72,44 @@ def multi_fiber_beats(
     run_multi_detect_beats.__name__ = "multi_fiber_beats"
     return run_multi_detect_beats
 
+def _hand_marked_mic_beats(data_dir, mic: Audio):
+    """If ``mic_beats.npy`` (hand-marked in the beat-marking app) sits next to
+    ``microphone.wav`` in ``data_dir``, return those beat times cropped to the
+    mic's current time span; otherwise None. Lets ``sot_beats`` prefer the
+    hand-marked truth over the automatic detector without any pipeline branching."""
+    if data_dir is None:
+        return None
+    path = Path(data_dir) / MIC_BEATS_FILE
+    if not path.exists():
+        return None
+    beats = _load_beat_npy(str(path))
+    if len(mic.time):
+        lo, hi = float(mic.time[0]), float(mic.time[-1])
+        beats = beats[(beats >= lo) & (beats <= hi)]
+    return beats
+
+
 def sot_beats(
         detector,
         out:Path,
         maternal_bpm: Tuple[float, float] = MATERNAL_BPM_RANGE,
         fetal_bpm: Tuple[float, float] = FETAL_BPM_RANGE,
+        data_dir=None,
 ):
+    """Fetal SOT beats from the mic. If ``data_dir`` is given and holds a
+    ``mic_beats.npy`` (hand-marked in the beat-marking app), those beats are used
+    in place of ``detector``; otherwise ``detector`` runs on the band-limited mic."""
     def run_detect_beats(data: SOTData) -> SOTResult:
         out.mkdir(parents=True, exist_ok=True)
 
-        mic = bp_filter(data.mic, FETAL_ACOUSTIC_BAND_HZ[0], FETAL_ACOUSTIC_BAND_HZ[1])
-        mic = detector(mic, fetal_bpm, out, tag="fetal_mic")
+        hand = _hand_marked_mic_beats(data_dir, data.mic)
+        if hand is not None:
+            print(f"[sot_beats] using {len(hand)} hand-marked beats from {MIC_BEATS_FILE} "
+                  f"(instead of {getattr(detector, '__name__', detector)})")
+            mic_beats = hand
+        else:
+            mic = bp_filter(data.mic, FETAL_ACOUSTIC_BAND_HZ[0], FETAL_ACOUSTIC_BAND_HZ[1])
+            mic_beats = detector(mic, fetal_bpm, out, tag="fetal_mic")["times"]
 
         maternal = None
         if data.ppg is not None:
@@ -89,7 +119,7 @@ def sot_beats(
             ppg=data.ppg,
             mic=data.mic,
             ppg_beats=maternal["times"] if maternal is not None else None,
-            mic_beats=mic["times"],
+            mic_beats=mic_beats,
         )
 
     run_detect_beats.__name__ = "detect_sot_beats"

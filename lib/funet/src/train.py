@@ -81,6 +81,7 @@ def fit(
         device: torch.device,
         config: dict,
         clip: float = None,
+        scheduler=None,   # optional per-epoch LR scheduler (e.g. CosineAnnealingLR)
 ):
     lowest_loss = float("inf")
 
@@ -92,7 +93,12 @@ def fit(
             lowest_loss = test_loss
             torch.save(model.state_dict(), os.path.join(config['model_dir'], 'model_best.pt'))
 
+        # Report the LR this epoch actually ran at, then step the schedule for the next one.
+        lr_note = f', LR: {optimiser.param_groups[0]["lr"]:.2e}' if scheduler is not None else ''
+        if scheduler is not None:
+            scheduler.step()
+
         print(f'[{epoch+1}|{epochs}] Train loss: {train_loss:.6f}, Test loss: {test_loss:.6f}, '
-              f'Max grad norm (pre-clip): {max_grad_norm:.4f}')
+              f'Max grad norm (pre-clip): {max_grad_norm:.4f}{lr_note}')
 
     torch.save(model.state_dict(), os.path.join(config['model_dir'], 'model_last.pt'))

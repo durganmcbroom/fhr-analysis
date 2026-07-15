@@ -11,6 +11,7 @@ class ModelConfig:
     dilations: List[int] = field(default_factory=lambda: [1, 1, 1, 2, 2, 4, 4])
     bottleneck_dilation: int = 8
     base_channels: int = 64    # first-level width; every level doubles from here
+    dropout: float = 0.0       # Dropout2d p in the bottleneck + deepest enc/dec level; 0 = off
 
 
 @dataclass
@@ -23,6 +24,8 @@ class TrainConfig:
     crop_len: int = 7          # seconds
     clip: float = 5.0          # max gradient norm
     loss: str = "kldiv"        # 'kldiv' (distribution), 'snr' (SI-SNR, sign-invariant), or 'corr' (sign-sensitive)
+    lr_schedule: str = "none"  # 'none' (constant LR) or 'cosine' (anneal learning_rate -> min_lr over epochs)
+    min_lr: float = 1e-5       # cosine floor; unused when lr_schedule is 'none'
 
 
 @dataclass
@@ -33,6 +36,8 @@ class DataConfig:
     n_fft: int = 1024
     hop_length: int = 256
     augment: List[str] = field(default_factory=list)  # train-only: subset of channel_dropout|gain|noise
+    freq_mask: int = 0    # SpecAugment (train-only): max freq bins zeroed per sample; 0 = off
+    time_mask: int = 0    # SpecAugment (train-only): max time frames zeroed per sample; 0 = off
 
 
 @dataclass
