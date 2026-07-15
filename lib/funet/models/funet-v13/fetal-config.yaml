@@ -3,7 +3,7 @@ model:
   dilations: [1, 2, 2, 4]
   bottleneck_dilation: 1
   base_channels: 16
-  dropout: 0.1   # Dropout2d p in bottleneck + deepest enc/dec level; 0 = off (try 0.1-0.2)
+  dropout: 0.0   # Dropout2d p in bottleneck + deepest enc/dec level; 0 = off (try 0.1-0.2)
 
 train:
   optimizer: 'AdamW'   # SGD, Adam, AdamW
@@ -27,4 +27,4 @@ data:
   freq_mask: 0   # freq bins (of 512 kept); try ~40
   time_mask: 0   # time frames; keep < one beat interval (~6 frames at hop 256 / 4kHz), try 4-6
 
-model_dir: 'models/funet-v14/'
+model_dir: 'models/funet-v13/'
