@@ -34,6 +34,10 @@ does).
    - **Window loop** — when you're **zoomed in** on a region, playback loops over
      the visible window instead of running past it (a `⟳ loops window` badge shows
      when this is active). Zoom all the way out (**Fit**) to play straight through.
+   - **Chime** — tick the box to hear a short ping each time the playhead crosses a
+     beat, so you can check by ear whether a marker lines up with the heart sound
+     without watching. The slider sets the chime volume; **∝ peak** scales each
+     chime by the waveform's peak height at that beat (loud beats ping louder).
 3. **Detect beats** — pick a detector from the dropdown (auto-discovered from
    `src/analyze/hr`; the BPM range guides spacing) and click. Detection runs in a
    background thread and the beats appear as dashed vertical lines when it
@@ -49,6 +53,8 @@ does).
    at the pair's midpoint) for whatever range the main view is currently showing.
    Drag it to a second screen. It stays in sync live: pan/zoom the main view or
    edit a beat and the graph follows, and the playhead is mirrored during playback.
+   Toggle **Smoothing** to overlay a moving average of the HR (the raw trace stays
+   faintly behind it); the slider sets the window size (5–30 points).
 6. **Export** as **YAML** (timestamps in seconds) or **.npy** (a 1-D float64
    array of seconds). You can also **Load .npy** to bring in previously saved
    timestamps — either as a starting point instead of a detector, or to resume.

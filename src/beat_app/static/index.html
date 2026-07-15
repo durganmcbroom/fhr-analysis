@@ -29,6 +29,13 @@
           <option value="2">2×</option>
         </select>
       </label>
+      <label class="chk" title="Play a short chime as the playhead crosses each beat">
+        <input type="checkbox" id="chime-toggle" /> Chime
+      </label>
+      <input type="range" id="chime-volume" class="chime-vol" min="0" max="100" step="1" value="60" title="Chime volume" />
+      <label class="chk" id="chime-peak-lbl" title="Scale each chime's volume by the waveform peak height at that beat">
+        <input type="checkbox" id="chime-peak" /> ∝ peak
+      </label>
       <span id="time-readout" class="mono muted">0.000 s</span>
       <span id="loop-indicator" class="loop-badge" title="Zoomed in: playback loops over the visible window" hidden>⟳ loops window</span>
     </div>

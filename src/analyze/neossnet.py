@@ -233,7 +233,7 @@ def run_neossnet_belly_machine(
     out_path.mkdir(parents=True, exist_ok=True)
 
     sot_pipe = Pipeline([
-        load_sot_no_ppg(),
+        pea(),
         windowed(window[0], window[1]),
         plot_mic(out_path),
         sot_beats(v8_beat_detector, out_path)

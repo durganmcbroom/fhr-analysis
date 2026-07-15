@@ -18,6 +18,15 @@
       background: var(--panel); border-bottom: 1px solid var(--border); }
     header #title { font-weight: 600; }
     header #stats { color: var(--muted); font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
+    header .controls { margin-left: auto; display: flex; align-items: center; gap: 14px; }
+    .ctl { color: var(--muted); display: inline-flex; align-items: center; gap: 6px;
+      font-size: 12px; white-space: nowrap; cursor: pointer; }
+    .ctl input[type="range"] { width: 110px; accent-color: var(--hr); cursor: pointer; }
+    .ctl input[type="checkbox"] { accent-color: var(--hr); cursor: pointer; }
+    .ctl.disabled { opacity: 0.4; cursor: default; }
+    .ctl.disabled input { cursor: default; }
+    #win-val { color: var(--text); font-family: ui-monospace, Menlo, monospace;
+      min-width: 16px; text-align: right; display: inline-block; }
     #hr { flex: 1; width: 100%; min-height: 0; display: block; }
     footer { padding: 4px 14px; color: var(--muted); font-size: 11.5px;
       background: var(--panel); border-top: 1px solid var(--border); min-height: 22px; }
@@ -27,6 +36,13 @@
   <header>
     <span id="title">Heart rate — 60 / IBI</span>
     <span id="stats"></span>
+    <span class="controls">
+      <label class="ctl"><input type="checkbox" id="smooth-toggle" /> Smoothing</label>
+      <label class="ctl" id="win-ctl" title="Moving-average window (number of HR points)">
+        window <span id="win-val">7</span>
+        <input type="range" id="smooth-window" min="5" max="30" step="1" value="7" />
+      </label>
+    </span>
   </header>
   <canvas id="hr"></canvas>
   <footer id="msg">Waiting for the main window…</footer>
@@ -43,7 +59,37 @@
   const elTitle = document.getElementById("title");
   const elStats = document.getElementById("stats");
   const elMsg = document.getElementById("msg");
+  const elSmoothToggle = document.getElementById("smooth-toggle");
+  const elSmoothWindow = document.getElementById("smooth-window");
+  const elWinVal = document.getElementById("win-val");
+  const elWinCtl = document.getElementById("win-ctl");
   let cssW = 1, cssH = 1;
+
+  // Smoothing: a centred moving average over the HR point series (count-based window).
+  let smoothing = false;
+  let smoothWin = 7;
+  function syncSmoothUI() {
+    elSmoothWindow.disabled = !smoothing;
+    elWinCtl.classList.toggle("disabled", !smoothing);
+    elWinVal.textContent = smoothWin;
+  }
+  elSmoothToggle.addEventListener("change", () => {
+    smoothing = elSmoothToggle.checked; syncSmoothUI(); draw();
+  });
+  elSmoothWindow.addEventListener("input", () => {
+    smoothWin = +elSmoothWindow.value; elWinVal.textContent = smoothWin; if (smoothing) draw();
+  });
+  syncSmoothUI();
+
+  function movingAverage(pts, w) {
+    const k = Math.floor(w / 2);
+    return pts.map((p, i) => {
+      let sum = 0, n = 0;
+      const a = Math.max(0, i - k), b = Math.min(pts.length - 1, i + k);
+      for (let j = a; j <= b; j++) { sum += pts[j].hr; n++; }
+      return { t: p.t, hr: sum / n };
+    });
+  }
 
   function resize() {
     const r = canvas.getBoundingClientRect();
@@ -111,7 +157,8 @@
       const hrs = visible.map((p) => p.hr).sort((a, b) => a - b);
       const median = hrs[Math.floor(hrs.length / 2)];
       elStats.textContent =
-        `${visible.length} pts · mean ${mean.toFixed(1)} · median ${median.toFixed(1)} bpm`;
+        `${visible.length} pts · mean ${mean.toFixed(1)} · median ${median.toFixed(1)} bpm`
+        + (smoothing ? `  ·  smoothed (w=${smoothWin})` : "");
       elMsg.textContent = `window ${x0.toFixed(2)}–${x1.toFixed(2)} s`;
     }
 
@@ -172,22 +219,35 @@
     // HR line + markers (clipped to the plot rect so edge segments show partially)
     ctx.save();
     ctx.beginPath(); ctx.rect(M.l, M.t, pw, ph); ctx.clip();
-    if (pts.length >= 2) {
-      ctx.strokeStyle = "#46e6a0";
-      ctx.lineWidth = 1.6;
+
+    const drawLine = (series, color, lw) => {
+      if (series.length < 2) return;
+      ctx.strokeStyle = color; ctx.lineWidth = lw;
       ctx.beginPath();
-      pts.forEach((p, i) => {
+      series.forEach((p, i) => {
         const X = tx(p.t), Y = ty(p.hr);
         if (i === 0) ctx.moveTo(X, Y); else ctx.lineTo(X, Y);
       });
       ctx.stroke();
+    };
+    const drawMarkers = (series, color, r) => {
+      ctx.fillStyle = color;
+      for (const p of series) {
+        if (p.t < x0 || p.t > x1) continue;
+        ctx.beginPath(); ctx.arc(tx(p.t), ty(p.hr), r, 0, 2 * Math.PI); ctx.fill();
+      }
+    };
+
+    if (smoothing) {
+      drawLine(pts, "rgba(70,230,160,0.22)", 1.0);          // faint raw for context
+      const sm = movingAverage(pts, smoothWin);
+      drawLine(sm, "#46e6a0", 1.9);
+      drawMarkers(sm, "#46e6a0", 2.4);
+    } else {
+      drawLine(pts, "#46e6a0", 1.6);
+      drawMarkers(pts, "#46e6a0", 2.6);
     }
-    ctx.fillStyle = "#46e6a0";
-    for (const p of visible) {
-      ctx.beginPath();
-      ctx.arc(tx(p.t), ty(p.hr), 2.6, 0, 2 * Math.PI);
-      ctx.fill();
-    }
+
     // playhead
     if (playhead != null && playhead >= x0 && playhead <= x1) {
       const x = Math.round(tx(playhead)) + 0.5;

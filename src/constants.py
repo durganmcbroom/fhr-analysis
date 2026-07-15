@@ -26,6 +26,7 @@ FUNET_MODEL_PATH = os.path.join(PROJECT_DIR, "lib/funet/models/funet-v11/model_b
 FIBER_BUNDLE_A = "ps4000.npy"   # chest device bundle
 FIBER_BUNDLE_B = "ps3000a.npy"  # abdomen device bundle
 MIC_FILE = "microphone.wav"
+MIC_BEATS_FILE = "mic_beats.npy"  # hand-marked fetal beat times (s) from the beat-marking app
 PVS_FILE = "pvs.npy"
 
 ABDOMEN_FIBER_NAMES = ["1B", "2A", "2B", "2C", "2D"]

@@ -70,6 +70,11 @@ button.primary:hover { background: #3a7cc4; }
 .filebtn { display: inline-block; }
 .filebtn.small { padding: 4px 9px; }
 
+.chime-vol { width: 72px; accent-color: var(--accent); vertical-align: middle; cursor: pointer; }
+.chime-vol:disabled { cursor: default; opacity: .4; }
+.chk.disabled { opacity: .4; cursor: default; }
+.chk.disabled input { cursor: default; }
+
 .num {
   width: 56px;
   font: inherit;

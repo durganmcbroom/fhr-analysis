@@ -38,6 +38,13 @@ const state = {
   audioURL: null,       // object URL backing audioEl
   playbackRate: 1.0,    // playback speed; pitch is preserved
 
+  chime: false,             // play a short ping as the playhead crosses each beat
+  chimeVolume: 0.6,         // 0..1 master chime volume
+  chimePeakScale: false,    // scale each chime by the waveform peak height at that beat
+  chimeScheduled: new Set(),// beats already scheduled to chime this playback pass
+  chimeNodes: [],           // scheduled oscillator nodes (so a pause can cancel them)
+  chimeLastPos: -Infinity,  // last playhead pos seen by the chime scheduler
+
   drag: null,           // active beat drag
   suppressClick: false,
 };
@@ -53,6 +60,9 @@ const els = {
   playBtn: $("play-btn"),
   stopBtn: $("stop-btn"),
   speedSelect: $("speed-select"),
+  chimeToggle: $("chime-toggle"),
+  chimeVolume: $("chime-volume"),
+  chimePeak: $("chime-peak"),
   loopIndicator: $("loop-indicator"),
   timeReadout: $("time-readout"),
   detectGroup: $("detect-group"),
@@ -430,13 +440,80 @@ function setupAudioElement(file) {
   if ("webkitPreservesPitch" in el) el.webkitPreservesPitch = true;
   el.playbackRate = state.playbackRate;
   el.addEventListener("ended", onAudioEnded);
-  // timeupdate is the robust loop backstop: it fires during playback even when the
-  // tab is backgrounded (requestAnimationFrame is paused then), so the window loop
-  // holds regardless of visibility. rAF just makes the on-screen loop tighter.
-  el.addEventListener("timeupdate", enforceLoop);
+  // timeupdate is the robust backstop for both the window loop and the beat chime:
+  // it fires during playback even when the tab is backgrounded (requestAnimationFrame
+  // is paused then). rAF just makes the on-screen loop / chime timing tighter.
+  el.addEventListener("timeupdate", onTimeUpdate);
   state.audioEl = el;
   state.isPlaying = false;
   els.playBtn.textContent = "▶ Play";
+}
+
+// --- beat chime -------------------------------------------------------------
+// A short synthesized ping fired exactly as the playhead crosses each beat, so
+// the beat marker and the actual heart sound can be checked by ear. Scheduled a
+// little ahead on the AudioContext clock (sample-accurate) rather than played on
+// the frame we notice the crossing, so it lands on the beat at any playback rate.
+const CHIME_LOOKAHEAD_S = 0.3;  // schedule this far ahead so the timeupdate backstop
+                                // (fires ~4x/s, even when backgrounded) never misses a beat
+const MAX_CHIME_GAIN = 0.4;   // gain at 100% volume / full-height peak
+const MIN_PEAK_FACTOR = 0.15; // floor so a chime on a tiny beat is still audible
+
+function playChime(when, amp) {
+  const ctx = state.audioCtx;
+  if (!ctx || amp <= 0.0002) return;
+  const osc = ctx.createOscillator();
+  const gain = ctx.createGain();
+  osc.type = "sine";
+  osc.frequency.value = 1500;
+  gain.gain.setValueAtTime(0.0001, when);
+  gain.gain.exponentialRampToValueAtTime(amp, when + 0.004);   // fast attack
+  gain.gain.exponentialRampToValueAtTime(0.0001, when + 0.06); // short decay
+  osc.connect(gain).connect(ctx.destination);
+  osc.start(when);
+  osc.stop(when + 0.08);
+  state.chimeNodes.push(osc);
+  osc.onended = () => {
+    const i = state.chimeNodes.indexOf(osc);
+    if (i >= 0) state.chimeNodes.splice(i, 1);
+  };
+}
+
+// Peak amplitude of the waveform near time t, as a 0..1 fraction of the global
+// max — used to make a chime as loud as the beat it sits on.
+function localPeakHeight(t) {
+  if (!state.samples) return 1;
+  const sr = state.sampleRate;
+  const w = Math.max(1, Math.round(SNAP_WIN_S * sr));
+  const c = clamp(Math.round(t * sr), 0, state.samples.length - 1);
+  const a = Math.max(0, c - w), b = Math.min(state.samples.length - 1, c + w);
+  let mx = 0;
+  for (let i = a; i <= b; i++) { const v = Math.abs(state.samples[i]); if (v > mx) mx = v; }
+  return clamp(mx / (state.peakAbs || 1), 0, 1);
+}
+
+// Cancel chimes scheduled but not yet heard (on pause/stop, loop wrap, toggle off).
+function cancelPendingChimes() {
+  for (const osc of state.chimeNodes) { try { osc.stop(); } catch (e) {} }
+  state.chimeNodes = [];
+  state.chimeScheduled.clear();
+}
+
+// Schedule any beats coming up within the look-ahead window that aren't queued yet.
+function scheduleChimes(pos, rate) {
+  if (!state.chime || !state.audioCtx) return;
+  if (pos < state.chimeLastPos - 1e-3) cancelPendingChimes();  // wrapped/seeked back
+  state.chimeLastPos = pos;
+  const ctxNow = state.audioCtx.currentTime;
+  const horizon = pos + CHIME_LOOKAHEAD_S * Math.max(rate, 1e-3);
+  for (const b of state.beats) {
+    if (b.t > pos && b.t <= horizon && !state.chimeScheduled.has(b)) {
+      const peakFactor = state.chimePeakScale ? Math.max(MIN_PEAK_FACTOR, localPeakHeight(b.t)) : 1;
+      const amp = MAX_CHIME_GAIN * state.chimeVolume * peakFactor;
+      playChime(Math.max(ctxNow, ctxNow + (b.t - pos) / rate), amp);
+      state.chimeScheduled.add(b);
+    }
+  }
 }
 
 // Keep the playhead inside the visible window while zoomed in; returns true if it
@@ -451,6 +528,14 @@ function enforceLoop() {
   return false;
 }
 
+// Visibility-independent driver for loop + chime (rAF is paused when backgrounded).
+function onTimeUpdate() {
+  enforceLoop();
+  if (state.isPlaying && state.audioEl) {
+    scheduleChimes(state.audioEl.currentTime, state.playbackRate);
+  }
+}
+
 function currentPlayTime() {
   if (state.isPlaying && state.audioEl) return state.audioEl.currentTime;
   return state.playCursor != null ? state.playCursor : state.view.start;
@@ -463,6 +548,11 @@ function startPlayback(fromT) {
   } else {
     fromT = clamp(fromT, 0, Math.max(0, state.duration - 1e-3));
   }
+  // Resume the AudioContext (this call is inside a user gesture) so the chime
+  // scheduler can make sound, then arm the scheduler for this pass.
+  if (state.audioCtx && state.audioCtx.state === "suspended") state.audioCtx.resume();
+  cancelPendingChimes();
+  state.chimeLastPos = fromT;
   state.audioEl.playbackRate = state.playbackRate;
   try { state.audioEl.currentTime = fromT; } catch (e) {}
   const p = state.audioEl.play();
@@ -475,6 +565,7 @@ function startPlayback(fromT) {
 function pausePlayback() {
   const pos = currentPlayTime();
   if (state.audioEl) state.audioEl.pause();
+  cancelPendingChimes();
   state.isPlaying = false;
   state.playCursor = clamp(pos, 0, state.duration);
   els.playBtn.textContent = "▶ Play";
@@ -484,6 +575,7 @@ function pausePlayback() {
 
 function finishPlayback() {
   if (state.audioEl) state.audioEl.pause();
+  cancelPendingChimes();
   state.isPlaying = false;
   state.playCursor = null;
   els.playBtn.textContent = "▶ Play";
@@ -493,6 +585,7 @@ function finishPlayback() {
 
 function stopPlayback() {
   if (state.audioEl) state.audioEl.pause();
+  cancelPendingChimes();
   state.isPlaying = false;
   state.playCursor = null;
   els.playBtn.textContent = "▶ Play";
@@ -527,6 +620,8 @@ function playbackTick() {
     finishPlayback();
     return;
   }
+  // Re-read after any loop seek so the scheduler uses the post-wrap position.
+  scheduleChimes(state.audioEl ? state.audioEl.currentTime : 0, state.playbackRate);
   draw();
   broadcastPlayhead();  // moving playhead line in the HR window
   requestAnimationFrame(playbackTick);
@@ -932,6 +1027,22 @@ els.speedSelect.addEventListener("change", (e) => {
   state.playbackRate = parseFloat(e.target.value) || 1;
   if (state.audioEl) state.audioEl.playbackRate = state.playbackRate;  // applies live
 });
+function updateChimeUI() {
+  const on = state.chime;
+  els.chimeVolume.disabled = !on;
+  els.chimePeak.disabled = !on;
+  els.chimeVolume.classList.toggle("disabled", !on);
+  document.getElementById("chime-peak-lbl").classList.toggle("disabled", !on);
+}
+els.chimeToggle.addEventListener("change", (e) => {
+  state.chime = e.target.checked;
+  updateChimeUI();
+  if (!state.chime) cancelPendingChimes();
+  else if (state.audioCtx && state.audioCtx.state === "suspended") state.audioCtx.resume();
+});
+els.chimeVolume.addEventListener("input", (e) => { state.chimeVolume = (+e.target.value) / 100; });
+els.chimePeak.addEventListener("change", (e) => { state.chimePeakScale = e.target.checked; });
+updateChimeUI();
 els.detectBtn.addEventListener("click", runDetection);
 els.clearBtn.addEventListener("click", () => setBeats([]));
 els.hrWindowBtn.addEventListener("click", openHRWindow);

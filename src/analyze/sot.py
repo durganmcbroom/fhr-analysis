@@ -12,7 +12,7 @@ from scipy.signal import detrend, find_peaks
 from analyze.data import Audio
 from analyze.filters import bp_filter
 from analyze.util import normalize_path
-from constants import FETAL_ACOUSTIC_BAND_HZ, MATERNAL_BPM_RANGE, MIC_FILE, PVS_FILE
+from constants import FETAL_ACOUSTIC_BAND_HZ, MATERNAL_BPM_RANGE, MIC_FILE, MIC_BEATS_FILE, PVS_FILE
 
 
 def _window_beats(beats, start, end):
@@ -35,14 +35,16 @@ class SOTResult:
 
         Lets the generic `windowed` stage (data.py) be reused for the SOT
         pipeline. eval_v2 pipelines skip this and pass the full SOT instead, so
-        the initial-lag search has data beyond the analysis-window edges."""
-        ppg_b = _window_beats(self.ppg_beats, start, end)
-        mic_b = _window_beats(self.mic_beats, start, end)
+        the initial-lag search has data beyond the analysis-window edges. The
+        ppg fields may be None (e.g. a beats-only SOT from ``load_sot_beats``),
+        so they are guarded here."""
+        ppg_b = _window_beats(self.ppg_beats, start, end) if self.ppg_beats is not None else None
+        mic_b = _window_beats(self.mic_beats, start, end) if self.mic_beats is not None else None
 
         return SOTResult(
-            ppg=self.ppg.window(start, end),
+            ppg=self.ppg.window(start, end) if self.ppg is not None else None,
             ppg_beats=ppg_b,
-            mic=self.mic.window(start, end),
+            mic=self.mic.window(start, end) if self.mic is not None else None,
             mic_beats=mic_b,
         )
 
@@ -267,6 +269,58 @@ def load_sot_no_ppg(
 
     run_load_sot.__name__ = "load_sot"
     return run_load_sot
+
+
+def _load_beat_npy(npy_path: str) -> npt.NDArray[np.float64]:
+    """Load beat timestamps (seconds) from a ``.npy`` file written by the
+    beat-marking app. Accepts a 1-D array of times, or a 2-D array whose first
+    column is time (matching the project's ``[:, 0]`` time convention)."""
+    arr = np.asarray(np.load(npy_path, allow_pickle=False), dtype=float)
+    if arr.ndim == 2 and arr.shape[1] >= 1:
+        arr = arr[:, 0]
+    arr = arr.ravel()
+    arr = arr[np.isfinite(arr)]
+    return np.sort(arr)
+
+
+def load_sot_beats(
+        mic_beats_file: str = MIC_BEATS_FILE,
+):
+    """Pipeline stage factory: load the mic signal plus *hand-marked* fetal beat
+    times from ``mic_beats.npy``, skipping automatic beat detection.
+
+    Same shape as ``load_sot_no_ppg`` (mic from ``microphone.wav``, no PPG), but
+    instead of running a detector afterwards it reads the raw beat points that the
+    beat-marking app exported next to ``microphone.wav``. Returns a full (un-cropped)
+    ``SOTResult`` carrying those beats, so a following ``windowed(start, end)`` stage
+    crops both the mic and the beats to the analysis window — i.e. it stands in for
+    the ``load_sot_no_ppg() -> windowed() -> sot_beats(detector)`` sequence.
+    """
+
+    def run_load_sot_beats(data_dir: str) -> SOTResult:
+        path = normalize_path(data_dir)
+
+        # --- Microphone (microphone.wav) ---
+        mic_fs, mic_arr = wav_read(path + MIC_FILE)
+        mic_arr = mic_arr.astype(float)
+        if mic_arr.ndim > 1:
+            mic_arr = mic_arr[:, 0]
+        t_mic = np.arange(len(mic_arr)) / float(mic_fs)
+        mic = Audio(t_mic, mic_fs, mic_arr)
+
+        # --- Hand-marked fetal beats (mic_beats.npy), absolute times in seconds ---
+        mic_beats = _load_beat_npy(path + mic_beats_file)
+        print(f"  SOT — loaded {len(mic_beats)} hand-marked mic beats from {mic_beats_file}")
+
+        return SOTResult(
+            ppg=None,
+            ppg_beats=None,
+            mic=mic,
+            mic_beats=mic_beats,
+        )
+
+    run_load_sot_beats.__name__ = "load_sot_beats"
+    return run_load_sot_beats
 
 
 def load_sot(
