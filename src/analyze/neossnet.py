@@ -10,6 +10,7 @@ from analyze.filters import abdomen_bp
 from analyze.hr import sot_beats, fiber_beats, multi_fiber_beats
 from analyze.hr.detect_v2 import v2_beat_detector
 from analyze.hr.detect_v5 import v5_beat_detector
+from analyze.hr.detect_v7 import v7_beat_detector
 from analyze.hr.detect_v8 import v8_beat_detector
 from analyze.pipeline import Pipeline
 from analyze.plot_hr import plot_hr, plot_multi_hr, plot_peaks
@@ -139,7 +140,7 @@ def run_neossnet_pipeline(
     sot_pipe = Pipeline([
         load_sot(),
         windowed(window[0], window[1]),
-        sot_beats(v2_beat_detector, out_path)
+        sot_beats(v7_beat_detector, out_path)
     ], f"{PROJECT_DIR}/.out/cache_sot/neossnet/{patient}", play_sound=False)
     sot = sot_pipe.process(datadir)
 
@@ -151,7 +152,7 @@ def run_neossnet_pipeline(
         use_model(out_path),  # NeoSSNet heart output (maternal-dominated cardiac)
         use_fiber("1"),
         abdomen_bp(*FETAL_ACOUSTIC_BAND_NARROW_HZ, "butter"),  # narrow to the fetal band AFTER the model
-        fiber_beats(v2_beat_detector, out_path),
+        fiber_beats(v7_beat_detector, out_path),
         plot_hr(sot.window(window[0], window[1]), out_path),
         evaluate_v2(sot, out_path),
     ], f"{PROJECT_DIR}/.out/{patient}/neossnet/cache/", play_sound=False)
@@ -237,7 +238,7 @@ def run_neossnet_belly_machine(
         load_sot_no_ppg(),
         windowed(window[0], window[1]),
         plot_mic(out_path),
-        sot_beats(v8_beat_detector, out_path, data_dir=datadir)
+        sot_beats(v7_beat_detector, out_path, data_dir=datadir)
     ], f"{PROJECT_DIR}/.out/cache_sot/neossnet/{patient}", play_sound=False)
     sot: SOTResult = sot_pipe.process(datadir)
 
@@ -249,9 +250,9 @@ def run_neossnet_belly_machine(
         abdomen_bp(*FETAL_ACOUSTIC_BAND_NARROW_HZ, "butter"),  # narrow to the fetal band AFTER the model
         use_fiber("1B"),
         abdomen_sound(out_path, "fetal_fiber"),
-        fiber_beats(v8_beat_detector, out_path),
+        fiber_beats(v7_beat_detector, out_path),
         plot_hr(sot, out_path),
-        evaluate_v2(sot, out_path, lag_bound_s=0.0),
+        evaluate_v2(sot, out_path, window_s=(window[1] - window[0])),
     ], f"{PROJECT_DIR}/.out/{patient}/neossnet/cache/", play_sound=False)
 
     pipe.process(datadir)

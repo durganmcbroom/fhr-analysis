@@ -23,14 +23,14 @@ from analyze.util import run_neossnet
 from constants import PROJECT_DIR, FETAL_ACOUSTIC_BAND_HZ, BROADBAND_FILTER_HZ, POWERLINE_NOTCH_HZ
 
 # PATIENT = "fiber-horizontal"
-PATIENT = "PT13_1"
+PATIENT = "PT12_2"
 # PATIENT = "Patient 7"
 # PATIENT = "patient8-session2"
 # PATIENT = "session-02"
 # PATIENT = "band_durgan_1"
 # WINDOW = 50, 70
 # WINDOW = 60, 70
-WINDOW = 180, 200
+WINDOW = 20, 120
 # WINDOW = 0, 40
 # WINDOW = 0, 20
 DATA_DIR = f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/{PATIENT}"
@@ -231,11 +231,12 @@ if __name__ == '__main__':
     #     WINDOW,
     #     DATA_DIR,
     # )
-    w = (30, 60)
+    w = (30, 90)
+    pat = "5ch_belly_machine_1"
     run_funet_belly_machine(
-        "5ch_belly_machine_1",
+        "%s" % pat,
         w,
-        f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/5ch_belly_machine_1"
+        f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/%s" % pat
     )
     # run_funet_belly_machine(
     #     "5ch_belly_machine_2",
@@ -243,9 +244,9 @@ if __name__ == '__main__':
     #     f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/5ch_belly_machine_2"
     # )
     run_neossnet_belly_machine(
-        f"5ch_belly_machine_1",
+        f"%s" % pat,
         w,
-        f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/5ch_belly_machine_1"
+        f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/%s" % pat
     )
     # run_neossnet_belly_machine(
     #     f"5ch_belly_machine_2",
