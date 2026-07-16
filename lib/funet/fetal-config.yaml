@@ -1,6 +1,6 @@
 model:
   channels: 5
-  dilations: [1, 2, 2, 4]
+  dilations: [1, 2, 4]
   bottleneck_dilation: 1
   bottleneck_convs: 2   # conv-norm-relu blocks in the bottleneck (half the params live here; try 2)
   base_channels: 16
@@ -25,7 +25,7 @@ data:
   hop_length: 256
   augment: ['channel_dropout', 'gain', 'noise']
   # SpecAugment-style masks (train-only), max width of one zeroed band per sample; 0 = off.
-  freq_mask: 40   # freq bins (of 512 kept); try ~40
+  freq_mask: 0   # freq bins (of 512 kept); try ~40
   time_mask: 0   # time frames; keep < one beat interval (~6 frames at hop 256 / 4kHz), try 4-6
 
-model_dir: 'models/funet-v18/'
+model_dir: 'models/funet-v19/'
