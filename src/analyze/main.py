@@ -4,6 +4,7 @@ from analyze.anc import fetal_anc
 from analyze.data import FiberData, load_data, windowed, use_fiber, load_no_chest_data
 from analyze.evaluate import evaluate, combine_evaluations, plot_evaluation
 from analyze.evaluate_v2 import evaluate_v2
+from analyze.evaluate_v3 import evaluate_v3
 from analyze.filters import abdomen_bp, bp, notch
 from analyze.funet import run_funet_pipeline, run_funet_belly_machine
 from analyze.hr import fiber_beats, sot_beats
@@ -186,6 +187,33 @@ def run_raw_bandpass():
     ], f"{out}/cache")
 
     band_pipe.process(DATA_DIR)
+
+
+def run_raw_bandpass_v3():
+    """Same raw-bandpass recipe as run_raw_bandpass, but scored with evaluate_v3:
+    the SOT-vs-fiber lag comes from cross-correlating the 60/IBI HR traces and the
+    overall score is the best HR correlation coefficient (see evaluate_v3.py)."""
+    out = f"{PROJECT_DIR}.out/{PATIENT}/raw_bandpass_190_220_v3"
+    Path(out).mkdir(parents=True, exist_ok=True)
+
+    # evaluate_v3 gets the FULL SOT (it windows internally, like evaluate_v2).
+    sot_pipe = Pipeline([
+        load_sot(),
+        sot_beats(v2_beat_detector, Path(out)),
+    ], f"{out}/sot")
+    sot = sot_pipe.process(DATA_DIR)
+
+    band_pipe = Pipeline([
+        load_data,
+        windowed(WINDOW[0], WINDOW[1]),
+        FiberData.apply(bp(*FETAL_ACOUSTIC_BAND_HZ, "butter")),
+        use_fiber("1B"),
+        fiber_beats(v2_beat_detector, Path(out)),
+        evaluate_v3(sot, Path(out)),
+    ], f"{out}/cache")
+
+    result = band_pipe.process(DATA_DIR)
+    print(f"evaluate_v3 — overall score (best HR corr coef): {result.overall_score:.3f}")
 
 
 def run_raw_bandpass_no_sot():

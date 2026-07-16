@@ -2,6 +2,7 @@ model:
   channels: 5
   dilations: [1, 2, 2, 4]
   bottleneck_dilation: 1
+  bottleneck_convs: 3
   base_channels: 16
   dropout: 0.2   # Dropout2d p in bottleneck + deepest enc/dec level; 0 = off (try 0.1-0.2)
 

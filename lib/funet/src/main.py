@@ -69,6 +69,7 @@ def main(config: Config):
         channels=config.model.channels,
         dilations=config.model.dilations,
         bottleneck_dilation=config.model.bottleneck_dilation,
+        bottleneck_convs=config.model.bottleneck_convs,
         base_channels=config.model.base_channels,
         head=head,
         dropout=config.model.dropout,

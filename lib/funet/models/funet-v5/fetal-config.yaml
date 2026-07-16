@@ -3,6 +3,7 @@ model:
   channels: 5   # mix is mono in the tune-ssnet snippet format
   dilations: [1, 1, 2, 4]
   bottleneck_dilation: 2
+  bottleneck_convs: 3
   base_channels: 24
 
 # training (see train() in src/train.py)

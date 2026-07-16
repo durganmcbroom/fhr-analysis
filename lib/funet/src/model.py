@@ -78,6 +78,7 @@ class FUNet(nn.Module):
         channels: int = 4,
         dilations = [1, 1, 1, 2, 2, 4, 4],
         bottleneck_dilation = 8,
+        bottleneck_convs: int = 3, # conv-norm-relu blocks in the bottleneck stack
         base_channels: int = 64,   # width of the first level; every level doubles from here
         head: str = "logprob",     # "logprob" -> log_softmax (KLDivLoss); "signal" -> raw signal (SNR loss)
         dropout: float = 0.0,      # Dropout2d p in the bottleneck + deepest enc/dec level; 0 = off
@@ -109,7 +110,7 @@ class FUNet(nn.Module):
 
         bottleneck_ch = base * 2 ** len(dilations)
         bottleneck_modules = []
-        for _ in range(3):
+        for _ in range(bottleneck_convs):
             bottleneck_modules.append(Conv2d(bottleneck_ch, bottleneck_ch, 4, dilation=bottleneck_dilation, padding="same"))
             bottleneck_modules.append(_norm(bottleneck_ch))
             bottleneck_modules.append(ReLU())

@@ -10,6 +10,7 @@ class ModelConfig:
     channels: int = 4
     dilations: List[int] = field(default_factory=lambda: [1, 1, 1, 2, 2, 4, 4])
     bottleneck_dilation: int = 8
+    bottleneck_convs: int = 3  # conv-norm-relu blocks in the bottleneck stack
     base_channels: int = 64    # first-level width; every level doubles from here
     dropout: float = 0.0       # Dropout2d p in the bottleneck + deepest enc/dec level; 0 = off
 
