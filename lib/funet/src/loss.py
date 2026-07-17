@@ -39,6 +39,33 @@ class CorrelationLoss(nn.Module):
         return (1 - corr).mean()
 
 
+class MSELoss(nn.Module):
+    """Per-frame MSE against a unit-peak comb -- a reconstruction objective (contrast with
+    corr/snr, which are scale-invariant shape objectives).
+
+    MSE pins absolute amplitude: beat frames are driven to 1, floor frames to 0. The
+    dataset target is sum-normalized, so its peak height depends on how many beats fall
+    in the window -- an inconsistent regression target. Each item's comb is therefore
+    rescaled to unit peak before the MSE, giving a window-independent beats->1/floor->0
+    target.
+
+    Caveats (see corr vs MSE discussion): it pins an absolute scale that the signal-head
+    inference then softmax-normalizes away (relative peaks survive, calibration is partly
+    unused), and it penalizes overshoot symmetrically (a beat at 1.4 is as "wrong" as
+    0.6), so unlike the d' term in corr_amp it does not push for emphatic peaks. To MSE
+    against the raw sum-normalized target instead, drop the rescale line.
+    """
+
+    def __init__(self, eps: float = 1e-8):
+        super().__init__()
+        self.eps = eps
+
+    def forward(self, output: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        # Rescale to unit peak per item; clamp_min guards an all-zero (silent) target.
+        target = target / target.amax(dim=-1, keepdim=True).clamp_min(self.eps)
+        return nn.functional.mse_loss(output, target)
+
+
 class CorrAmpLoss(nn.Module):
     """Correlation (shape) + d' detection-margin (amplitude/contrast).
 

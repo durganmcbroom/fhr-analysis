@@ -13,7 +13,7 @@ train:
   batch_size: 8
   epochs: 80
   crop_len: 7
-  loss: 'mse'   # 'kldiv' | 'snr' | 'corr' | 'corr_amp' (corr + d' peak-contrast) | 'mse' (unit-peak comb)
+  loss: 'corr_amp'   # 'kldiv' | 'snr' (SI-SNR) | 'corr' (sign-sensitive) | 'corr_amp' (corr + d' peak-contrast)
   lr_schedule: 'cosine'   # 'none' (constant LR) | 'cosine' (anneal learning_rate -> min_lr over epochs)
   min_lr: 1.e-5         # cosine floor; unused when lr_schedule is 'none'
   # corr_amp only (ignored by other losses): d' rewards beats standing clear of a quiet floor.
@@ -31,4 +31,4 @@ data:
   freq_mask: 0   # freq bins (of 512 kept); try ~40
   time_mask: 0   # time frames; keep < one beat interval (~6 frames at hop 256 / 4kHz), try 4-6
 
-model_dir: 'models/funet-v21/'
+model_dir: 'models/funet-v20/'

@@ -6,7 +6,7 @@ from torch import nn, optim
 
 from config import Config, load_config
 from data import make_train_dataloader, make_test_dataloader
-from loss import SNRLoss, CorrelationLoss, CorrAmpLoss
+from loss import SNRLoss, CorrelationLoss, CorrAmpLoss, MSELoss
 from model import FUNet
 from train import fit
 
@@ -24,6 +24,7 @@ LOSSES = {
     "corr": (lambda cfg: CorrelationLoss(), "signal"),   # sign-sensitive; fixes the SI-SNR sign-flip
     "corr_amp": (lambda cfg: CorrAmpLoss(amp_weight=cfg.train.amp_weight,   # corr + d' peak-contrast
                                          beat_threshold=cfg.train.amp_beat_threshold), "signal"),
+    "mse": (lambda cfg: MSELoss(), "signal"),   # per-frame regression to a unit-peak comb
 }
 
 
