@@ -48,13 +48,31 @@ from analyze.evaluate import _robust_match
 # into a ±50 ms match — while staying far cheaper than the 200 Hz impulse grid.
 HR_XCORR_FS = 50.0
 
-# Beats averaged (moving_average_v2) into the HR trace. HR is smooth, so the
-# correlation *coefficient* — the v3 score — is a trend-agreement measure and is
-# robust to this choice. The *lag* is only trend-accurate (coarse at sub-beat
-# scale, since HR barely moves over one beat); lighter smoothing localises it a
-# little better without letting beat-scale structure alias the correlation. 5 is
-# a compromise between plot_hr's display smoothing (10) and none (1).
-HR_SMOOTH_BEATS = 5
+# Beats averaged (moving_average_v2) into each 60/IBI HR trace. Two smoothings,
+# deliberately decoupled:
+#
+#   * DISPLAY (the HR panel) scales with the analysis-window length so a long
+#     recording reads as a trend, not a dense cloud of jumpy points:
+#     `HR_SMOOTH_PER_60S` beats per 60 s (10 at 60 s, 20 at 120 s, ...), floored
+#     at `HR_SMOOTH_MIN`. Override with an explicit ``hr_smooth`` beat count.
+#   * CORRELATION (the lag + the score) uses a fixed, light `HR_XCORR_SMOOTH`, so
+#     the lag stays as well-localised as possible and the correlation coefficient
+#     is comparable across window lengths — independent of the display smoothing.
+#
+# HR is smooth, so the coefficient is a trend-agreement measure either way and the
+# lag is only trend-accurate regardless (coarse at sub-beat scale).
+HR_SMOOTH_PER_60S = 10
+HR_SMOOTH_MIN = 3
+HR_XCORR_SMOOTH = 5
+
+
+def _smooth_for_window(span_s: float) -> int:
+    """Beats to average into the HR trace for an analysis window of ``span_s``.
+
+    Anchored so a 60 s window smooths over ``HR_SMOOTH_PER_60S`` beats and scales
+    linearly with duration; never below ``HR_SMOOTH_MIN``.
+    """
+    return max(HR_SMOOTH_MIN, int(round(HR_SMOOTH_PER_60S * float(span_s) / 60.0)))
 
 # Plausible HR bands used only to clip the 60/IBI trace (drop spurious
 # missed/extra-beat spikes). Fetal reuses the project range; maternal matches the
@@ -69,7 +87,7 @@ MATERNAL_HR_BAND = (30.0, 160.0)
 def _inst_hr(
         beats: np.ndarray,
         band: Tuple[float, float],
-        smooth: int = HR_SMOOTH_BEATS,
+        smooth: int = HR_SMOOTH_PER_60S,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Instantaneous HR as ``(time, bpm)`` via the 60/IBI method.
 
@@ -225,6 +243,7 @@ class ChannelEvalV3:
     xcorr_lags: npt.NDArray[np.float64] | None = None
     xcorr_corr: npt.NDArray[np.float64] | None = None
     band: Tuple[float, float] = FETAL_BPM_RANGE
+    hr_smooth_used: int = HR_SMOOTH_PER_60S   # beats averaged into the HR trace
     # stored to allow combine / plotting over the full span
     ref_times: npt.NDArray[np.float64] | None = None
     pred_times: npt.NDArray[np.float64] | None = None
@@ -263,11 +282,18 @@ def _eval_channel_v3(
         band: Tuple[float, float],
         lag_bound_s: float = 5.0,
         hr_fs: float = HR_XCORR_FS,
-        hr_smooth: int = HR_SMOOTH_BEATS,
+        hr_smooth: Optional[int] = None,
+        xcorr_smooth: int = HR_XCORR_SMOOTH,
         correct_thr: float = 0.05,
 ) -> ChannelEvalV3:
     ref_times = np.sort(np.asarray(ref_times, dtype=float))
     pred_times = np.sort(np.asarray(pred_times, dtype=float))
+
+    # DISPLAY smoothing scales with the window length (60 s -> 10 beats) unless the
+    # caller pins it, so long recordings read as a trend rather than a jumpy point
+    # cloud. The CORRELATION below uses its own fixed light `xcorr_smooth` so the
+    # lag/score stay well-localised and comparable regardless of the display.
+    disp_smooth = hr_smooth if hr_smooth is not None else _smooth_for_window(t_end - t_start)
 
     # Reference beats for the HR trace may reach a lag_bound margin past the
     # analysis window so the shifted correlation keeps support at the edges; the
@@ -276,10 +302,14 @@ def _eval_channel_v3(
     ref_hr_beats = ref_times[(ref_times >= t_start - margin) & (ref_times <= t_end + margin)]
     pred_win = pred_times[(pred_times >= t_start) & (pred_times <= t_end)]
 
-    ref_hr_t, ref_hr = _inst_hr(ref_hr_beats, band, hr_smooth)
-    pred_hr_t, pred_hr = _inst_hr(pred_win, band, hr_smooth)
+    # Correlation traces (fixed light smoothing) -> lag + score.
+    ref_xt, ref_xhr = _inst_hr(ref_hr_beats, band, xcorr_smooth)
+    pred_xt, pred_xhr = _inst_hr(pred_win, band, xcorr_smooth)
+    xc = _hr_xcorr(ref_xt, ref_xhr, pred_xt, pred_xhr, lag_bound_s, hr_fs)
 
-    xc = _hr_xcorr(ref_hr_t, ref_hr, pred_hr_t, pred_hr, lag_bound_s, hr_fs)
+    # Display traces (window-scaled smoothing) -> the HR panel.
+    ref_hr_t, ref_hr = _inst_hr(ref_hr_beats, band, disp_smooth)
+    pred_hr_t, pred_hr = _inst_hr(pred_win, band, disp_smooth)
     lag_s = xc["lag_s"] if np.isfinite(xc["lag_s"]) else 0.0
     best_corr = float(xc["corr"])
 
@@ -320,6 +350,7 @@ def _eval_channel_v3(
         xcorr_lags=xc["lags"],
         xcorr_corr=xc["corr_curve"],
         band=band,
+        hr_smooth_used=disp_smooth,
         ref_times=ref_score,
         pred_times=pred_win,
         t_start=t_start,
@@ -379,7 +410,8 @@ def _plot_channel_v3(
     ax_hr.grid(True, alpha=0.25)
     ax_hr.legend(loc='upper right', fontsize=7)
     ax_hr.set_title(
-        f"{ev.label} HR (60/IBI) -- best corr={ev.best_corr:.3f} @ lag={ev.lag_s:+.3f}s",
+        f"{ev.label} HR (60/IBI, smooth={ev.hr_smooth_used} beats) -- "
+        f"best corr={ev.best_corr:.3f} @ lag={ev.lag_s:+.3f}s",
         fontsize=8,
     )
 
@@ -476,7 +508,8 @@ def evaluate_v3(
         out: Path,
         lag_bound_s: float = 5.0,
         hr_fs: float = HR_XCORR_FS,
-        hr_smooth: int = HR_SMOOTH_BEATS,
+        hr_smooth: Optional[int] = None,
+        xcorr_smooth: int = HR_XCORR_SMOOTH,
         fetal_band: Tuple[float, float] = FETAL_BPM_RANGE,
         maternal_band: Tuple[float, float] = MATERNAL_HR_BAND,
 ):
@@ -488,6 +521,13 @@ def evaluate_v3(
     the prediction by that lag, robust-match, count ±50 ms hits). The overall
     score is the best (peak) HR correlation coefficient — see
     ``EvaluationResultV3.overall_score``.
+
+    ``hr_smooth`` is the beats averaged into the *displayed* HR trace. Left as
+    ``None`` it scales with the analysis-window length (``HR_SMOOTH_PER_60S`` beats
+    per 60 s, e.g. 10 at 60 s, 20 at 120 s) so long recordings read as a trend
+    rather than a jumpy point cloud; pass an int to pin it. The *correlation* (lag
+    + score) uses its own fixed light ``xcorr_smooth`` so it stays comparable
+    across window lengths regardless of the display smoothing.
 
     Like ``evaluate_v2``, ``sot`` is the **full**, un-windowed SOT (the analysis
     window is taken from the fiber result); scoring is restricted to that window
@@ -519,6 +559,7 @@ def evaluate_v3(
                 lag_bound_s=lag_bound_s,
                 hr_fs=hr_fs,
                 hr_smooth=hr_smooth,
+                xcorr_smooth=xcorr_smooth,
             )
 
         f_t0, f_t1 = _span(fetal_result.fetal_source)
@@ -532,6 +573,7 @@ def evaluate_v3(
             lag_bound_s=lag_bound_s,
             hr_fs=hr_fs,
             hr_smooth=hr_smooth,
+            xcorr_smooth=xcorr_smooth,
         )
 
         result_v3 = EvaluationResultV3(maternal=maternal_ev, fetal=fetal_ev, fetal_result=fetal_result)

@@ -12,6 +12,7 @@ from analyze.hr.classify import classify_sources
 from analyze.hr.detect import v1_beat_detector
 from analyze.hr.detect_v2 import v2_beat_detector
 from analyze.hr.detect_v3 import v3_beat_detector
+from analyze.hr.detect_v7 import v7_beat_detector
 from analyze.ica import load_ica_data, prepare_signals, run_ica
 from analyze.mlcmed import run_mlcmed
 from analyze.mnmf import run_mnmf
@@ -26,12 +27,12 @@ from constants import PROJECT_DIR, FETAL_ACOUSTIC_BAND_HZ, BROADBAND_FILTER_HZ, 
 # PATIENT = "fiber-horizontal"
 PATIENT = "PT12_2"
 # PATIENT = "Patient 7"
-# PATIENT = "patient8-session2"
+# PATIENT = "patient8-session1"
 # PATIENT = "session-02"
 # PATIENT = "band_durgan_1"
 # WINDOW = 50, 70
 # WINDOW = 60, 70
-WINDOW = 20, 120
+WINDOW = 10, 310
 # WINDOW = 0, 40
 # WINDOW = 0, 20
 DATA_DIR = f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/{PATIENT}"
@@ -165,14 +166,15 @@ def run_mnmf_pipeline():
 
 
 def run_raw_bandpass():
-    out = f"{PROJECT_DIR}.out/{PATIENT}/raw_bandpass_190_220"
-    Path(out).mkdir(parents=True, exist_ok=True)
+    out = Path(f"{PROJECT_DIR}.out/{PATIENT}/raw_bandpass_190_220")
+    out.mkdir(parents=True, exist_ok=True)
 
     # eval_v2 gets the FULL SOT (wider initial-lag search); plot_hr gets a
     # windowed SOT so the HR comparison stays within the analysis window.
     sot_pipe = Pipeline([
         load_sot(),
-        sot_beats(v2_beat_detector, Path(out)),
+        windowed(WINDOW[0], WINDOW[1]),
+        sot_beats(v7_beat_detector, Path(out)),
     ], f"{out}/sot")
     sot = sot_pipe.process(DATA_DIR)
 
@@ -181,40 +183,12 @@ def run_raw_bandpass():
         windowed(WINDOW[0], WINDOW[1]),
         FiberData.apply(bp(*FETAL_ACOUSTIC_BAND_HZ, "butter")),
         use_fiber("1B"),
-        fiber_beats(v2_beat_detector, Path(out)),
+        fiber_beats(v7_beat_detector, Path(out)),
         plot_hr(sot.window(WINDOW[0], WINDOW[1]), out),
-        evaluate_v2(sot, out),
+        evaluate_v3(sot, out),
     ], f"{out}/cache")
 
     band_pipe.process(DATA_DIR)
-
-
-def run_raw_bandpass_v3():
-    """Same raw-bandpass recipe as run_raw_bandpass, but scored with evaluate_v3:
-    the SOT-vs-fiber lag comes from cross-correlating the 60/IBI HR traces and the
-    overall score is the best HR correlation coefficient (see evaluate_v3.py)."""
-    out = f"{PROJECT_DIR}.out/{PATIENT}/raw_bandpass_190_220_v3"
-    Path(out).mkdir(parents=True, exist_ok=True)
-
-    # evaluate_v3 gets the FULL SOT (it windows internally, like evaluate_v2).
-    sot_pipe = Pipeline([
-        load_sot(),
-        sot_beats(v2_beat_detector, Path(out)),
-    ], f"{out}/sot")
-    sot = sot_pipe.process(DATA_DIR)
-
-    band_pipe = Pipeline([
-        load_data,
-        windowed(WINDOW[0], WINDOW[1]),
-        FiberData.apply(bp(*FETAL_ACOUSTIC_BAND_HZ, "butter")),
-        use_fiber("1B"),
-        fiber_beats(v2_beat_detector, Path(out)),
-        evaluate_v3(sot, Path(out)),
-    ], f"{out}/cache")
-
-    result = band_pipe.process(DATA_DIR)
-    print(f"evaluate_v3 — overall score (best HR corr coef): {result.overall_score:.3f}")
-
 
 def run_raw_bandpass_no_sot():
     out = f"{PROJECT_DIR}.out/{PATIENT}/raw_bandpass_190_220"
@@ -249,12 +223,18 @@ def run_raw_bandpass_no_sot():
 # - mark both s1 / s2 on impulses
 
 if __name__ == '__main__':
-    # run_funet_pipeline(
+    run_funet_pipeline(
+        PATIENT,
+        WINDOW,
+        DATA_DIR,
+    )
+    # run_neossnet_pipeline(
     #     PATIENT,
     #     WINDOW,
     #     DATA_DIR,
     # )
-    # run_neossnet_pipeline(
+    # run_raw_bandpass()
+    # run_funet_pipeline(
     #     PATIENT,
     #     WINDOW,
     #     DATA_DIR,
@@ -266,16 +246,16 @@ if __name__ == '__main__':
         w,
         f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/%s" % pat
     )
-    # run_funet_belly_machine(
-    #     "5ch_belly_machine_2",
+    # run_neossnet_belly_machine(
+    #     f"%s" % pat,
     #     w,
-    #     f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/5ch_belly_machine_2"
+    #     f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/%s" % pat
     # )
-    run_neossnet_belly_machine(
-        f"%s" % pat,
-        w,
-        f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/%s" % pat
-    )
+
+
+
+
+
     # run_neossnet_belly_machine(
     #     f"5ch_belly_machine_2",
     #     w,

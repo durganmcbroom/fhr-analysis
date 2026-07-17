@@ -24,9 +24,11 @@ class TrainConfig:
     epochs: int = 40
     crop_len: int = 7          # seconds
     clip: float = 5.0          # max gradient norm
-    loss: str = "kldiv"        # 'kldiv' (distribution), 'snr' (SI-SNR, sign-invariant), or 'corr' (sign-sensitive)
+    loss: str = "kldiv"        # 'kldiv', 'snr', 'corr', or 'corr_amp' (corr + d' peak-contrast term)
     lr_schedule: str = "none"  # 'none' (constant LR) or 'cosine' (anneal learning_rate -> min_lr over epochs)
     min_lr: float = 1e-5       # cosine floor; unused when lr_schedule is 'none'
+    amp_weight: float = 0.0    # corr_amp only: weight on the d' peak-contrast term; 0 = pure correlation
+    amp_beat_threshold: float = 0.1  # corr_amp only: frac of per-item target peak above which a frame is a beat
 
 
 @dataclass

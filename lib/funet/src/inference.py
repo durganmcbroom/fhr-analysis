@@ -22,8 +22,8 @@ from model import FUNet
 
 
 # Which output head each loss trains (mirrors the LOSSES table in main.py). kldiv is a
-# distribution (log_softmax); snr and corr are signal-regression (raw output).
-_LOSS_HEADS = {"kldiv": "logprob", "snr": "signal", "corr": "signal"}
+# distribution (log_softmax); snr, corr and corr_amp are signal-regression (raw output).
+_LOSS_HEADS = {"kldiv": "logprob", "snr": "signal", "corr": "signal", "corr_amp": "signal"}
 
 
 def _head_for(config: Config) -> str:

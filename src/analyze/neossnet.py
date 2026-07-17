@@ -6,6 +6,7 @@ from matplotlib import pyplot as plt
 
 from analyze.data import Audio, load_data, windowed, use_fiber, FiberData, load_no_chest_data, load_no_chest_data_FULL
 from analyze.evaluate_v2 import evaluate_v2
+from analyze.evaluate_v3 import evaluate_v3
 from analyze.filters import abdomen_bp
 from analyze.hr import sot_beats, fiber_beats, multi_fiber_beats
 from analyze.hr.detect_v2 import v2_beat_detector
@@ -154,7 +155,7 @@ def run_neossnet_pipeline(
         abdomen_bp(*FETAL_ACOUSTIC_BAND_NARROW_HZ, "butter"),  # narrow to the fetal band AFTER the model
         fiber_beats(v7_beat_detector, out_path),
         plot_hr(sot.window(window[0], window[1]), out_path),
-        evaluate_v2(sot, out_path),
+        evaluate_v3(sot, out_path),
     ], f"{PROJECT_DIR}/.out/{patient}/neossnet/cache/", play_sound=False)
 
     pipe.process(datadir)

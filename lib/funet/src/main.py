@@ -6,7 +6,7 @@ from torch import nn, optim
 
 from config import Config, load_config
 from data import make_train_dataloader, make_test_dataloader
-from loss import SNRLoss, CorrelationLoss
+from loss import SNRLoss, CorrelationLoss, CorrAmpLoss
 from model import FUNet
 from train import fit
 
@@ -16,11 +16,14 @@ OPTIMIZERS = {
     "AdamW": optim.AdamW,
 }
 
-# loss name -> (loss module factory, matching model output head)
+# loss name -> (config -> loss module, matching model output head). Factories take the
+# config so amplitude-aware losses can read their hyperparameters from it.
 LOSSES = {
-    "kldiv": (lambda: nn.KLDivLoss(reduction="batchmean"), "logprob"),
-    "snr": (SNRLoss, "signal"),
-    "corr": (CorrelationLoss, "signal"),   # sign-sensitive; fixes the SI-SNR sign-flip
+    "kldiv": (lambda cfg: nn.KLDivLoss(reduction="batchmean"), "logprob"),
+    "snr": (lambda cfg: SNRLoss(), "signal"),
+    "corr": (lambda cfg: CorrelationLoss(), "signal"),   # sign-sensitive; fixes the SI-SNR sign-flip
+    "corr_amp": (lambda cfg: CorrAmpLoss(amp_weight=cfg.train.amp_weight,   # corr + d' peak-contrast
+                                         beat_threshold=cfg.train.amp_beat_threshold), "signal"),
 }
 
 
@@ -62,7 +65,7 @@ def main(config: Config):
         loss_factory, head = LOSSES[config.train.loss]
     except KeyError:
         raise ValueError(f"Unknown loss: {config.train.loss!r} (expected one of {list(LOSSES)})") from None
-    loss_fn = loss_factory()
+    loss_fn = loss_factory(config)
     print(f"Loss: {config.train.loss} (model head: {head})")
 
     model = FUNet(

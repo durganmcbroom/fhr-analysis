@@ -168,7 +168,7 @@ def run_funet_pipeline(patient, window, datadir):
         use_funet(out_path, ["1B", "2A", "2B", "2C", "2D"]),
         fiber_beats(v2_beat_detector, out_path),
         plot_hr(sot, out_path),
-        evaluate_v2(sot, out_path)
+        evaluate_v3(sot, out_path, hr_smooth=20)
     ], f"{PROJECT_DIR}/.out/{patient}/funet/cache/", play_sound=False)
 
     return pipe.process(datadir)
@@ -197,7 +197,8 @@ def run_funet_belly_machine(
         fiber_beats(v2_beat_detector, out_path),
         # phase_continuity(out_path),   # stitch S1<->S2 phase slips so HR doesn't lag/spike
         plot_hr(sot, out_path),
-        evaluate_v3(sot, out_path, ),#window_s=(window[1] - window[0])
+        # evaluate_v2(sot, out_path, window_s=(window[1] - window[0])),
+        evaluate_v3(sot, out_path, ),
     ], f"{PROJECT_DIR}/.out/{patient}/funet/cache/", play_sound=False)
 
     pipe.process(datadir)
