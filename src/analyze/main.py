@@ -240,7 +240,7 @@ if __name__ == '__main__':
     #     DATA_DIR,
     # )
     w = (30, 90)
-    pat = "5ch_belly_machine_1"
+    pat = "5ch_belly_machine_2"
     run_funet_belly_machine(
         "%s" % pat,
         w,
