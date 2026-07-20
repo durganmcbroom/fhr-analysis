@@ -246,6 +246,12 @@ if __name__ == '__main__':
         w,
         f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/%s" % pat
     )
+    pat = "5ch_belly_machine_1"
+    run_funet_belly_machine(
+        "%s" % pat,
+        w,
+        f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/%s" % pat
+    )
     # run_neossnet_belly_machine(
     #     f"%s" % pat,
     #     w,
