@@ -79,6 +79,7 @@ class FUNet(nn.Module):
         dilations = [1, 1, 1, 2, 2, 4, 4],
         bottleneck_dilation = 8,
         bottleneck_convs: int = 3, # conv-norm-relu blocks in the bottleneck stack
+        codec_convolutions: int = 3, # conv-norm-relu blocks per encoder AND per decoder level
         base_channels: int = 64,   # width of the first level; every level doubles from here
         head: str = "logprob",     # "logprob" -> log_softmax (KLDivLoss); "signal" -> raw signal (SNR loss)
         dropout: float = 0.0,      # Dropout2d p in the bottleneck + deepest enc/dec level; 0 = off
@@ -97,6 +98,7 @@ class FUNet(nn.Module):
         # the fine time-localization of beats, which dropout there would smear.
         self.encoders = ModuleList([
             encoder(in_channels=base * 2**i, out_channels=base * 2**(i+1), dilation=e,
+                    convs=codec_convolutions,
                     dropout=dropout if i == len(dilations) - 1 else 0.0)
             for i, e in enumerate(dilations)
         ])
@@ -104,6 +106,7 @@ class FUNet(nn.Module):
         # decoders[0] (i == len(dilations)) is the deepest level.
         self.decoders = ModuleList([
             decoder(in_channels=2 * base * 2**i, out_channels=base * 2**(i-1),
+                    convs=codec_convolutions,
                     dropout=dropout if i == len(dilations) else 0.0)
             for i in range(len(dilations), 0, -1)
         ])

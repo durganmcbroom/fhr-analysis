@@ -43,6 +43,7 @@ def load_funet(config: Config, checkpoint: str, device: torch.device = None) -> 
         dilations=config.model.dilations,
         bottleneck_dilation=config.model.bottleneck_dilation,
         bottleneck_convs=config.model.bottleneck_convs,
+        codec_convolutions=config.model.codec_convolutions,
         base_channels=config.model.base_channels,
         head=_head_for(config),
         # Inactive under eval(), but dropout>0 shifts Sequential state_dict keys, so the
