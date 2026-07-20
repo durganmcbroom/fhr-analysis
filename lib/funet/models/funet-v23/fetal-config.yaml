@@ -1,6 +1,6 @@
 model:
   channels: 5
-  dilations: [1, 1, 1]
+  dilations: [1, 2, 4]
   bottleneck_dilation: 1
   bottleneck_convs: 2
   base_channels: 12
@@ -31,4 +31,4 @@ data:
   freq_mask: 0   # freq bins (of 512 kept); try ~40
   time_mask: 0   # time frames; keep < one beat interval (~6 frames at hop 256 / 4kHz), try 4-6
 
-model_dir: 'models/funet-v24/'
+model_dir: 'models/funet-v23/'
