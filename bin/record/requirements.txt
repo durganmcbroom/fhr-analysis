@@ -10,7 +10,7 @@ kiwisolver==1.5.0
 matplotlib==3.11.0
 numpy==2.5.1
 packaging==26.2
-picosdk @ file:///Users/durganmcbroom/dev/fhr-analysis/record/lib/pico
+picosdk @ file:///Users/durganmcbroom/dev/fhr-analysis/bin/record/lib/pico
 pillow==12.3.0
 PyAudio==0.2.14
 pycparser==3.0
@@ -25,6 +25,7 @@ PyQt5_sip==12.18.0
 pyqtgraph==0.14.0
 python-dateutil==2.9.0.post0
 qasync==0.28.0
+scipy==1.18.0
 six==1.17.0
 sounddevice==0.5.5
 tibs==0.5.7

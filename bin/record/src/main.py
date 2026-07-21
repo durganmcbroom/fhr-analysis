@@ -1,9 +1,7 @@
 import asyncio
 from threading import Thread
 
-from bleak import BleakClient, BleakScanner
 import numpy as np
-from bitstring import BitArray
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QComboBox, QLabel, QFileDialog, QDoubleSpinBox
@@ -26,140 +24,6 @@ DISPLAY_TIME = 10
 SAVE_TIME = 300
 
 
-class PolarVeritySense:
-    BATTERY_LEVEL_UUID = "00002a19-0000-1000-8000-00805f9b34fb"
-
-    PMD_CONTROL = "fb005c81-02e7-f387-1cad-8acd2d8df0c8"
-    PMD_DATA = "fb005c82-02e7-f387-1cad-8acd2d8df0c8"
-
-    PPG_START = bytearray([0x02, 0x01, 0x00, 0x01, 0x37, 0x00, 0x01, 0x01, 0x16, 0x00, 0x04, 0x01, 0x04])
-    PPG_STOP = bytearray([0x03, 0x01])
-
-    MAX_EMIT_LEN = DISPLAY_TIME * 2 * 55
-
-    def __init__(self, device, signal, global_start_time, session_dir):
-        self.device = device
-        self.signal = signal
-        self.global_start_time = global_start_time
-        self.session_dir = session_dir
-
-        self.connected = False
-        self.started = False
-
-        self.previous_timestamp = -1
-        self.t = []
-
-        self.save_t = 0
-        self.save_index = 0
-
-        self.ppg0 = []
-        self.ppg1 = []
-        self.ppg2 = []
-        self.ambient = []
-
-    async def connect(self):
-        if not self.connected:
-            self.client = BleakClient(self.device)
-            await self.client.connect()
-            self.connected = True
-    
-    async def disconnect(self):
-        if self.connected:
-            await self.client.disconnect()
-            self.connected = False
-
-    async def get_battery_level(self):
-        data = await self.client.read_gatt_char(PolarVeritySense.BATTERY_LEVEL_UUID)
-        return data[0]
-
-    async def start_ppg_stream(self):
-        if not self.started:
-            await self.client.write_gatt_char(PolarVeritySense.PMD_CONTROL, PolarVeritySense.PPG_START)
-            await self.client.start_notify(PolarVeritySense.PMD_DATA, self.decode_data)
-            self.started = True
-            print("Starting PPG stream")
-    
-    async def stop_ppg_stream(self):
-        if self.started:
-            await self.client.stop_notify(PolarVeritySense.PMD_DATA)
-            await self.client.write_gatt_char(PolarVeritySense.PMD_CONTROL, PolarVeritySense.PPG_STOP)
-            self.started = False
-            print("Stopping PPG stream")
-            np.save(self.session_dir + "/pvs" , np.stack((self.t, self.ppg0, self.ppg1, self.ppg2, self.ambient), axis=1), allow_pickle=False)
-
-    def decode_data(self, sender, data):
-        if data[0] != 0x01:
-            print("Unexpected measurement type")
-        else:
-            timestamp = PolarVeritySense.convert_to_unsigned_long(data, 1, 8) / 1e9 + 1211010636.1  # empirically determined
-            frame_type = data[9]
-
-            # print(time.time() - timestamp)  # approx. 0.5
-
-            if frame_type != 0x80:
-                print("Unexpected frame type")
-            else:
-                self.ppg0.append(PolarVeritySense.convert_array_to_signed_int(data, 10, 3))
-                self.ppg1.append(PolarVeritySense.convert_array_to_signed_int(data, 13, 3))
-                self.ppg2.append(PolarVeritySense.convert_array_to_signed_int(data, 16, 3))
-                self.ambient.append(PolarVeritySense.convert_array_to_signed_int(data, 19, 3))
-                samples_size = 1
-
-                offset = 22
-                while offset < len(data):
-                    delta_size = data[offset]
-                    sample_count = data[offset + 1]
-                    offset += 2
-
-                    samples = ''.join(format(byte, '08b')[::-1] for byte in data[offset: offset + (delta_size * sample_count // 2)])
-                    for sample in range(0, len(samples), delta_size * 4):
-                        deltas = [BitArray(bin=samples[sample + delta_size * i: sample + delta_size * (i + 1)][::-1]).int for i in range(4)]
-                        ppg0 = self.ppg0[-1] + deltas[0]
-                        ppg1 = self.ppg1[-1] + deltas[1]
-                        ppg2 = self.ppg2[-1] + deltas[2]
-                        ambient = self.ambient[-1] + deltas[3]
-
-                        self.ppg0.append(ppg0)
-                        self.ppg1.append(ppg1)
-                        self.ppg2.append(ppg2)
-                        self.ambient.append(ambient)
-                        samples_size += 1
-
-                    offset += delta_size * sample_count // 2
-                
-                if self.previous_timestamp == -1:
-                    delta = 1 / 55
-                    t = np.linspace(timestamp - delta * (samples_size - 1), timestamp, num=samples_size)
-                else:
-                    delta = (timestamp - self.previous_timestamp) / samples_size
-                    t = np.linspace(self.previous_timestamp + delta, timestamp, num=samples_size)
-                self.t = np.concatenate((self.t, t - self.global_start_time))
-                self.previous_timestamp = timestamp
-
-                self.signal.data.emit(np.stack((self.t, self.ppg0), axis=1)[-PolarVeritySense.MAX_EMIT_LEN:])
-
-                if self.t[-1] > self.save_t + SAVE_TIME:
-                    np.save(
-                        self.session_dir + "/tmp/pvs_" + str(self.save_t),
-                        np.stack((self.t, self.ppg0, self.ppg1, self.ppg2, self.ambient), axis=1)[self.save_index:],
-                        allow_pickle=False
-                    )
-                    self.save_t += SAVE_TIME
-                    self.save_index = len(self.t)
-
-    @staticmethod
-    def convert_array_to_signed_int(data, offset, length):
-        return int.from_bytes(
-            bytearray(data[offset : offset + length]), byteorder="little", signed=True,
-        )
-
-    @staticmethod
-    def convert_to_unsigned_long(data, offset, length):
-        return int.from_bytes(
-            bytearray(data[offset : offset + length]), byteorder="little", signed=False,
-        )
-
-
 class PicoScope:
     channel_range = 8  # 10MV, 20MV, 50MV, 100MV, 200MV, 500MV, 1V, 2V, 5V, 10V, 20V, 50V
     v_range = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200][channel_range]
@@ -174,10 +38,9 @@ class PicoScope:
 
     MAX_EMIT_LEN = int(1e6 / sampleInterval.value * DISPLAY_TIME * 2)
     
-    def __init__(self, ps, signal, global_start_time, session_dir):
+    def __init__(self, ps, signal, session_dir):
         self.ps = ps
         self.signal = signal
-        self.global_start_time = global_start_time
         self.session_dir = session_dir
 
         self.chandle = ctypes.c_int16()
@@ -337,7 +200,10 @@ class PicoScope:
             )
         assert_pico_ok(self.status["runStreaming"])
         print(self.ps.name + ": Capturing at", 1 / PicoScope.actualSampleInterval, "Hz for", PicoScope.totalSamples * PicoScope.actualSampleInterval, "s")
-        self.t = time.time() - self.global_start_time + np.linspace(0, (PicoScope.totalSamples - 1) * PicoScope.actualSampleInterval, num=PicoScope.totalSamples)
+        # Every scope shares this identical 0-based time grid. Because they are
+        # all released from the rendezvous together, giving them the same grid
+        # makes the exported recordings start at 0 and line up sample-for-sample.
+        self.t = np.linspace(0, (PicoScope.totalSamples - 1) * PicoScope.actualSampleInterval, num=PicoScope.totalSamples)
         self.save_t = 0
         self.save_index = 0
         self.ready.set()
@@ -462,7 +328,6 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.pvs = None
         self.ps4000 = None
         self.ps3000a = None
 
@@ -526,13 +391,12 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.graphWidget)
 
         self.plots = {
-            "PPG0": self.graphWidget.addPlot(row=0, col=0),
-            "1A": self.graphWidget.addPlot(row=1, col=0),
-            "1B": self.graphWidget.addPlot(row=2, col=0),
-            "2A": self.graphWidget.addPlot(row=3, col=0),
-            "2B": self.graphWidget.addPlot(row=4, col=0),
-            "2C": self.graphWidget.addPlot(row=5, col=0),
-            "2D": self.graphWidget.addPlot(row=6, col=0)
+            "1A": self.graphWidget.addPlot(row=0, col=0),
+            "1B": self.graphWidget.addPlot(row=1, col=0),
+            "2A": self.graphWidget.addPlot(row=2, col=0),
+            "2B": self.graphWidget.addPlot(row=3, col=0),
+            "2C": self.graphWidget.addPlot(row=4, col=0),
+            "2D": self.graphWidget.addPlot(row=5, col=0)
         }
 
         self.curves = {}
@@ -545,13 +409,10 @@ class MainWindow(QMainWindow):
 
             if name[0] == "1":
                 self.curves[name] = plot.plot([], [], pen=(225, 109, 103))
-            elif name[0] == "2":
-                self.curves[name] = plot.plot([], [], pen=(62, 167, 160))
             else:
-                self.curves[name] = plot.plot([], [], pen=(63, 169, 217))
-            
-            if name != "PPG0":
-                self.curves[name].setDownsampling(ds=50, method='peak')
+                self.curves[name] = plot.plot([], [], pen=(62, 167, 160))
+
+            self.curves[name].setDownsampling(ds=50, method='peak')
         
     def choose_sound_file(self):
         path, _ = QFileDialog.getOpenFileName(self, "Choose Sound File", "", "WAV files (*.wav);;All files (*)")
@@ -582,15 +443,13 @@ class MainWindow(QMainWindow):
             self.sound_player = SoundPlayer(self.sound_file, self.device_combo.currentData(), self.volume_spinbox.value())
             self.sound_player.open()
 
-        global_start_time = time.time()
-
         ps4000_signal = Signal()
         ps4000_signal.data.connect(self.update_ps4000_graph)
-        # self.ps4000 = PicoScope(ps4000, ps4000_signal, global_start_time, session_dir)
+        # self.ps4000 = PicoScope(ps4000, ps4000_signal, session_dir)
 
         ps3000a_signal = Signal()
         ps3000a_signal.data.connect(self.update_ps3000a_graph)
-        self.ps3000a = PicoScope(ps3000a, ps3000a_signal, global_start_time, session_dir)
+        self.ps3000a = PicoScope(ps3000a, ps3000a_signal, session_dir)
 
         scopes = []
         for scope in (self.ps4000, self.ps3000a):
@@ -632,23 +491,6 @@ class MainWindow(QMainWindow):
         if self.sound_player is not None:
             self.sound_player.play()
 
-        device = await BleakScanner.find_device_by_name("Polar Sense DE957E2E", timeout=3)
-        if device is None:
-            print("Polar Sense DE957E2E not found")
-        elif self.running and self.run_id == run_id:
-            pvs_signal = Signal()
-            pvs_signal.data.connect(self.update_pvs_graph)
-            pvs = PolarVeritySense(device, pvs_signal, global_start_time, session_dir)
-            await pvs.connect()
-            print("Battery:", await pvs.get_battery_level())
-            await pvs.start_ppg_stream()
-            if self.running and self.run_id == run_id:
-                self.pvs = pvs
-            else:
-                # stopped while the sensor was connecting; shut it back down
-                await pvs.stop_ppg_stream()
-                await pvs.disconnect()
-
     async def stop(self):
         self.running = False
         self.stop_button.setEnabled(False)
@@ -656,11 +498,6 @@ class MainWindow(QMainWindow):
         if self.sound_player is not None:
             self.sound_player.close()
             self.sound_player = None
-
-        if self.pvs is not None:
-            await self.pvs.stop_ppg_stream()
-            await self.pvs.disconnect()
-            self.pvs = None
 
         if self.ps4000 is not None:
             self.ps4000.kill = True
@@ -705,9 +542,6 @@ class MainWindow(QMainWindow):
     async def closeEvent(self, event):
         await self.stop()
     
-    def update_pvs_graph(self, data):
-        self.curves["PPG0"].setData(data[:, 0], data[:, 1])
-
     def update_ps4000_graph(self, data):
         self.curves["1A"].setData(data[:, 0], data[:, 1])
         self.curves["1B"].setData(data[:, 0], data[:, 2])

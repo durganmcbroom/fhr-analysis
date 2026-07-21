@@ -155,7 +155,7 @@ def run_neossnet_pipeline(
         abdomen_bp(*FETAL_ACOUSTIC_BAND_NARROW_HZ, "butter"),  # narrow to the fetal band AFTER the model
         fiber_beats(v7_beat_detector, out_path),
         plot_hr(sot.window(window[0], window[1]), out_path),
-        evaluate_v3(sot, out_path),
+        evaluate_v3(sot, out_path, hr_smooth=20),
     ], f"{PROJECT_DIR}/.out/{patient}/neossnet/cache/", play_sound=False)
 
     pipe.process(datadir)

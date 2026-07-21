@@ -33,6 +33,7 @@ PATIENT = "PT12_2"
 # WINDOW = 50, 70
 # WINDOW = 60, 70
 WINDOW = 10, 310
+WINDOW = 125, 170
 # WINDOW = 0, 40
 # WINDOW = 0, 20
 DATA_DIR = f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/{PATIENT}"
@@ -228,11 +229,11 @@ if __name__ == '__main__':
         WINDOW,
         DATA_DIR,
     )
-    # run_neossnet_pipeline(
-    #     PATIENT,
-    #     WINDOW,
-    #     DATA_DIR,
-    # )
+    run_neossnet_pipeline(
+        PATIENT,
+        WINDOW,
+        DATA_DIR,
+    )
     # run_raw_bandpass()
     # run_funet_pipeline(
     #     PATIENT,

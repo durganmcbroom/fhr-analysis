@@ -198,7 +198,7 @@ def run_funet_belly_machine(
         # phase_continuity(out_path),   # stitch S1<->S2 phase slips so HR doesn't lag/spike
         plot_hr(sot, out_path),
         # evaluate_v2(sot, out_path, window_s=(window[1] - window[0])),
-        evaluate_v3(sot, out_path, ),
+        evaluate_v3(sot, out_path),
     ], f"{PROJECT_DIR}/.out/{patient}/funet/cache/", play_sound=False)
 
     pipe.process(datadir)

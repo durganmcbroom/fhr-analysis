@@ -5,4 +5,4 @@ lib/tune-ssnet/training/*
 .claude
 src/bin/snr/data/*
 src/bin/snr/out/*
-record/.pico-venv_1
+bin/record/.pico-venv_1
