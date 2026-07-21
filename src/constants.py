@@ -32,7 +32,6 @@ PVS_FILE = "pvs.npy"
 
 ABDOMEN_FIBER_NAMES = ["1B", "2A", "2B", "2C", "2D"]
 
-
 NEOSSNET_MODEL_HZ = 4000           # NeoSSNet / tune-ssnet model sample rate
 XCORR_TARGET_FS = 200.0   # grid rate for impulse-train cross-correlation lag estimators
 

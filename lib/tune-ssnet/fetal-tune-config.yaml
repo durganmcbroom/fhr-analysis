@@ -54,9 +54,9 @@ hyperparam:
 # dataset config
 fold: 1     # 1 to 7
 num_workers: 4
-train_dir: 'training/training_clips_mono_v10/fetal-train'
+train_dir: 'training/training_clips_mono_v11/fetal-train'
 train_type: 'NoNoise'    # general, resp_support, all, NoNoise, Cry, all_c
 
 # model directory
-model_dir: 'models/tuned-model-v12/'
-train_resume: "../neossnet/models/model_best.pt"
+model_dir: 'models/tuned-model-v13/'
+#train_resume: "../neossnet/models/model_best.pt"

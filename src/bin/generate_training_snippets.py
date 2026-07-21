@@ -13,8 +13,10 @@ Yaml format (same as lib/tune-ssnet/training_clips_mono.yaml):
     gate_width_ibi_fraction: 0.3  # heartbeat gate half-width as a fraction of the mean IBI
     snap_to_energy: True  # snap beat labels to the fiber's nearby energy peak
     lung: True        # write the NeoSSNet lung + NLMS noise targets (off => only mix + heart)
-    mic_beats: False  # use hand-marked times from mic_beats.npy (written beside
-                      # microphone.wav by the beat-marking app) instead of the v8 detector
+    mic_beats: False  # when True, prefer hand-marked times from mic_beats.npy (written
+                      # beside microphone.wav by the beat-marking app) for patients that
+                      # have them, and fall back to the v7 detector for those that don't.
+                      # When False, every patient uses the v7 detector.
     data:
       "PT12_1":
         mode: train   # required: routes this patient's snippets to fetal-train/ or fetal-test/
@@ -64,7 +66,7 @@ sys.path.insert(0, str(SRC_DIR.parent / "lib" / "neossnet"))
 from analyze.anc import nlms_filter  # noqa: E402
 from analyze.data import Audio, load_fibers  # noqa: E402
 from analyze.filters import bp_filter  # noqa: E402
-from analyze.hr.detect_v8 import v8_beat_detector  # noqa: E402
+from analyze.hr.detect_v7 import v7_beat_detector  # noqa: E402
 from analyze.sot import _moving_avg, _robust_clip  # noqa: E402
 from analyze.util import normalize_path  # noqa: E402
 from constants import (  # noqa: E402
@@ -290,9 +292,9 @@ def fetal_detector(plot_dir, idx):
     def detect(sot: Audio):
         prepared = Audio(sot.time, sot.hz, _robust_clip(detrend(sot.data)))
         if plot_dir is None:
-            return v8_beat_detector(prepared, FETAL_BPM_RANGE)
-        with PLOT_LOCK:  # v8's debug plot uses pyplot
-            return v8_beat_detector(prepared, FETAL_BPM_RANGE, plot_dir, tag=f"{idx}_detections")
+            return v7_beat_detector(prepared, FETAL_BPM_RANGE)
+        with PLOT_LOCK:  # v7's debug plot uses pyplot
+            return v7_beat_detector(prepared, FETAL_BPM_RANGE, plot_dir, tag=f"{idx}_detections")
     return detect
 
 
@@ -411,6 +413,7 @@ def plot_heart(path, sot, raw, heart, heart_hz, start_time, beat_times, title):
 
 def write_snippet(job: Job, s: Settings) -> bool:
     """One mix (mono or multi-channel) plus its mono targets; False if skipped."""
+    # Hand-marked beats when this snippet's patient has them, else detect on the mic (v7).
     evaluator = (mic_beats_evaluator(job.mic_beats) if job.mic_beats is not None
                  else fetal_detector(job.out_dir if s.write_plots else None, job.idx))
 
@@ -505,9 +508,15 @@ def build_jobs(spec: dict, s: Settings, data_dir: str, out_dir: Path) -> list[Jo
         print(f"Loading {dir_name} ... (-> {split})")
         fibers = load_fibers(Path(patient_path))
         mic = load_mic(patient_path)
-        mic_beats = load_mic_beats(patient_path) if s.use_mic_beats else None
-        if mic_beats is not None:
-            print(f"  using {len(mic_beats)} hand-marked beats from {MIC_BEATS_FILE}")
+        # mic_beats: prefer this patient's hand-marked beats when present; otherwise
+        # leave None so write_snippet detects on the mic (v7).
+        mic_beats = None
+        if s.use_mic_beats:
+            if Path(patient_path + MIC_BEATS_FILE).exists():
+                mic_beats = load_mic_beats(patient_path)
+                print(f"  using {len(mic_beats)} hand-marked beats from {MIC_BEATS_FILE}")
+            else:
+                print(f"  no {MIC_BEATS_FILE}; falling back to the v7 mic detector")
 
         data_end = min(float(source.time[-1])
                        for source in [mic, *(fibers.abdomen[name] for name in fiber_names)])
@@ -585,7 +594,7 @@ def main() -> None:
         cfg: dict = yaml.safe_load(f)
     settings = load_settings(cfg, args)
     if settings.use_mic_beats:
-        print("----- USING HANDPICKED SOT BEATS -----")
+        print("----- PREFERRING HANDPICKED SOT BEATS (v7 detector where absent) -----")
 
     workers = max(1, args.jobs or 1)
     # Torch's intra-op pool is shared across threads; keep workers * torch threads ~ CPUs.

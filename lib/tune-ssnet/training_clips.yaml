@@ -13,6 +13,76 @@ mic_beats: true
 lung: true
 
 data:
+  "7_21_26_5_fibers_training/15_2":
+    mode: train
+    fibers:
+      - "1B"
+      - "2A"
+      - "2B"
+      - "2C"
+      - "2D"
+    sections:
+      - "0-530"
+  "7_21_26_5_fibers_training/15_3":
+    mode: train
+    fibers:
+      - "1B"
+      - "2A"
+      - "2B"
+      - "2C"
+      - "2D"
+    sections:
+      - "0-580"
+  "7_21_26_5_fibers_training/15_4_0-250s":
+    mode: train
+    fibers:
+      - "1B"
+      - "2A"
+      - "2B"
+      - "2C"
+      - "2D"
+    sections:
+      - "0-250"
+  "7_21_26_5_fibers_training/16_1_0-506s":
+    mode: train
+    fibers:
+      - "1B"
+      - "2A"
+      - "2B"
+      - "2C"
+      - "2D"
+    sections:
+      - "0-506"
+  "7_21_26_5_fibers_training/16_2":
+    mode: train
+    fibers:
+      - "1B"
+      - "2A"
+      - "2B"
+      - "2C"
+      - "2D"
+    sections:
+      - "0-580"
+  "7_21_26_5_fibers_training/16_3":
+    mode: train
+    fibers:
+      - "1B"
+      - "2A"
+      - "2B"
+      - "2C"
+      - "2D"
+    sections:
+      - "0-600"
+  "7_21_26_5_fibers_training/16_4_0-75s":
+    mode: train
+    fibers:
+      - "1B"
+      - "2A"
+      - "2B"
+      - "2C"
+      - "2D"
+    sections:
+      - "0-75"
 #  "patient8-session1":
 #    mode: train
 #    fibers:
