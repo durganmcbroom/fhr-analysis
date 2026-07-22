@@ -6,7 +6,7 @@ model:
   codec_convolutions: 3   # conv-norm-relu blocks per encoder AND per decoder level (default 3)
   base_channels: 12
   dropout: 0.0
-a
+
 train:
   optimizer: 'AdamW'   # SGD, Adam, AdamW
   learning_rate: 3.e-4
