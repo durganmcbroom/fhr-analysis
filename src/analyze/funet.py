@@ -165,7 +165,9 @@ def run_funet_pipeline(patient, window, datadir):
     pipe = Pipeline([
         load_data,
         windowed(window[0], window[1]),
-        use_funet(out_path, ["1B", "2A", "2B", "2C", "2D"]),
+        use_funet(out_path, ["1B", "2A", "2B",
+                             # "2C", "2D"
+                             ]),
         fiber_beats(v2_beat_detector, out_path),
         plot_hr(sot, out_path),
         evaluate_v3(sot, out_path, hr_smooth=20)
@@ -193,7 +195,9 @@ def run_funet_belly_machine(
     pipe = Pipeline([
         load_no_chest_data_FULL,
         windowed(window[0], window[1]),
-        use_funet(out_path, ["1A", "1B", "2A", "2B", "2C"]),
+        use_funet(out_path, ["1A", "1B", "2A",
+                             # "2B", "2C"
+                             ]),
         fiber_beats(v2_beat_detector, out_path),
         # phase_continuity(out_path),   # stitch S1<->S2 phase slips so HR doesn't lag/spike
         plot_hr(sot, out_path),
