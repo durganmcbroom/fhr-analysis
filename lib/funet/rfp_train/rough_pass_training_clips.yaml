@@ -1,0 +1,109 @@
+length: 10 # in seconds
+overlap: 3 # in seconds
+ppg_col: 1 # defaults to 0 if I don't declare
+mode: "stereo"
+warp: False
+
+impulse_mode: "gaussian" # 'gaussian' or 'gate'
+snap_to_energy: false # snap beat labels to the nearby fiber energy peak (false = keep detector timing)
+mic_beats: true
+lung: false
+
+data:
+  "7_21_26_5_fibers_training/15_2":
+    mode: train
+    fibers:
+      - "1B"
+      - "2A"
+      - "2B"
+      - "2C"
+      - "2D"
+    sections:
+      - "0-530"
+  "7_21_26_5_fibers_training/15_3":
+    mode: train
+    fibers:
+      - "1B"
+      - "2A"
+      - "2B"
+      - "2C"
+      - "2D"
+    sections:
+      - "0-580"
+  "7_21_26_5_fibers_training/15_4_0-250s":
+    mode: train
+    fibers:
+      - "1B"
+      - "2A"
+      - "2B"
+      - "2C"
+      - "2D"
+    sections:
+      - "0-250"
+  "7_21_26_5_fibers_training/16_1_0-506s":
+    mode: train
+    fibers:
+      - "1B"
+      - "2A"
+      - "2B"
+      - "2C"
+      - "2D"
+    sections:
+      - "0-506"
+  "7_21_26_5_fibers_training/16_2":
+    mode: train
+    fibers:
+      - "1B"
+      - "2A"
+      - "2B"
+      - "2C"
+      - "2D"
+    sections:
+      - "0-580"
+  "7_21_26_5_fibers_training/16_3":
+    mode: train
+    fibers:
+      - "1B"
+      - "2A"
+      - "2B"
+      - "2C"
+      - "2D"
+    sections:
+      - "0-600"
+  "7_21_26_5_fibers_training/16_4_0-75s":
+    mode: train
+    fibers:
+      - "1B"
+      - "2A"
+      - "2B"
+      - "2C"
+      - "2D"
+    sections:
+      - "0-75"
+  "patient8-session1":
+    mode: test
+    fibers:
+      - "1B"
+      - "2A"
+      - "2B"
+      - "2C"
+      - "2D"
+    sections:
+      - "10-532"
+      - "535-545"
+      - "546-688"
+      - "690-753"
+      - "758-841"
+      - "847-907"
+      - "909-922"
+      - "924-998"
+      - "1002-1032"
+      - "1036-1137"
+      - "1148-1250"
+      - "1255-1291"
+      - "1293-1357"
+      - "1358-1415"
+      - "1426-1554"
+      - "1570-1695"
+      - "1715-1767"
+      - "1774-1805"
