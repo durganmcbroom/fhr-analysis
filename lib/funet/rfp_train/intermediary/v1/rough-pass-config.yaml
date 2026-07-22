@@ -3,13 +3,13 @@ model:
   dilations: [1, 1, 1]
   bottleneck_dilation: 1
   bottleneck_convs: 2
-  codec_convolutions: 3   # conv-norm-relu blocks per encoder AND per decoder level (default 3)
+  codec_convolutions: 2   # conv-norm-relu blocks per encoder AND per decoder level (default 3)
   base_channels: 12
   dropout: 0.0
 
 train:
   optimizer: 'AdamW'   # SGD, Adam, AdamW
-  learning_rate: 3.e-4
+  learning_rate: 3.e-3
   weight_decay: 0.2
   batch_size: 8
   epochs: 80
@@ -22,8 +22,8 @@ train:
   amp_beat_threshold: 0.1   # frac of per-item target peak above which a frame counts as a beat
 
 data:
-  train_dir: 'training/stereo_v7/fetal-train'
-  test_dir: 'training/stereo_v7/fetal-test'
+  train_dir: 'training/rough_v1/fetal-train'
+  test_dir: 'training/rough_v1/fetal-test'
   num_workers: 8
   n_fft: 1024
   hop_length: 256
@@ -32,4 +32,4 @@ data:
   freq_mask: 0   # freq bins (of 512 kept); try ~40
   time_mask: 0   # time frames; keep < one beat interval (~6 frames at hop 256 / 4kHz), try 4-6
 
-model_dir: 'models/funet-v24/'
+model_dir: 'intermediary/v1/'
