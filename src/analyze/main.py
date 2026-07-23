@@ -6,7 +6,7 @@ from analyze.evaluate import evaluate, combine_evaluations, plot_evaluation
 from analyze.evaluate_v2 import evaluate_v2
 from analyze.evaluate_v3 import evaluate_v3
 from analyze.filters import abdomen_bp, bp, notch
-from analyze.funet import run_funet_pipeline, run_funet_belly_machine
+from analyze.funet import run_funet_pipeline, run_funet_belly_machine, run_funet_no_sot
 from analyze.hr import fiber_beats, sot_beats
 from analyze.hr.classify import classify_sources
 from analyze.hr.detect import v1_beat_detector
@@ -24,15 +24,17 @@ from analyze.sot import load_sot, combine_sot_results
 from analyze.util import run_neossnet
 from constants import PROJECT_DIR, FETAL_ACOUSTIC_BAND_HZ, BROADBAND_FILTER_HZ, POWERLINE_NOTCH_HZ
 
+# PATIENT = "fiber-vertical"
 # PATIENT = "fiber-horizontal"
-PATIENT = "PT12_2"
-# PATIENT = "Patient 7"
+# PATIENT = "PT12_2"
+PATIENT = "Patient 7"
 # PATIENT = "patient8-session1"
 # PATIENT = "session-02"
 # PATIENT = "band_durgan_1"
-# WINDOW = 50, 70
+WINDOW = 60, 160
+WINDOW = 220, 340
 # WINDOW = 60, 70
-WINDOW = 10, 310
+# WINDOW = 10, 310
 # WINDOW = 125, 170
 # WINDOW = 0, 40
 # WINDOW = 0, 20
@@ -191,6 +193,7 @@ def run_raw_bandpass():
 
     band_pipe.process(DATA_DIR)
 
+
 def run_raw_bandpass_no_sot():
     out = f"{PROJECT_DIR}.out/{PATIENT}/raw_bandpass_190_220"
     Path(out).mkdir(parents=True, exist_ok=True)
@@ -224,44 +227,47 @@ def run_raw_bandpass_no_sot():
 # - mark both s1 / s2 on impulses
 
 if __name__ == '__main__':
+    # for fibers in (["1B", "2A"],["2A", "2B"],["2B", "1B"]):
+    # run_funet_no_sot(
+    #     PATIENT, WINDOW, DATA_DIR,
+    # )
     run_funet_pipeline(
-        PATIENT,
+        PATIENT,  # + f"/{fibers[0]}:{fibers[1]}",
         WINDOW,
         DATA_DIR,
+        # fibers = fibers
     )
-    run_neossnet_pipeline(
-        PATIENT,
-        WINDOW,
-        DATA_DIR,
-    )
+    # run_neossnet_pipeline(
+    #     PATIENT,
+    #     WINDOW,
+    #     DATA_DIR,
+    # )
     # run_raw_bandpass()
     # run_funet_pipeline(
     #     PATIENT,
     #     WINDOW,
     #     DATA_DIR,
     # )
-    w = (30, 90)
-    pat = "5ch_belly_machine_2"
-    run_funet_belly_machine(
-        "%s" % pat,
-        w,
-        f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/%s" % pat
-    )
-    pat = "5ch_belly_machine_1"
-    run_funet_belly_machine(
-        "%s" % pat,
-        w,
-        f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/%s" % pat
-    )
+
+    # w = (30, 90)
+    # pat = "5ch_belly_machine_2"
+    # run_funet_belly_machine(
+    #     "%s" % pat,
+    #     w,
+    #     f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/%s" % pat
+    # )
+    # pat = "5ch_belly_machine_1"
+    # run_funet_belly_machine(
+    #     "%s" % pat,
+    #     w,
+    #     f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/%s" % pat
+    # )
+
     # run_neossnet_belly_machine(
     #     f"%s" % pat,
     #     w,
     #     f"{PROJECT_DIR}/Banner_data/Banner_test_20251220/%s" % pat
     # )
-
-
-
-
 
     # run_neossnet_belly_machine(
     #     f"5ch_belly_machine_2",

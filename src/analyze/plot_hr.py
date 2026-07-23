@@ -1,3 +1,4 @@
+from itertools import combinations
 from pathlib import Path
 from typing import Tuple
 
@@ -15,7 +16,7 @@ from constants import FETAL_BPM_RANGE
 # stacked vertically and share a width, so the total figure height is just
 # n_rows subplot-heights.
 # ---------------------------------------------------------------------------
-FIG_ASPECT = 4.0 / 3.0  # per-subplot width:height
+FIG_ASPECT = 16.0 / 6.0  # per-subplot width:height
 
 
 def _figsize(n_rows: int, width: float = 8.0) -> Tuple[float, float]:
@@ -55,7 +56,7 @@ def _inst_hr_v2(
 
     # bpm = np.clip(bpm, band[0], band[1])
     # Centered average with edge replication (not zero-pad) so ends don't sag.
-    bpm = moving_average_v2(bpm, 10)
+    bpm = moving_average_v2(bpm, 20)
     # bpm = uniform_filter1d(bpm, size=min(5, bpm.size), mode='nearest')
     return t, bpm
 
@@ -189,6 +190,34 @@ def _plot_hr_axis_multi(
             ax.plot(t, y, color=cmap(i % 10), lw=1.1, marker='s', ms=3,
                     alpha=0.8, label=f'{name} (median {med:.1f})')
 
+    # Pairwise Pearson R between the overlaid HR traces -- how much the sources
+    # agree beat-to-beat. Each trace is sampled at its own beat times, so resample
+    # them all onto one uniform grid over their overlapping span before correlating.
+    usable = [(n, t, y) for (n, t, y) in traces if t.size >= 2]
+    pair_r = {}
+    if len(usable) >= 2:
+        lo = max(float(t[0]) for (_, t, _) in usable)
+        hi = min(float(t[-1]) for (_, t, _) in usable)
+        if hi > lo:
+            grid = np.arange(lo, hi, 0.25)  # 4 Hz shared grid
+            resampled = {n: np.interp(grid, t, y) for (n, t, y) in usable}
+            for a, b in combinations(resampled, 2):
+                ya, yb = resampled[a], resampled[b]
+                if ya.std() > 0 and yb.std() > 0:
+                    pair_r[(a, b)] = float(np.corrcoef(ya, yb)[0, 1])
+
+    if pair_r:
+        mean_r = float(np.mean(list(pair_r.values())))
+        lines = [f"R (mean) = {mean_r:.2f}"]
+        if len(pair_r) <= 3:  # list each pair when there are few; else just the mean
+            lines += [f"{a}-{b}: {r:.2f}" for (a, b), r in pair_r.items()]
+        ax.text(0.01, 0.98, "\n".join(lines), transform=ax.transAxes, va='top', ha='left',
+                fontsize=7, family='monospace',
+                bbox=dict(boxstyle='round', facecolor='white', edgecolor='0.7', alpha=0.8))
+        print("[plot_hr_multi] pairwise HR corr coef: "
+              + ", ".join(f"{a}-{b}={r:.3f}" for (a, b), r in pair_r.items())
+              + f" (mean {mean_r:.3f})")
+
     ylim_traces = [(t, y) for (_, t, y) in traces]
     if sot_beats is not None:
         ylim_traces.append((sot_t, sot_y))
@@ -253,7 +282,7 @@ def plot_hr_multi_comparison(
     ax_f.set_xlabel("Time (s)", fontsize=8)
     ax_f.set_xlim(t_start, t_end)
     fig.suptitle("Instantaneous heart rate: all abdomen fibers vs SOT", fontsize=11)
-    plt.savefig(out / filename, dpi=150)
+    plt.savefig(out / filename, dpi=500)
     plt.close()
 
 

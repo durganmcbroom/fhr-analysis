@@ -144,6 +144,10 @@ def load_no_chest_data(path: str):
             abdomen_hz,
             data
         )
+    return FiberData(
+        None,
+        abdomen,
+    )
 
 
 def load_no_chest_data_FULL(path: str):

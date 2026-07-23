@@ -9,6 +9,7 @@ not raw acoustics.
 """
 
 import sys
+from itertools import combinations
 from pathlib import Path
 
 import numpy as np
@@ -16,23 +17,23 @@ import torch
 from matplotlib import pyplot as plt
 from scipy.signal import find_peaks
 
-from analyze.data import Audio, FiberData, load_data, windowed, FiberPair, load_no_chest_data_FULL
+from analyze.data import Audio, FiberData, load_data, windowed, FiberPair, load_no_chest_data_FULL, load_no_chest_data
 from analyze.evaluate_v2 import evaluate_v2
 from analyze.evaluate_v3 import evaluate_v3
 from analyze.filters import abdomen_bp
-from analyze.hr import sot_beats, fiber_beats, phase_continuity
+from analyze.hr import sot_beats, fiber_beats, phase_continuity, fHRMultiOutput
 from analyze.hr.detect_v2 import v2_beat_detector
 from analyze.hr.detect_v5 import v5_beat_detector
 from analyze.hr.detect_v7 import v7_beat_detector
 from analyze.hr.detect_v8 import v8_beat_detector
 from analyze.pipeline import Pipeline
-from analyze.plot_hr import plot_hr
+from analyze.plot_hr import plot_hr, plot_hr_multi_comparison
 from analyze.sot import load_sot, load_sot_no_ppg, plot_mic, SOTResult
 from constants import PROJECT_DIR, FUNET_CONFIG, FUNET_MODEL_PATH, FETAL_BPM_RANGE, FETAL_ACOUSTIC_BAND_NARROW_HZ
 
 # lib/funet/src is a flat module dir (bare imports); put it on the path to import from.
 sys.path.insert(0, str(Path(PROJECT_DIR) / "lib" / "funet" / "src"))
-from config import load_config          # noqa: E402
+from config import load_config  # noqa: E402
 from inference import load_funet, run_funet  # noqa: E402
 
 
@@ -146,7 +147,7 @@ def _plot_beats(out: Path, activity: Audio, beat_times) -> None:
     print(f"[funet] saved beats plot -> {out / 'funet_beats.png'}")
 
 
-def run_funet_pipeline(patient, window, datadir):
+def run_funet_pipeline(patient, window, datadir, fibers=["1B", "2A"]):
     """End-to-end: load fibers -> window -> FUNet beat activity -> beats + HR plots.
 
     ``fiber_names`` are the abdomen fibers to feed the model, in the order it was
@@ -165,15 +166,18 @@ def run_funet_pipeline(patient, window, datadir):
     pipe = Pipeline([
         load_data,
         windowed(window[0], window[1]),
-        use_funet(out_path, ["1B", "2A", "2B",
-                             # "2C", "2D"
-                             ]),
+        use_funet(out_path, fibers
+                  # ["1B", "2A", "2B",
+                  #            "2C", "2D"
+                  # ]
+                  ),
         fiber_beats(v2_beat_detector, out_path),
         plot_hr(sot, out_path),
         evaluate_v3(sot, out_path, hr_smooth=20)
     ], f"{PROJECT_DIR}/.out/{patient}/funet/cache/", play_sound=False)
 
     return pipe.process(datadir)
+
 
 def run_funet_belly_machine(
         patient,
@@ -206,3 +210,39 @@ def run_funet_belly_machine(
     ], f"{PROJECT_DIR}/.out/{patient}/funet/cache/", play_sound=False)
 
     pipe.process(datadir)
+
+
+def run_funet_no_sot(patient, window, datadir, fibers=["2A", "2B", "2C"]):
+    """Run the 2-channel FUNet over every pair of the available abdomen fibers.
+
+    The model takes two fibers, so for the three fibers in ``fibers`` we run it on
+    each 2-fiber combination (2A+2B, 2A+2C, 2B+2C), detect beats on each combo's
+    beat-activity, then overlay all three combos' instantaneous HR on one plot and
+    report the pairwise R between them (added in plot_hr_multi_comparison). Each
+    combo gets its own out/ subdir so its activity/peak plots don't clobber the others.
+    """
+    out_path = Path(f"{PROJECT_DIR}.out/{patient}/funet/")
+    out_path.mkdir(parents=True, exist_ok=True)
+
+    fetal_sources, fetal_beats = {}, {}
+    for pair in combinations(fibers, 2):
+        name = "+".join(pair)
+        combo_out = out_path / name
+        pipe = Pipeline([
+            load_no_chest_data,
+            windowed(window[0], window[1]),
+            use_funet(combo_out, list(pair)),  # defaults to the 2-channel FUNET_MODEL
+            fiber_beats(v2_beat_detector, combo_out),
+        ], f"{PROJECT_DIR}/.out/{patient}/funet/cache/{name}/", play_sound=False)
+        result = pipe.process(datadir)
+        fetal_sources[name] = result.fetal_source
+        fetal_beats[name] = result.fetal_beats
+
+    multi = fHRMultiOutput(
+        fetal_sources=fetal_sources,
+        fetal_beats=fetal_beats,
+        maternal_source=None,
+        maternal_beats=None,
+    )
+    plot_hr_multi_comparison(multi, None, out_path)
+    return multi
