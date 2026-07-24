@@ -25,11 +25,11 @@ data:
   train_dir: 'training/stereo_v12/fetal-train'
   test_dir: 'training/stereo_v12/fetal-train'
   num_workers: 8
-  n_fft: 512
+  n_fft: 256
   hop_length: 256
   augment: ['channel_dropout', 'gain', 'noise']
   # SpecAugment-style masks (train-only), max width of one zeroed band per sample; 0 = off.
   freq_mask: 0   # freq bins (of 512 kept); try ~40
   time_mask: 0   # time frames; keep < one beat interval (~6 frames at hop 256 / 4kHz), try 4-6
 
-model_dir: 'models/funet-v32/'
+model_dir: 'models/funet-v31/'

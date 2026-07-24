@@ -147,7 +147,7 @@ def _plot_beats(out: Path, activity: Audio, beat_times) -> None:
     print(f"[funet] saved beats plot -> {out / 'funet_beats.png'}")
 
 
-def run_funet_pipeline(patient, window, datadir, fibers=["1B", "2A"]):
+def run_funet_pipeline(patient, window, datadir, fibers=["1B", "2A", "2B"]):
     """End-to-end: load fibers -> window -> FUNet beat activity -> beats + HR plots.
 
     ``fiber_names`` are the abdomen fibers to feed the model, in the order it was

@@ -26,13 +26,13 @@ from constants import PROJECT_DIR, FETAL_ACOUSTIC_BAND_HZ, BROADBAND_FILTER_HZ, 
 
 # PATIENT = "fiber-vertical"
 # PATIENT = "fiber-horizontal"
-# PATIENT = "PT12_2"
-PATIENT = "Patient 7"
+PATIENT = "PT12_2"
+# PATIENT = "Patient 7"
 # PATIENT = "patient8-session1"
 # PATIENT = "session-02"
 # PATIENT = "band_durgan_1"
-WINDOW = 60, 160
-WINDOW = 220, 340
+WINDOW = 0, 340
+# WINDOW = 220, 340
 # WINDOW = 60, 70
 # WINDOW = 10, 310
 # WINDOW = 125, 170
