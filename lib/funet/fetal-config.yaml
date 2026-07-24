@@ -22,8 +22,8 @@ train:
   amp_beat_threshold: 0.1   # frac of per-item target peak above which a frame counts as a beat
 
 data:
-  train_dir: 'training/stereo_v7/fetal-train'
-  test_dir: 'training/stereo_v7/fetal-train'
+  train_dir: 'training/stereo_v12/fetal-train'
+  test_dir: 'training/stereo_v12/fetal-train'
   num_workers: 8
   n_fft: 256
   hop_length: 256
