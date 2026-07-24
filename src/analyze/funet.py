@@ -173,6 +173,7 @@ def run_funet_pipeline(patient, window, datadir, fibers=["1B", "2A"]):
                   ),
         fiber_beats(v2_beat_detector, out_path),
         plot_hr(sot, out_path),
+        # evaluate_v2(sot, out_path),
         evaluate_v3(sot, out_path, hr_smooth=20)
     ], f"{PROJECT_DIR}/.out/{patient}/funet/cache/", play_sound=False)
 
