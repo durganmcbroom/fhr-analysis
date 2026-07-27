@@ -17,6 +17,7 @@ MODEL_DIR = Path(__file__).resolve().parent.parent.parent / "neossnet"
 sys.path.insert(0, str(MODEL_DIR))
 
 from models import MaskNet          # noqa: E402
+import train as ssnet_train         # noqa: E402  (neossnet's train.py; MODEL_DIR is on sys.path)
 from train import get_optimizer, get_loss_fn, fit  # noqa: E402
 
 MODEL_HZ = 4000
@@ -182,6 +183,78 @@ def build_model(config, device):
     return model
 
 
+def plot_training_curves(train_losses, val_losses, out_path):
+    """Save a train/test loss-vs-epoch plot to ``out_path`` (PNG).
+
+    Imports matplotlib lazily and forces the headless Agg backend, so it works when
+    training runs without a display (remote box, CI, nohup, ...).
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    epochs = list(range(1, len(train_losses) + 1))
+    # neossnet's train() returns None if an epoch produced no averaged batch loss;
+    # nan makes the line break there instead of erroring.
+    train = [float("nan") if v is None else v for v in train_losses]
+    val = [float("nan") if v is None else v for v in val_losses]
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(epochs, train, label="Train", color="#1f77b4")
+    ax.plot(epochs, val, label="Test", color="#d62728")
+
+    # Mark the lowest test loss (the checkpoint saved as model_best.pt).
+    finite = [(e, v) for e, v in zip(epochs, val) if v == v]  # v == v drops nan
+    if finite:
+        best_e, best_v = min(finite, key=lambda ev: ev[1])
+        ax.scatter([best_e], [best_v], color="#d62728", zorder=5)
+        ax.annotate(f"best: {best_v:.4f} @ epoch {best_e}", (best_e, best_v),
+                    textcoords="offset points", xytext=(0, 9), ha="center", fontsize=8)
+
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Loss")
+    ax.set_title("Training curves")
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
+
+
+def fit_with_curves(model, train_dl, val_dl, loss_fn, optimiser, scheduler, device, config, earlystop):
+    """Run neossnet's ``fit`` unchanged, then save a training-curve plot.
+
+    We don't reimplement fit's loop here: its early-stopping and LR-plateau logic lives
+    in neossnet, and duplicating it would risk silently drifting from it. Instead we
+    temporarily wrap the module-level ``train``/``test`` functions that fit calls each
+    epoch and record their return values, so the plotted numbers are exactly the ones
+    fit used. This only observes training; it does not change it (originals are always
+    restored via ``finally``).
+    """
+    train_losses, val_losses = [], []
+    orig_train, orig_test = ssnet_train.train, ssnet_train.test
+
+    def record_train(*args, **kwargs):
+        loss = orig_train(*args, **kwargs)
+        train_losses.append(loss)
+        return loss
+
+    def record_test(*args, **kwargs):
+        loss = orig_test(*args, **kwargs)
+        val_losses.append(loss)
+        return loss
+
+    ssnet_train.train, ssnet_train.test = record_train, record_test
+    try:
+        fit(model, train_dl, val_dl, loss_fn, optimiser, scheduler, device, config, earlystop)
+    finally:
+        ssnet_train.train, ssnet_train.test = orig_train, orig_test
+
+    plot_path = os.path.join(config["model_dir"], "training_curves.png")
+    plot_training_curves(train_losses, val_losses, plot_path)
+    print(f"Saved training curves to {plot_path}")
+
+
 def main(config):
     device = pick_device()
     print(f"Using device: {device}")
@@ -205,7 +278,7 @@ def main(config):
         yaml.dump(config["hyperparam"]["model_config"], f)
 
     print("-------- Start of Training --------")
-    fit(model, train_dl, val_dl, loss_fn, optimiser, scheduler, device, config, earlystop)
+    fit_with_curves(model, train_dl, val_dl, loss_fn, optimiser, scheduler, device, config, earlystop)
 
     with open(os.path.join(model_dir, "config.yaml"), "w") as f:
         yaml.dump(config, f)
