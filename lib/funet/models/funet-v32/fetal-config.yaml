@@ -23,7 +23,7 @@ train:
 
 data:
   train_dir: 'training/stereo_v12/fetal-train'
-  test_dir: 'training/stereo_v12/fetal-train'
+  test_dir: 'training/stereo_v12/fetal-test'
   num_workers: 8
   n_fft: 512
   hop_length: 256
