@@ -237,11 +237,11 @@ if __name__ == '__main__':
         DATA_DIR,
         # fibers = fibers
     )
-    # run_neossnet_pipeline(
-    #     PATIENT,
-    #     WINDOW,
-    #     DATA_DIR,
-    # )
+    run_neossnet_pipeline(
+        PATIENT,
+        WINDOW,
+        DATA_DIR,
+    )
     # run_raw_bandpass()
     # run_funet_pipeline(
     #     PATIENT,
