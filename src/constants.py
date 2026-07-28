@@ -8,7 +8,7 @@ DEFAULT_DATA_DIR = PROJECT_DIR + BANNER_TEST_DIR
 
 # Fine-tuned SSNet checkpoints (lib/tune-ssnet)
 # FETAL_MODEL = "tuned-model-v7 (SASDR)"
-FETAL_MODEL = "tuned-model-v13"
+FETAL_MODEL = "tuned-model-v12"
 FETAL_MODEL_PATH = os.path.join(PROJECT_DIR, f"lib/tune-ssnet/models/{FETAL_MODEL}/model_best.pt")
 FETAL_MODEL_CFG = os.path.join(PROJECT_DIR, f"lib/tune-ssnet/models/{FETAL_MODEL}/model.yaml")
 MATERNAL_MODEL_PATH = os.path.join(PROJECT_DIR, "lib/tune-ssnet/models/maternal-tuned-model-v2/model_best.pt")

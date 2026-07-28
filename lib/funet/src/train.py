@@ -1,5 +1,5 @@
 import os
-from typing import List, Optional, Union
+from typing import Callable, List, Optional, Union
 
 import torch
 from torch import nn, optim
@@ -121,10 +121,23 @@ def fit(
         loss_fn: Union[nn.MSELoss],
         epochs: int,
         device: torch.device,
-        config: dict,
+        model_dir: str,
         clip: float = None,
         scheduler=None,   # optional per-epoch LR scheduler (e.g. CosineAnnealingLR)
-):
+        save_artifacts: bool = True,   # write model_best/last + curves; off for hyperparameter search
+        on_epoch: Optional[Callable[[int, float], None]] = None,
+) -> float:
+    """Train for ``epochs`` and return the best (lowest) validation loss seen.
+
+    ``on_epoch``, when given, is called after every epoch as ``on_epoch(epoch, test_loss)``.
+    It may raise to stop the run early -- the Optuna search uses this to report intermediate
+    losses and prune unpromising trials, and keeping it a plain callback means train.py never
+    has to import optuna.
+
+    ``save_artifacts=False`` skips every disk write (best/last checkpoints and the curves plot).
+    The hyperparameter search sets it: it scores a config by its validation loss and discards
+    the model, so writing a checkpoint per trial would be pure waste.
+    """
     lowest_loss = float("inf")
     train_losses, test_losses = [], []
 
@@ -135,9 +148,10 @@ def fit(
         train_losses.append(train_loss)
         test_losses.append(test_loss)
 
-        if lowest_loss > test_loss:
+        if test_loss < lowest_loss:
             lowest_loss = test_loss
-            torch.save(model.state_dict(), os.path.join(config['model_dir'], 'model_best.pt'))
+            if save_artifacts:
+                torch.save(model.state_dict(), os.path.join(model_dir, 'model_best.pt'))
 
         # Report the LR this epoch actually ran at, then step the schedule for the next one.
         lr_note = f', LR: {optimiser.param_groups[0]["lr"]:.2e}' if scheduler is not None else ''
@@ -147,8 +161,14 @@ def fit(
         print(f'[{epoch+1}|{epochs}] Train loss: {train_loss:.6f}, Test loss: {test_loss:.6f}, '
               f'Max grad norm (pre-clip): {max_grad_norm:.4f}{lr_note}')
 
-    torch.save(model.state_dict(), os.path.join(config['model_dir'], 'model_last.pt'))
+        # After the epoch is fully logged so a pruning exception can't skip the print above.
+        if on_epoch is not None:
+            on_epoch(epoch, test_loss)
 
-    plot_path = os.path.join(config['model_dir'], 'training_curves.png')
-    plot_training_curves(train_losses, test_losses, plot_path)
-    print(f'Saved training curves to {plot_path}')
+    if save_artifacts:
+        torch.save(model.state_dict(), os.path.join(model_dir, 'model_last.pt'))
+        plot_path = os.path.join(model_dir, 'training_curves.png')
+        plot_training_curves(train_losses, test_losses, plot_path)
+        print(f'Saved training curves to {plot_path}')
+
+    return lowest_loss

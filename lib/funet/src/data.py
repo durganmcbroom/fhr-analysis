@@ -13,6 +13,20 @@ from config import Config
 SAMPLE_RATE = 4000
 SOURCE_NAMES = ["heart", "lung", "noise"]
 
+
+def stft_output_shape(config: Config) -> tuple[int, int]:
+    """(freq_bins, time_frames) of the spectrogram FUNet sees for this config.
+
+    freq_bins = n_fft // 2 + 1 and time_frames = 1 + crop_samples // hop_length, matching
+    torchaudio's default (onesided, center=True) Spectrogram. __getitem__ then floors each
+    axis to a multiple of 2**depth; these are the pre-floor counts, which is exactly what a
+    feasibility check wants -- a level fits only if 2**depth <= the count (a smaller count
+    floors to 0). Lets the tuner reject too-deep networks without building the model first.
+    """
+    freq_bins = config.data.n_fft // 2 + 1
+    time_frames = 1 + config.train.crop_len * SAMPLE_RATE // config.data.hop_length
+    return freq_bins, time_frames
+
 class FetalPairs(Dataset):
     """Paired snippet dataset in the tune-ssnet .../training/.../fetal layout:
     {i}_mix.wav (mono or multi-channel) plus mono {i}_heart.wav, {i}_lung.wav,

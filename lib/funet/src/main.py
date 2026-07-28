@@ -1,5 +1,6 @@
 import os
 import sys
+from typing import Callable, Optional
 
 import torch
 from torch import nn, optim
@@ -58,18 +59,8 @@ def build_scheduler(config: Config, optimiser: optim.Optimizer):
     raise ValueError(f"Unknown lr_schedule: {config.train.lr_schedule!r} (expected 'none' or 'cosine')")
 
 
-def main(config: Config):
-    device = pick_device()
-    print(f"Using device: {device}")
-
-    try:
-        loss_factory, head = LOSSES[config.train.loss]
-    except KeyError:
-        raise ValueError(f"Unknown loss: {config.train.loss!r} (expected one of {list(LOSSES)})") from None
-    loss_fn = loss_factory(config)
-    print(f"Loss: {config.train.loss} (model head: {head})")
-
-    model = FUNet(
+def build_model(config: Config, head: str) -> FUNet:
+    return FUNet(
         channels=config.model.channels,
         dilations=config.model.dilations,
         bottleneck_dilation=config.model.bottleneck_dilation,
@@ -80,6 +71,31 @@ def main(config: Config):
         dropout=config.model.dropout,
     )
 
+
+def run_training(
+        config: Config,
+        *,
+        on_epoch: Optional[Callable[[int, float], None]] = None,
+        save_artifacts: bool = True,
+) -> float:
+    """Build the model/data/optimiser from ``config``, train, and return the best val loss.
+
+    This is the whole training pipeline in one call, shared by the CLI (``main``) and the
+    Optuna search (``tune.objective``). The search passes ``save_artifacts=False`` (it keeps
+    only the score, not the model) and an ``on_epoch`` callback (to report/prune trials).
+    """
+    device = pick_device()
+    print(f"Using device: {device}")
+
+    try:
+        loss_factory, head = LOSSES[config.train.loss]
+    except KeyError:
+        raise ValueError(f"Unknown loss: {config.train.loss!r} (expected one of {list(LOSSES)})") from None
+    loss_fn = loss_factory(config)
+    print(f"Loss: {config.train.loss} (model head: {head})")
+
+    model = build_model(config, head)
+
     if config.resume is not None:
         print(f"Resuming from checkpoint: '{config.resume}'")
         model.load_state_dict(torch.load(config.resume, map_location=device))
@@ -89,10 +105,11 @@ def main(config: Config):
     optimiser = build_optimiser(config, model)
     scheduler = build_scheduler(config, optimiser)
 
-    os.makedirs(config.model_dir, exist_ok=True)
+    if save_artifacts:
+        os.makedirs(config.model_dir, exist_ok=True)
 
     print("-------- Start of Training --------")
-    fit(
+    return fit(
         model=model,
         train_data=train_dl,
         val_data=val_dl,
@@ -100,10 +117,16 @@ def main(config: Config):
         loss_fn=loss_fn,
         epochs=config.train.epochs,
         device=device,
-        config={"model_dir": config.model_dir},
+        model_dir=config.model_dir,
         clip=config.train.clip,
         scheduler=scheduler,
+        save_artifacts=save_artifacts,
+        on_epoch=on_epoch,
     )
+
+
+def main(config: Config):
+    run_training(config)
 
 
 if __name__ == "__main__":
