@@ -14,10 +14,17 @@ stages and scored against microphone/PPG "sources of truth."
 That installs Poetry if you don't have it (via `pipx` if present, otherwise the
 official installer), initializes the git submodules, and runs `poetry install`,
 which creates the virtualenv, installs the locked dependency set, and installs
-this project into it in editable mode. It needs a Python >= 3.14 on `PATH`; if
+this project into it in editable mode. It needs a Python >= 3.12 on `PATH`; if
 it can't find one it prints every interpreter it did find, with versions and
 paths, plus whatever virtualenv or conda env is active — usually the reason the
 wrong one is being picked up.
+
+3.12 is the real floor, not a preference: `numpy` and `scipy` are the strictest
+direct dependencies, and no source file uses syntax newer than 3.10. It is kept
+at the floor deliberately so the cluster's `module load miniforge` python
+(3.12.x) satisfies it without a separate conda env. `setup.sh` reads the version
+straight out of `requires-python`, so raising the floor there is the only change
+needed — the check and its error messages follow.
 
 If Poetry gets installed, it lands in `~/.local/bin`, which may not be on your
 `PATH` — the script prints the line to add to your shell profile.

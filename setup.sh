@@ -36,7 +36,17 @@ survey_pythons() {
   done
 }
 
-# pyproject requires >=3.14; poetry needs to be able to find one to build the env.
+# The floor comes from pyproject.toml so this check can never drift from the
+# real requirement. Read with sed rather than python for the obvious reason:
+# this runs precisely because we do not yet know a usable python exists.
+PY_MIN=$(sed -n \
+  's/^[[:space:]]*requires-python[[:space:]]*=[[:space:]]*"[^0-9]*\([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' \
+  "$ROOT/pyproject.toml" | head -1)
+if [ -z "$PY_MIN" ]; then
+  echo "Could not read requires-python from $ROOT/pyproject.toml" >&2
+  exit 1
+fi
+
 PYTHON_OK=0
 require_python() {
   local survey name ver path
@@ -44,19 +54,19 @@ require_python() {
 
   survey=$(survey_pythons)
 
-  # The version is what matters, not the name -- python3 may well be the 3.14
-  # while python3.14 does not exist. A non-numeric version ("-", "?") compares
-  # false here, so unreadable interpreters are simply skipped.
-  if printf '%s\n' "$survey" | awk '
+  # The version is what matters, not the name -- python3 may well be the newest
+  # one while python3.<min> does not exist at all. A non-numeric version
+  # ("-", "?") compares false here, so unreadable interpreters are skipped.
+  if printf '%s\n' "$survey" | awk -v maj="${PY_MIN%%.*}" -v min="${PY_MIN#*.}" '
        { split($2, v, ".")
-         if (v[1] + 0 > 3 || (v[1] + 0 == 3 && v[2] + 0 >= 14)) { found = 1; exit } }
+         if (v[1] + 0 > maj + 0 || (v[1] + 0 == maj + 0 && v[2] + 0 >= min + 0)) { found = 1; exit } }
        END { exit(found ? 0 : 1) }'; then
     PYTHON_OK=1
     return 0
   fi
 
   {
-    echo "No Python >= 3.14 found, which pyproject.toml requires."
+    echo "No Python >= $PY_MIN found, which pyproject.toml requires."
     echo
     echo "Current Python environment:"
     # An active env is the usual reason a new enough python is installed but not
@@ -81,8 +91,8 @@ require_python() {
     done
     echo
     echo "Install one:"
-    echo "  macOS:    brew install python@3.14"
-    echo "  cluster:  module avail python   (then load one that is >= 3.14)"
+    echo "  macOS:    brew install python@$PY_MIN"
+    echo "  cluster:  module avail python   (then load one that is >= $PY_MIN)"
     echo "  else:     https://www.python.org/downloads/"
   } >&2
   exit 1

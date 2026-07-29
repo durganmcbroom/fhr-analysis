@@ -6,7 +6,11 @@ build-backend = "poetry.core.masonry.api"
 name = "fhr-analysis"
 version = "0.1.0"
 description = "Fetal heart rate extraction and evaluation from Banner fiber sensor recordings"
-requires-python = ">=3.14"
+# 3.12 is the real floor: numpy and scipy are the strictest direct deps, and no
+# source file uses syntax newer than 3.10. Kept at the floor rather than pinned
+# to whatever the dev machine runs so the cluster's `module load miniforge`
+# python (3.12.x) satisfies it too.
+requires-python = ">=3.12"
 license = "MIT"
 license-files = ["LICENSE"]
 
