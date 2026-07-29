@@ -10,3 +10,4 @@ src/fhr_bin/snr/out/*
 src/fhr_bin/plots/out/*
 bin/record/.pico-venv_1
 dist/
+logs/

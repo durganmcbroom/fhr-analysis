@@ -126,6 +126,32 @@ Anything without a console script runs as a module:
 poetry run python -m analyze.evaluate_v3
 ```
 
+### Cluster jobs
+
+The long training and tuning runs live in `jobs/` as Slurm batch scripts.
+`./batch.sh` lists them with the resources each one requests and the command it
+runs, and submits the ones you pick:
+
+```bash
+./batch.sh                 # pick from the menu
+./batch.sh train_funet     # submit by name, no prompt
+./batch.sh -n all          # print the sbatch commands without submitting
+```
+
+It creates `logs/` before submitting — Slurm will not create a missing output
+directory, and a job whose `-o` path is unwritable dies with nowhere to report
+why. It also passes `--chdir` and `--job-name` on the command line, which take
+precedence over the `#SBATCH` directives in the script: `--chdir` because the
+scripts hardcode `~/dev/fhr-analysis` and sbatch does no tilde expansion, and
+`--job-name` because the default is the filename *with* `.sh`, which would turn
+the `%x` in the log pattern into `train_funet.sh_123.out`.
+
+To submit one by hand instead, fix those two things yourself:
+
+```bash
+mkdir -p logs && sbatch --chdir="$PWD" --job-name=train_funet jobs/train_funet.sh
+```
+
 ### One naming rule
 
 `poetry install` puts the five source roots on `sys.path` (via
