@@ -5,7 +5,7 @@ import numpy as np
 import numpy.typing as npt
 from scipy.io.wavfile import write
 
-from constants import FIBER_BUNDLE_A, FIBER_BUNDLE_B, ABDOMEN_FIBER_NAMES
+from analyze.constants import FIBER_BUNDLE_A, FIBER_BUNDLE_B, ABDOMEN_FIBER_NAMES
 
 
 @dataclass

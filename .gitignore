@@ -1,8 +1,12 @@
 .out
+*.egg-info
+__pycache__/
 Banner_data/*
 lib/tune-ssnet/training/*
 .venv
 .claude
-src/bin/snr/data/*
-src/bin/snr/out/*
+src/fhr_bin/snr/data/*
+src/fhr_bin/snr/out/*
+src/fhr_bin/plots/out/*
 bin/record/.pico-venv_1
+dist/

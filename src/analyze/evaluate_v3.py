@@ -10,7 +10,7 @@ from scipy.signal import correlate, correlation_lags
 from analyze.hr import fHROutput
 from analyze.sot import SOTResult
 from analyze.util import moving_average_v2
-from constants import FETAL_BPM_RANGE
+from analyze.constants import FETAL_BPM_RANGE
 
 # Reuse the v1 beat-matcher verbatim so the timing-error semantics (MAD outlier
 # rejection, ±250 ms acceptance, ±50 ms "correct") stay identical to v1/v2 and

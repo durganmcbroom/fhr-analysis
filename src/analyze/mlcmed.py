@@ -5,7 +5,7 @@ from scipy.linalg import eigh
 
 from analyze.data import FiberData, Audio
 from analyze.util import plot_amplitudes
-from constants import ABDOMEN_FIBER_NAMES
+from analyze.constants import ABDOMEN_FIBER_NAMES
 
 
 def auto_covariance_matrix(

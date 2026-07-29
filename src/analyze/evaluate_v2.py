@@ -12,7 +12,7 @@ from scipy.special import expit
 from analyze.data import Audio
 from analyze.hr import fHROutput
 from analyze.sot import SOTResult
-from constants import XCORR_TARGET_FS
+from analyze.constants import XCORR_TARGET_FS
 
 # Reuse the v1 beat-matcher verbatim so the matching semantics (MAD outlier
 # rejection, ±250 ms acceptance) stay identical and the two evaluators remain

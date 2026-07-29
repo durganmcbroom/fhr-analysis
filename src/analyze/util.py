@@ -1,18 +1,13 @@
-import os
-import sys
-
 import numpy as np
 import torch
 from matplotlib import pyplot as plt
 from scipy.signal import resample_poly
 
-from constants import PROJECT_DIR, NEOSSNET_MODEL_HZ
+from analyze.constants import NEOSSNET_MODEL_HZ
 from analyze.data import FiberPair
 
-# lib/neossnet is a separate (submodule) repo with its own bare-import layout;
-# put it on sys.path so `from utils import generate_output` below resolves.
-sys.path.insert(0, os.path.join(PROJECT_DIR, "lib", "neossnet"))
-from utils import generate_output  # noqa: E402
+# Top-level name from the lib/neossnet submodule (see pyproject package-dir).
+from utils import generate_output
 
 def normalize_path(path):
     return path.removesuffix("/") + "/"

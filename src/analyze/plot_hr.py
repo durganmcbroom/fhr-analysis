@@ -9,7 +9,7 @@ from scipy.ndimage import uniform_filter1d
 from analyze.hr import fHROutput, fHRMultiOutput
 from analyze.sot import SOTResult
 from analyze.util import moving_average, moving_average_v2
-from constants import FETAL_BPM_RANGE
+from analyze.constants import FETAL_BPM_RANGE
 
 # ---------------------------------------------------------------------------
 # Every individual subplot in this module is 4:3 (width:height). Subplots are

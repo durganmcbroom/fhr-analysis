@@ -17,7 +17,7 @@ from scipy.signal import welch
 
 from analyze.data import Audio, FiberData
 from analyze.hr.detect import detect_fetal_beats, _fetal_quality_score
-from constants import FETAL_BPM_RANGE
+from analyze.constants import FETAL_BPM_RANGE
 
 
 # ---------------------------------------------------------------------------

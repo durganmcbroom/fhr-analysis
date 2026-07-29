@@ -11,7 +11,8 @@ epoch-seconds axis the recording plots now use:
                source separation (heart output) -> 190-210 Hz narrow band -> the
                same detector. Mirrors analyze.neossnet.run_neossnet_pipeline.
   * FUNet    -- all five abdomen fibers (1B,2A,2B,2C,2D) stacked as channels through
-               the FUNet beat-activity model, then peak-picked. Mirrors analyze.funet.
+               the FUNet beat-activity model, then peak-picked. Mirrors
+               analyze.funet_pipeline.
 
 Qt-free and importable on its own. It puts the project's ``src`` and the two
 model-lib dirs on sys.path exactly as the offline code does.
@@ -26,7 +27,7 @@ from typing import List, Sequence, Tuple
 
 # --- make the project + model libs importable (same layout the offline code uses) ---
 _REPO = Path(__file__).resolve().parents[3]
-for _p in (_REPO / "src", _REPO / "lib" / "funet" / "src", _REPO / "lib" / "neossnet"):
+for _p in (_REPO / "src", _REPO / "lib" / "funet" / "funet", _REPO / "lib" / "neossnet"):
     _s = str(_p)
     if _s not in sys.path:
         sys.path.insert(0, _s)
@@ -44,7 +45,7 @@ from analyze.data import Audio  # noqa: E402
 from analyze.filters import bp_filter  # noqa: E402
 from analyze.util import run_neossnet, moving_average_v2  # noqa: E402
 from beat_app import detectors  # noqa: E402
-from constants import (  # noqa: E402
+from analyze.constants import (  # noqa: E402
     FETAL_ACOUSTIC_BAND_HZ, FETAL_ACOUSTIC_BAND_NARROW_HZ, FETAL_BPM_RANGE,
     FETAL_MODEL_PATH, FETAL_MODEL_CFG, FUNET_CONFIG, FUNET_MODEL_PATH,
     NEOSSNET_MAX_CHUNK_SECONDS,

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
-from fontTools.qu2cu.qu2cu import List
+from typing import List
 from matplotlib import pyplot as plt
 
 from matplotlib.transforms import blended_transform_factory
@@ -12,7 +12,7 @@ from scipy.signal import correlate, correlation_lags
 from analyze.data import Audio
 from analyze.hr import fHROutput
 from analyze.sot import SOTResult
-from constants import XCORR_TARGET_FS
+from analyze.constants import XCORR_TARGET_FS
 
 
 # ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@ from analyze.evaluate import evaluate, combine_evaluations, plot_evaluation
 from analyze.evaluate_v2 import evaluate_v2
 from analyze.evaluate_v3 import evaluate_v3
 from analyze.filters import abdomen_bp, bp, notch
-from analyze.funet import run_funet_pipeline, run_funet_belly_machine, run_funet_no_sot
+from analyze.funet_pipeline import run_funet_pipeline, run_funet_belly_machine, run_funet_no_sot
 from analyze.hr import fiber_beats, sot_beats
 from analyze.hr.classify import classify_sources
 from analyze.hr.detect import v1_beat_detector
@@ -22,7 +22,7 @@ from analyze.pipeline import Pipeline
 from analyze.plot_hr import plot_hr, plot_peaks
 from analyze.sot import load_sot, combine_sot_results
 from analyze.util import run_neossnet
-from constants import PROJECT_DIR, FETAL_ACOUSTIC_BAND_HZ, BROADBAND_FILTER_HZ, POWERLINE_NOTCH_HZ
+from analyze.constants import PROJECT_DIR, FETAL_ACOUSTIC_BAND_HZ, BROADBAND_FILTER_HZ, POWERLINE_NOTCH_HZ
 
 # PATIENT = "fiber-vertical"
 # PATIENT = "fiber-horizontal"
@@ -226,7 +226,9 @@ def run_raw_bandpass_no_sot():
 # - no energy snapping
 # - mark both s1 / s2 on impulses
 
-if __name__ == '__main__':
+def main():
+    """Whichever runs are currently uncommented below. Exposed as the `main`
+    console script so `poetry run main` does the same thing as running this file."""
     # for fibers in (["1B", "2A"],["2A", "2B"],["2B", "1B"]):
     # run_funet_no_sot(
     #     PATIENT, WINDOW, DATA_DIR,
@@ -318,3 +320,7 @@ if __name__ == '__main__':
     # )
 
     # run_raw_bandpass_no_sot()
+
+
+if __name__ == '__main__':
+    main()

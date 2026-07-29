@@ -8,7 +8,7 @@ from numpy import typing as npt
 from analyze.data import FiberPair, Audio
 from analyze.filters import bp_filter
 from analyze.sot import SOTResult, SOTData, detect_ppg_beats, _load_beat_npy
-from constants import (
+from analyze.constants import (
     MATERNAL_ACOUSTIC_BAND_HZ, MATERNAL_BPM_RANGE, FETAL_BPM_RANGE, FETAL_ACOUSTIC_BAND_HZ,
     MIC_BEATS_FILE,
 )

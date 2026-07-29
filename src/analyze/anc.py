@@ -15,7 +15,7 @@ from filterpy.kalman.EKF import ExtendedKalmanFilter
 
 from analyze.data import Audio, FiberPair
 from analyze.filters import bp_filter
-from constants import FETAL_ACOUSTIC_BAND_HZ
+from analyze.constants import FETAL_ACOUSTIC_BAND_HZ
 
 
 # ---------------------------------------------------------------------------

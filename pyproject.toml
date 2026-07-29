@@ -1,0 +1,84 @@
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[project]
+name = "fhr-analysis"
+version = "0.1.0"
+description = "Fetal heart rate extraction and evaluation from Banner fiber sensor recordings"
+requires-python = ">=3.14"
+license = "MIT"
+license-files = ["LICENSE"]
+
+# Direct imports only -- derived by AST-scanning src/ and lib/, not `pip freeze`.
+# poetry.lock is the pinned resolution; these are just the floors.
+dependencies = [
+    "EMD-signal>=1.9.0",
+    "filterpy>=1.4.5",
+    "matplotlib>=3.10",
+    "numpy>=2.4",
+    "optuna>=4.9",
+    "pandas>=3.0",
+    "prettytable>=3.17",
+    "ptwt>=1.0.1",
+    "PyWavelets>=1.9",
+    "PyYAML>=6.0",
+    "scikit-learn>=1.8",
+    "scipy>=1.17",
+    "torch>=2.12",
+    "torchaudio>=2.11",
+    "torchmetrics>=1.9",
+    "tqdm>=4.67",
+]
+
+[project.scripts]
+# Training / tuning
+funet-train = "funet.train:main"
+funet-optimize = "funet.optimize:main"
+ssnet-train = "ssnet.main:main"
+ssnet-optimize = "ssnet.optimize:main"
+# Analysis
+main = "analyze.main:main"
+beat-app = "beat_app.server:main"
+# Data prep and diagnostics (src/fhr_bin)
+fhr-snippets = "fhr_bin.generate_training_snippets:main"
+fhr-pico2data = "fhr_bin.pico2data:main"
+fhr-concat = "fhr_bin.concat:main"
+fhr-change-start = "fhr_bin.change_start:main"
+fhr-snr = "fhr_bin.snr.calculate_snr:main"
+fhr-plot-clips = "fhr_bin.plots.plot_clips:main"
+fhr-plot-waveforms = "fhr_bin.plots.analyze_waveforms:main"
+fhr-peak-det = "fhr_bin.peak_det.plot_peak_detectors:main"
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=9.0"
+
+# Seven source roots that used to be stitched together at runtime with sys.path
+# inserts. Declaring them here makes the import names real, so nothing depends
+# on CWD or on which script happened to be the entry point.
+#
+# Poetry cannot rename a package on the way in the way setuptools' package-dir
+# could: `poetry install` writes a plain fhr_analysis.pth listing these `from`
+# roots, so the directory name on disk *is* the import name. That is why the
+# directories are src/fhr_bin, lib/funet/funet and lib/tune-ssnet/ssnet rather
+# than src/bin and .../src.
+#
+# lib/neossnet is a git submodule, vendored unmodified; its own code does bare
+# `from models import MaskNet`, so models/utils/loss_fn have to stay top-level.
+[tool.poetry]
+packages = [
+    { include = "analyze", from = "src" },
+    { include = "beat_app", from = "src" },
+    { include = "fhr_bin", from = "src" },
+    { include = "common", from = "lib" },
+    { include = "funet", from = "lib/funet" },
+    { include = "ssnet", from = "lib/tune-ssnet" },
+    { include = "models", from = "lib/neossnet" },
+    { include = "utils", from = "lib/neossnet" },
+    { include = "loss_fn.py", from = "lib/neossnet" },
+]
+
+# A package `include` pulls in every file under the directory, not just .py.
+# These are generated or junk; the data files that scripts actually read (the
+# snr CSVs, lib/neossnet's checkpoint) are deliberately left in.
+exclude = ["**/out/", "**/__pycache__/", "**/.DS_Store"]

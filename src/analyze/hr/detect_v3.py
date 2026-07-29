@@ -49,7 +49,7 @@ from scipy.ndimage import uniform_filter1d
 from scipy.signal import correlate, correlation_lags, find_peaks, hilbert
 
 from analyze.data import Audio
-from constants import XCORR_TARGET_FS
+from analyze.constants import XCORR_TARGET_FS
 
 
 # ---------------------------------------------------------------------------

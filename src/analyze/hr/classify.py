@@ -8,7 +8,7 @@ from scipy.signal import correlate, correlation_lags
 from analyze.data import Audio, FiberData, FiberPair
 from analyze.hr.detect import detect_maternal_beats, detect_fetal_beats, _fetal_quality_score
 from analyze.hr.utils import _gaussian_smooth, _impulse_train
-from constants import MATERNAL_ACOUSTIC_BAND_HZ, FETAL_BPM_RANGE, XCORR_TARGET_FS
+from analyze.constants import MATERNAL_ACOUSTIC_BAND_HZ, FETAL_BPM_RANGE, XCORR_TARGET_FS
 
 
 def _maternal_correlation_score(

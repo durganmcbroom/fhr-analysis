@@ -36,7 +36,7 @@ import pyqtgraph as pg
 
 import hr_analysis as hra
 from epoch_axis import EpochSecondsAxis
-from constants import FETAL_BPM_RANGE
+from analyze.constants import FETAL_BPM_RANGE
 
 # fiber name -> (buffer source, column index within that buffer's data columns)
 # ps4000 emitted columns are [1A, 1B]; ps3000a emitted columns are [2A, 2B, 2C, 2D].

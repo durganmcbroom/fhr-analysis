@@ -30,7 +30,7 @@ from analyze.hr.detect import detect_maternal_beats
 from analyze.filters import bp_filter
 from analyze.sot import detect_ppg_beats, detect_mic_fetal_beats, _robust_clip, _suppress_transients
 from analyze.util import normalize_path
-from constants import (
+from analyze.constants import (
     FIBER_BUNDLE_A, FIBER_BUNDLE_B, MIC_FILE, PVS_FILE, XCORR_TARGET_FS,
     FETAL_ACOUSTIC_BAND_HZ, SOURCE_PREP_BAND_HZ, MATERNAL_ACOUSTIC_BAND_HZ, MATERNAL_BPM_RANGE,
 )

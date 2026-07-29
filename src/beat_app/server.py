@@ -26,7 +26,6 @@ import argparse
 import json
 import mimetypes
 import os
-import sys
 import threading
 import traceback
 import uuid
@@ -35,15 +34,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-# Make ``analyze`` / ``constants`` importable exactly as the rest of the project does.
-_SRC = str(Path(__file__).resolve().parents[1])
-if _SRC not in sys.path:
-    sys.path.insert(0, _SRC)
+import numpy as np
 
-import numpy as np  # noqa: E402
-
-from beat_app import audio_io, detectors  # noqa: E402
-from constants import FETAL_BPM_RANGE  # noqa: E402
+from beat_app import audio_io, detectors
+from analyze.constants import FETAL_BPM_RANGE
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 MAX_UPLOAD_BYTES = 512 * 1024 * 1024  # 512 MB guard rail

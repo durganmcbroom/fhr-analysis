@@ -17,7 +17,7 @@ from scipy.ndimage import maximum_filter1d
 from sklearn.decomposition import FastICA
 from sklearn.exceptions import ConvergenceWarning
 
-from constants import (
+from analyze.constants import (
     MATERNAL_BPM_RANGE, FETAL_BPM_RANGE, MATERNAL_ACOUSTIC_BAND_HZ,
     SOURCE_PREP_BAND_HZ, FETAL_ACOUSTIC_BAND_HZ,
     FIBER_BUNDLE_A, FIBER_BUNDLE_B, PVS_FILE, MIC_FILE,
