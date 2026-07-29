@@ -14,8 +14,10 @@ stages and scored against microphone/PPG "sources of truth."
 That installs Poetry if you don't have it (via `pipx` if present, otherwise the
 official installer), initializes the git submodules, and runs `poetry install`,
 which creates the virtualenv, installs the locked dependency set, and installs
-this project into it in editable mode. It needs a Python >= 3.14 on `PATH` and
-says so clearly if it can't find one.
+this project into it in editable mode. It needs a Python >= 3.14 on `PATH`; if
+it can't find one it prints every interpreter it did find, with versions and
+paths, plus whatever virtualenv or conda env is active — usually the reason the
+wrong one is being picked up.
 
 If Poetry gets installed, it lands in `~/.local/bin`, which may not be on your
 `PATH` — the script prints the line to add to your shell profile.

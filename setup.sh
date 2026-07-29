@@ -12,17 +12,79 @@ have_poetry() {
   command -v poetry >/dev/null 2>&1
 }
 
-# pyproject requires >=3.14; poetry needs to be able to find one to build the env.
-require_python() {
-  local p
-  for p in python3.14 python3 python; do
-    if command -v "$p" >/dev/null 2>&1 && "$p" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 14) else 1)' 2>/dev/null; then
-      return 0
+# One "<name> <version> <path>" line per interpreter, using "-" for a name that
+# resolves to nothing. Versioned names are scanned off PATH rather than
+# hardcoded, so a future python3.15 counts for just as much as python3.14 does.
+survey_pythons() {
+  local names p path ver dir f
+  names=$(
+    printf '%s\n' "$PATH" | tr ':' '\n' | while IFS= read -r dir; do
+      [ -d "$dir" ] || continue
+      for f in "$dir"/python3.[0-9] "$dir"/python3.[0-9][0-9]; do
+        [ -x "$f" ] && basename "$f"
+      done
+    done | sort -u
+    printf 'python3\npython\n'
+  )
+  for p in $names; do
+    if ! path=$(command -v "$p" 2>/dev/null); then
+      printf '%s - -\n' "$p"
+      continue
     fi
+    ver=$("$p" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])' 2>/dev/null) || ver="?"
+    printf '%s %s %s\n' "$p" "$ver" "$path"
   done
-  echo "No Python >= 3.14 found, which pyproject.toml requires." >&2
-  echo "  macOS:  brew install python@3.14" >&2
-  echo "  else:   https://www.python.org/downloads/" >&2
+}
+
+# pyproject requires >=3.14; poetry needs to be able to find one to build the env.
+PYTHON_OK=0
+require_python() {
+  local survey name ver path
+  if [ "$PYTHON_OK" -eq 1 ]; then return 0; fi
+
+  survey=$(survey_pythons)
+
+  # The version is what matters, not the name -- python3 may well be the 3.14
+  # while python3.14 does not exist. A non-numeric version ("-", "?") compares
+  # false here, so unreadable interpreters are simply skipped.
+  if printf '%s\n' "$survey" | awk '
+       { split($2, v, ".")
+         if (v[1] + 0 > 3 || (v[1] + 0 == 3 && v[2] + 0 >= 14)) { found = 1; exit } }
+       END { exit(found ? 0 : 1) }'; then
+    PYTHON_OK=1
+    return 0
+  fi
+
+  {
+    echo "No Python >= 3.14 found, which pyproject.toml requires."
+    echo
+    echo "Current Python environment:"
+    # An active env is the usual reason a new enough python is installed but not
+    # the one being picked up. On the cluster `module load miniforge` alone does it.
+    if [ -n "${CONDA_PREFIX:-}" ]; then
+      printf '  conda env    %s (%s)\n' "${CONDA_DEFAULT_ENV:-unnamed}" "$CONDA_PREFIX"
+    fi
+    if [ -n "${VIRTUAL_ENV:-}" ]; then
+      printf '  virtualenv   %s\n' "$VIRTUAL_ENV"
+    fi
+    if [ -z "${CONDA_PREFIX:-}" ] && [ -z "${VIRTUAL_ENV:-}" ]; then
+      printf '  no virtualenv or conda env active\n'
+    fi
+    echo
+    printf '  %-13s %-9s %s\n' "INTERPRETER" "VERSION" "PATH"
+    printf '%s\n' "$survey" | while read -r name ver path; do
+      if [ "$path" = "-" ]; then
+        printf '  %-13s %s\n' "$name" "not on PATH"
+      else
+        printf '  %-13s %-9s %s\n' "$name" "$ver" "$path"
+      fi
+    done
+    echo
+    echo "Install one:"
+    echo "  macOS:    brew install python@3.14"
+    echo "  cluster:  module avail python   (then load one that is >= 3.14)"
+    echo "  else:     https://www.python.org/downloads/"
+  } >&2
   exit 1
 }
 
