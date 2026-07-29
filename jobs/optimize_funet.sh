@@ -5,7 +5,7 @@
 #SBATCH -c 8
 #SBATCH --mem=32G
 #SBATCH -G 1
-#SBATCH -t 08:00:00
+#SBATCH -t 05:00:00
 #SBATCH -o logs/%x_%j.out
 #SBATCH -e logs/%x_%j.out
 
