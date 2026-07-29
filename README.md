@@ -11,9 +11,14 @@ stages and scored against microphone/PPG "sources of truth."
 ./setup.sh
 ```
 
-That initializes the git submodules and runs `poetry install`, which creates
-the virtualenv, installs the locked dependency set, and installs this project
-into it in editable mode.
+That installs Poetry if you don't have it (via `pipx` if present, otherwise the
+official installer), initializes the git submodules, and runs `poetry install`,
+which creates the virtualenv, installs the locked dependency set, and installs
+this project into it in editable mode. It needs a Python >= 3.14 on `PATH` and
+says so clearly if it can't find one.
+
+If Poetry gets installed, it lands in `~/.local/bin`, which may not be on your
+`PATH` — the script prints the line to add to your shell profile.
 
 Everything runs through `poetry run`:
 
@@ -95,9 +100,9 @@ Every entry point is a console script, so it works from any directory:
 |---|---|
 | `poetry run main` | Run the analysis pipeline (`analyze/main.py`) |
 | `poetry run funet-train [config.yaml]` | Train FUNet |
-| `poetry run funet-tune [config.yaml] [--trials N]` | Optuna search for FUNet |
+| `poetry run funet-optimize [config.yaml] [--trials N]` | Optuna search for FUNet |
 | `poetry run ssnet-train [config.yaml]` | Fine-tune NeoSSNet |
-| `poetry run ssnet-tune [config.yaml] [--trials N]` | Optuna search for SSNet |
+| `poetry run ssnet-optimize [config.yaml] [--trials N]` | Optuna search for SSNet |
 | `poetry run beat-app` | Serve the beat-marking web app |
 | `poetry run fhr-snippets <clips.yaml> --out-dir out/` | Build training snippet sets |
 | `poetry run fhr-pico2data` | Convert PicoScope CSV exports |

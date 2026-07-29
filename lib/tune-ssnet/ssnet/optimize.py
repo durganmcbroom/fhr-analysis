@@ -1,6 +1,6 @@
 """Optuna hyperparameter search for SSNet.
 
-    ssnet-tune [fetal-tune-config.yaml] [--trials N] [--epochs N] [--seed S]
+    ssnet-optimize [fetal-tune-config.yaml] [--trials N] [--epochs N] [--seed S]
 
 The search space lives in SSNetTask.suggest / SSNetTask.searched_fields; the driver (trials,
 pruning, study resume, best/latest config+model slots) lives in common.phases.optimize.

@@ -1,6 +1,6 @@
 """Optuna hyperparameter search for FUNet.
 
-    funet-tune [fetal-config.yaml] [--trials N] [--epochs N] [--storage URL] [--seed S]
+    funet-optimize [fetal-config.yaml] [--trials N] [--epochs N] [--storage URL] [--seed S]
 
 The search space lives in FUNetTask.suggest / FUNetTask.searched_fields; the driver (trials,
 pruning, study resume, best/latest config+model slots) lives in common.phases.optimize, which
