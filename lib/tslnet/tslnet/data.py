@@ -17,6 +17,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from common.audio import SAMPLE_RATE, crop_time, holdout_split, load_wav, pad_time, snippet_indices
 from common.augment import Augmenter
+from common.preprocess import Preprocessor
 
 
 def envelope_frames(config) -> int:
@@ -87,7 +88,7 @@ class TSLNetPairs(Dataset):
 
     def __init__(self, snippet_dir: str, indices: list, crop_samples: int, train: bool,
                  n_fft: int, hop_length: int, band=None, log_envelope: bool = True,
-                 patch_length: int = 1, augment=()):
+                 patch_length: int = 1, augment=(), preprocess=()):
         self.dir = snippet_dir
         self.indices = indices
         self.crop_samples = crop_samples
@@ -95,6 +96,8 @@ class TSLNetPairs(Dataset):
         self.hop_length = hop_length
         self.patch_length = patch_length
         self.augmenter = Augmenter(augment)
+        # Unlike the augmenter, this is passed for validation too -- see common.preprocess.
+        self.preprocessor = Preprocessor(preprocess)
         self.envelope = Envelope(n_fft, hop_length, band, log=log_envelope)
 
     def __len__(self):
@@ -110,8 +113,10 @@ class TSLNetPairs(Dataset):
 
         # Crop/pad to a fixed length (random offset when training) and layer on the enabled
         # input augmentations (train-only; empty Augmenter is a no-op for validation).
+        # Augment first, then preprocess: it band-limits the augmentation noise the same way
+        # real in-band noise arrives, and leaves peak normalisation with the last word.
         mix, heart = crop_time([mix, heart], self.crop_samples, random_offset=self.train)
-        mix = self.augmenter(mix)
+        mix = self.preprocessor(self.augmenter(mix))
 
         envelope = self.envelope(mix)
 
@@ -158,7 +163,8 @@ def make_dataloader(config, snippet_dir: str, *, train: bool) -> DataLoader:
     ds = TSLNetPairs(snippet_dir, chosen, crop_samples, train=train,
                      n_fft=m.n_fft, hop_length=m.hop_length, band=m.band,
                      log_envelope=m.log_envelope, patch_length=m.patch_length,
-                     augment=config.train.augment if train else ())
+                     augment=config.train.augment if train else (),
+                     preprocess=config.data.preprocess)   # every split, not just train
 
     print(f"Loaded {len(indices)} snippets from {snippet_dir}{split_note} "
           f"({'train' if train else 'validation'})")

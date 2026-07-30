@@ -65,6 +65,17 @@ class DataConfig:
     val_fraction: float = 0.0   # >0: hold out this fraction of train_dir (tail) as validation
     num_workers: int = 4
 
+    # Deterministic input transforms: subset of common.preprocess.PREPROCESSORS
+    # ('bandpass' | 'normalize'). Distinct from train.augment in two ways that matter -- these
+    # are not random, and they apply to EVERY split and to inference, not to training only.
+    #
+    # By the "does it invalidate a checkpoint" test this is really part of the input contract
+    # and belongs alongside a model's n_fft. It sits here instead because it is identical for
+    # every model, and a per-task copy in three ModelConfigs would be three things to keep in
+    # step. The archived config next to each checkpoint records it either way, so a checkpoint
+    # is never separated from the preprocessing that produced it.
+    preprocess: List[str] = field(default_factory=list)
+
 
 @dataclass(kw_only=True)
 class Config:

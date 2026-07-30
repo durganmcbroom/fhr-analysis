@@ -37,5 +37,10 @@ data:
   train_dir: 'training/stereo_v7/fetal-train'
   val_dir: 'training/stereo_v7/fetal-test'   # held-out patient; selects model_best.pt
   num_workers: 8
+  # Deterministic input transforms, applied to BOTH splits and at inference (unlike
+  # train.augment, which is random and train-only). 'bandpass' = 100-300 Hz butterworth,
+  # 'normalize' = peak to +/-1. Changing this invalidates a checkpoint -- leave it empty to
+  # stay compatible with the existing funet-v33 weights.
+  preprocess: ["bandpass", "normalize"]
 
-model_dir: 'models/funet-v33/'
+model_dir: 'models/funet-v34/'

@@ -4,6 +4,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from common.audio import SAMPLE_RATE, crop_time, load_wav, pad_time, snippet_indices
 from common.augment import Augmenter
+from common.preprocess import Preprocessor
 
 
 def stft_output_shape(config) -> tuple[int, int]:
@@ -35,7 +36,7 @@ class FetalPairs(Dataset):
     """
 
     def __init__(self, snippet_dir: str, indices: list, crop_samples: int, train: bool,
-                 n_fft: int, hop_length: int, divisor: int = 1, augment=(),
+                 n_fft: int, hop_length: int, divisor: int = 1, augment=(), preprocess=(),
                  freq_mask: int = 0, time_mask: int = 0):
         self.dir = snippet_dir
         self.indices = indices
@@ -44,6 +45,8 @@ class FetalPairs(Dataset):
         self.hop_length = hop_length
         self.divisor = divisor  # FUNet needs freq/time both divisible by 2**depth
         self.augmenter = Augmenter(augment)
+        # Unlike the augmenter, this is passed for validation too -- see common.preprocess.
+        self.preprocessor = Preprocessor(preprocess)
         self.spectrogram = torchaudio.transforms.Spectrogram(n_fft=n_fft, hop_length=hop_length)
         # SpecAugment-style masking (train-only): each sample gets one random-width band of
         # freq bins / time frames zeroed, width uniform in [0, param). 0 disables. Applied
@@ -65,7 +68,9 @@ class FetalPairs(Dataset):
         # Crop/pad to a fixed length (random offset when training) and layer on the enabled
         # input augmentations (train-only; empty Augmenter is a no-op for validation).
         mix, heart = crop_time([mix, heart], self.crop_samples, random_offset=self.train)
-        mix = self.augmenter(mix)
+        # Augment first, then preprocess: it band-limits the augmentation noise the same way
+        # real in-band noise arrives, and leaves peak normalisation with the last word.
+        mix = self.preprocessor(self.augmenter(mix))
 
         # Power spectrogram magnitudes span orders of magnitude (raw audio, unnormalized);
         # log1p compresses that to a learnable range before it hits the first conv.
@@ -116,6 +121,7 @@ def make_dataloader(config, snippet_dir: str, *, train: bool) -> DataLoader:
                     n_fft=config.model.n_fft, hop_length=config.model.hop_length,
                     divisor=divisor,
                     augment=config.train.augment if train else (),
+                    preprocess=config.data.preprocess,   # every split, not just train
                     freq_mask=config.train.freq_mask, time_mask=config.train.time_mask)
 
     print(f"Loaded {len(indices)} {'train' if train else 'validation'} snippets from {snippet_dir}")

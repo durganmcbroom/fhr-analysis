@@ -45,8 +45,8 @@ data:
   # Written by ./generate_training_snippets.sh from training_clips.yaml, which routes whole
   # patients to fetal-train/ or fetal-test/ by their `mode`. Paths resolve relative to this
   # file, not the working directory.
-  train_dir: 'training/stereo_v12/fetal-train'
-  val_dir: 'training/stereo_v12/fetal-test'   # held-out patient; selects model_best.pt
+  train_dir: 'training/stereo_v1/fetal-train'
+  val_dir: 'training/stereo_v1/fetal-test'   # held-out patient; selects model_best.pt
   num_workers: 8
 
 model_dir: 'models/tslnet-v1/'

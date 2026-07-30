@@ -15,13 +15,14 @@ def bp_filter(audio, low, high, order=3, filter_type='cheby1', rp=1):
         sosfiltfilt(sos, audio.data, axis=0)
     )
 
+
 def notch_filter(audio, freq, quality=30):
-    b,a = iirnotch(freq, quality, audio.hz)
+    b, a = iirnotch(freq, quality, audio.hz)
 
     return Audio(
         audio.time,
         audio.hz,
-        filtfilt(b,a, audio.data)
+        filtfilt(b, a, audio.data)
     )
 
 
@@ -31,8 +32,10 @@ def on_all(filter):
             filter(e)
             for e in data
         ]
+
     apply.__name__ = f"{filter.__name__}_ALL"
     return apply
+
 
 def abdomen_bp(low, high, filter_type="cheby1"):
     def run_abdomen_bp(data):
@@ -41,7 +44,7 @@ def abdomen_bp(low, high, filter_type="cheby1"):
             return FiberData(
                 data.chest,
                 {name: bp_filter(audio, low, high, filter_type=filter_type)
-                for name, audio in data.abdomen.items()}
+                 for name, audio in data.abdomen.items()}
             )
         else:
             return FiberPair(
@@ -58,6 +61,17 @@ def bp(low, high, filter_type="cheby1"):
         return bp_filter(data, low, high, filter_type=filter_type)
 
     return run_bandpass
+
+
+def normalize(data: Audio):
+    m = np.max(np.abs(data.data))
+    normal = data.data / m
+
+    return Audio(
+        data.time,
+        data.hz,
+        normal,
+    )
 
 
 def notch(freq):

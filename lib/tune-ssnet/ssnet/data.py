@@ -5,6 +5,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from common.audio import SAMPLE_RATE, crop_time, holdout_split, load_wav, snippet_indices
 from common.augment import Augmenter
+from common.preprocess import Preprocessor
 
 
 class PreprocessedPairs(Dataset):
@@ -18,13 +19,16 @@ class PreprocessedPairs(Dataset):
     crop_samples it is zero-padded.
     """
 
-    def __init__(self, snippet_dir, indices, num_sources, crop_samples, train, augment=()):
+    def __init__(self, snippet_dir, indices, num_sources, crop_samples, train, augment=(),
+                 preprocess=()):
         self.dir = snippet_dir
         self.indices = indices
         self.num_sources = num_sources
         self.crop_samples = crop_samples
         self.train = train  # train => random crop offset + augmentation; eval => deterministic
         self.augmenter = Augmenter(augment)
+        # Unlike the augmenter, this is passed for validation too -- see common.preprocess.
+        self.preprocessor = Preprocessor(preprocess)
 
     def __len__(self):
         return len(self.indices)
@@ -40,7 +44,11 @@ class PreprocessedPairs(Dataset):
             sources.append(self._load(f"{idx}_noise.wav"))
 
         mix, *sources = crop_time([mix, *sources], self.crop_samples, random_offset=self.train)
-        mix = self.augmenter(mix)
+        # Augment first, then preprocess: it band-limits the augmentation noise the same way
+        # real in-band noise arrives, and leaves peak normalisation with the last word. Only
+        # the mix is touched -- the target sources stay as they are, so a separation loss is
+        # still scored against the unmodified waveform it is meant to reconstruct.
+        mix = self.preprocessor(self.augmenter(mix))
 
         target = torch.cat(sources, dim=0)  # (num_sources, crop_samples)
         return mix, target
@@ -66,7 +74,8 @@ def make_dataloader(config, *, train: bool) -> DataLoader:
               f"add more snippets or lower batch_size.")
 
     ds = PreprocessedPairs(snippet_dir, chosen, config.model.num_sources, crop_samples,
-                           train=train, augment=config.train.augment if train else ())
+                           train=train, augment=config.train.augment if train else (),
+                           preprocess=config.data.preprocess)   # every split, not just train
 
     print(f"Loaded {len(indices)} snippets from {snippet_dir} -> "
           f"{len(chosen)} {'train' if train else 'validation'}")

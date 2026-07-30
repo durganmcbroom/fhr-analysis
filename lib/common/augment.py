@@ -11,6 +11,10 @@ fixed sensible order regardless of list order, and only for the training loader 
 validation loader passes an empty list -> no-op).
 
 Randomness uses torch's RNG so DataLoader worker seeding is handled correctly.
+
+For deterministic transforms that must apply to every split and to inference -- bandpass,
+peak normalisation -- see ``common.preprocess``. Putting one of those in this registry would
+silently make it train-only, which is a distribution mismatch rather than regularisation.
 """
 
 from typing import Iterable

@@ -52,6 +52,11 @@ data:
   train_dir: 'training/training_clips_mono_v10/fetal-train'
   val_fraction: 0.1   # tail of train_dir held out for validation
   num_workers: 4
+  # Deterministic input transforms on the mix, applied to BOTH splits (unlike train.augment,
+  # which is random and train-only). 'bandpass' = 100-300 Hz butterworth, 'normalize' = peak
+  # to +/-1. Empty by default here: the targets are un-preprocessed source waveforms, so
+  # band-limiting the mix asks the separator to reconstruct energy it can no longer see.
+  preprocess: []
 
 model_dir: 'models/tuned-model-v12/'
 resume: '../neossnet/models/model_best.pt'

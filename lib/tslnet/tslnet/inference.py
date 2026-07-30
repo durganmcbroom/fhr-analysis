@@ -16,6 +16,7 @@ import torch
 
 from common.audio import SAMPLE_RATE, resample
 from common.phases.inference import frames_to_native, load_model, run_windowed
+from common.preprocess import Preprocessor
 
 from tslnet.data import Envelope
 from tslnet.model import TSLNet
@@ -63,8 +64,12 @@ def run_tslnet(
     x = resample(x / peak, src_hz, SAMPLE_RATE)
 
     m = config.model
+    # The same deterministic transforms the dataset applied, or the model meets an input
+    # distribution it never trained on (see common.preprocess).
+    waveform = Preprocessor(config.data.preprocess)(torch.from_numpy(np.ascontiguousarray(x)))
+
     envelope = Envelope(m.n_fft, m.hop_length, m.band, log=m.log_envelope)
-    series = envelope(torch.from_numpy(np.ascontiguousarray(x)))   # (channels, frames)
+    series = envelope(waveform)                                    # (channels, frames)
 
     # Window the frame axis to a training-sized crop, rounded down to a whole number of
     # patches -- the only frame count the backbone can take.

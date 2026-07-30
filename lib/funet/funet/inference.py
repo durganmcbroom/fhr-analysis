@@ -17,6 +17,7 @@ import torchaudio
 
 from common.audio import SAMPLE_RATE, resample
 from common.phases.inference import frames_to_native, load_model, run_windowed
+from common.preprocess import Preprocessor
 
 from funet.model import FUNet
 from funet.task import FUNetTask
@@ -63,8 +64,12 @@ def run_funet(
     hop = config.model.hop_length
     divisor = 2 ** len(config.model.dilations)
 
+    # The same deterministic transforms the dataset applied, or the model meets an input
+    # distribution it never trained on (see common.preprocess).
+    waveform = Preprocessor(config.data.preprocess)(torch.from_numpy(np.ascontiguousarray(x)))
+
     spec = torchaudio.transforms.Spectrogram(n_fft=config.model.n_fft, hop_length=hop)
-    S = torch.log1p(spec(torch.from_numpy(x)))            # (channels, freq, frames)
+    S = torch.log1p(spec(waveform))                       # (channels, freq, frames)
 
     freq = S.shape[-2] - S.shape[-2] % divisor            # crop freq to a multiple of divisor
     S = S[:, :freq, :]
