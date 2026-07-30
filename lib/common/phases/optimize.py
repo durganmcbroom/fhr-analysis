@@ -21,7 +21,8 @@ Train the final model from the best config with the full epoch budget:
 
 Design: every trial goes through the exact same ``run_training`` the train phase uses, so a
 config the search likes trains identically when you run it for real -- the tuner only chooses
-the numbers. Objective = validation loss, minimised.
+the numbers. Objective = the mean validation loss over the trial's final epochs (see
+SCORE_WINDOW), minimised -- a stabler target than the single best epoch on a noisy val curve.
 
 This is the ONLY module in common that imports optuna. Tasks never do: their ``suggest``
 receives a trial object structurally, and ``check_feasible`` raises ``InfeasibleConfig``,
@@ -44,6 +45,12 @@ from common.phases.train import run_training
 BEST_CONFIG, BEST_MODEL = "best-config.yaml", "best-model.pt"
 LATEST_CONFIG, LATEST_MODEL = "latest-config.yaml", "latest-model.pt"
 STUDY_DB = "study.db"
+
+# A trial is scored by the mean validation loss over its final SCORE_WINDOW epochs, and that
+# same trailing mean is what is reported to the pruner. The raw per-epoch val loss is noisy, so
+# the single best epoch is an over-optimistic, high-variance objective (a lucky one-epoch dip
+# could win the search); a trailing mean is a stabler estimate of where a config settled.
+SCORE_WINDOW = 5
 
 
 # --------------------------------------------------------------------------------------
@@ -75,8 +82,14 @@ def objective(trial: optuna.Trial, task, base, base_config_path: str,
     if epochs is not None:
         config.train.epochs = epochs   # short trials; the emitted best config keeps base epochs
 
+    val_history: list[float] = []
+
     def on_epoch(epoch: int, val_loss: float) -> None:
-        trial.report(val_loss, epoch)
+        val_history.append(val_loss)
+        # Report the trailing mean, not the raw epoch loss, so a single noisy epoch neither
+        # trips the pruner nor (below) decides the trial's score.
+        window = val_history[-SCORE_WINDOW:]
+        trial.report(sum(window) / len(window), epoch)
         if trial.should_prune():
             raise optuna.TrialPruned()
 
@@ -87,8 +100,12 @@ def objective(trial: optuna.Trial, task, base, base_config_path: str,
     trial_model = os.path.join(out_dir, f".trial-{trial.number}.pt")
     searched = task.searched_fields(config)
     try:
-        loss = run_training(task, config, on_epoch=on_epoch, save_artifacts=False,
-                            best_model_path=trial_model)
+        # run_training returns the single best epoch; we score on the trailing mean instead
+        # (see SCORE_WINDOW), so ignore its return and derive the score from the history.
+        run_training(task, config, on_epoch=on_epoch, save_artifacts=False,
+                     best_model_path=trial_model)
+        window = val_history[-SCORE_WINDOW:]
+        loss = sum(window) / len(window) if window else float("inf")
 
         os.replace(trial_model, os.path.join(out_dir, LATEST_MODEL))
         write_config(base_config_path, os.path.join(out_dir, LATEST_CONFIG), searched)
@@ -166,7 +183,13 @@ def main(task, argv=None) -> None:
     study = optuna.create_study(
         direction="minimize",
         sampler=optuna.samplers.TPESampler(seed=args.seed),
-        pruner=optuna.pruners.MedianPruner(),   # stops trials tracking worse than the median
+        # Prune trials tracking worse than the median, but only after each has had a fair chance:
+        # the val curve sits on a near-flat plateau for its first ~20-25 epochs before it breaks
+        # through, and pruning during that plateau kills good-but-slow-starting configs on epoch-1
+        # noise (the funet-v33 run pruned 65/75 trials this way). n_warmup_steps holds pruning off
+        # until epoch 30; n_startup_trials leaves TPE's random-exploration trials whole.
+        pruner=optuna.pruners.MedianPruner(
+            n_startup_trials=10, n_warmup_steps=20, interval_steps=5),
         study_name=args.study_name or task.name,
         storage=storage,
         load_if_exists=True,

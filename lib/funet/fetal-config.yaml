@@ -20,8 +20,10 @@ train:
   crop_len: 7
   clip: 5.0             # max gradient norm
   loss: 'mse'   # 'kldiv' | 'snr' | 'corr' | 'corr_amp' (corr + d' peak-contrast) | 'mse' (unit-peak comb)
-  lr_schedule: 'cosine'   # 'none' (constant LR) | 'cosine' (anneal learning_rate -> min_lr) | 'plateau'
-  min_lr: 1.e-5         # cosine floor; unused when lr_schedule is 'none'
+  lr_schedule: 'plateau'  # 'none' (constant LR) | 'cosine' (anneal learning_rate -> min_lr) | 'plateau' (ssnet-style)
+  min_lr: 1.e-5         # cosine floor only; unused by 'none' and 'plateau'
+  plateau_factor: 0.5      # plateau: multiply LR by this on each reduction (ssnet used 0.5)
+  plateau_patience: 3      # plateau: epochs with no val improvement before reducing (ssnet used 3)
   # corr_amp only (ignored by other losses): d' rewards beats standing clear of a quiet floor.
   amp_weight: 0.1           # weight on the d' peak-contrast term; 0 = pure correlation (try 0.01-0.1)
   amp_beat_threshold: 0.1   # frac of per-item target peak above which a frame counts as a beat
