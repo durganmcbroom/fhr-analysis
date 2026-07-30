@@ -2,6 +2,7 @@ model:
   channels: 3
   checkpoint: google/timesfm-2.0-500m-pytorch
   head_hidden: 256
+  head_layers: 1
   dropout: 0.0
   context_length: 2048
   patch_length: 32
@@ -31,7 +32,7 @@ train:
   - gain
   - noise
 data:
-  train_dir: training/stereo_v12/fetal-train
-  val_dir: training/stereo_v12/fetal-test
+  train_dir: training/stereo_v1/fetal-train
+  val_dir: training/stereo_v1/fetal-test
   num_workers: 8
 model_dir: models/tslnet-v1/
