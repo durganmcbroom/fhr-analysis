@@ -27,7 +27,18 @@ def build_optimizer(config, model: nn.Module) -> optim.Optimizer:
         kwargs["momentum"] = config.train.momentum
     else:
         kwargs["amsgrad"] = config.train.amsgrad
-    return cls(model.parameters(), **kwargs)
+
+    # Frozen parameters are filtered out rather than passed and ignored. For funet/ssnet this
+    # is every parameter, so nothing changes; for tslnet, whose backbone is a frozen 500M-param
+    # foundation model, handing them to the optimiser would allocate optimiser state for
+    # tensors that never receive a gradient. Erroring on an all-frozen model is deliberate --
+    # an optimiser over nothing trains silently and forever.
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    if not trainable:
+        raise ValueError(
+            f"{type(model).__name__} has no trainable parameters (every one has "
+            "requires_grad=False); there is nothing for the optimiser to update.")
+    return cls(trainable, **kwargs)
 
 
 class Scheduler:

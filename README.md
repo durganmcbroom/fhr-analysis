@@ -53,8 +53,8 @@ pip lockfile from before the Poetry migration — nothing reads it anymore.)
 ## Layout
 
 Source lives in `src/` and `lib/`, and the import name is always the directory
-name. `poetry install` writes a `fhr_analysis.pth` listing the five roots below,
-so every package is importable by name from any working directory — no
+name. `poetry install` writes a `fhr_analysis.pth` listing the roots below, so
+every package is importable by name from any working directory — no
 `PYTHONPATH`, no `sys.path` juggling.
 
 | Import name | On disk | What it is |
@@ -62,9 +62,10 @@ so every package is importable by name from any working directory — no
 | `analyze` | `src/analyze/` | Core library: pipeline stages, detectors, scoring |
 | `beat_app` | `src/beat_app/` | Local beat-marking web app |
 | `fhr_bin` | `src/fhr_bin/` | Standalone CLI utilities |
-| `common` | `lib/common/` | Shared training engine: config, phases, optim, io |
+| `common` | `lib/common/` | Shared training engine: config, phases, optim, losses, io |
 | `funet` | `lib/funet/funet/` | FUNet beat-activity model |
 | `ssnet` | `lib/tune-ssnet/ssnet/` | NeoSSNet fine-tuning |
+| `tslnet` | `lib/tslnet/tslnet/` | TSLNet: frozen TimesFM backbone + trainable head |
 | `models`, `utils`, `loss_fn` | `lib/neossnet/` | Submodule, vendored unmodified — it uses bare imports internally, so these stay top-level |
 
 ```
@@ -89,9 +90,12 @@ src/
   beat_app/          -> package `beat_app`
 
 lib/
-  common/            -> package `common`; training loop shared by funet + ssnet.
+  common/            -> package `common`; training loop + losses shared by every model.
   funet/             -> package `funet` (funet/), plus configs and checkpoints.
   tune-ssnet/        -> package `ssnet` (ssnet/), plus configs and checkpoints.
+  tslnet/            -> package `tslnet` (tslnet/), plus its config and clips spec.
+                      No backbone checkpoints of its own: the frozen TimesFM weights
+                      come from the Hugging Face cache, and only the head is saved.
   neossnet/           Git submodule: base pretrained NeoSSNet model + code.
   beats/              Hand-marked mic beat times.
 
@@ -112,6 +116,8 @@ Every entry point is a console script, so it works from any directory:
 | `poetry run funet-optimize [config.yaml] [--trials N]` | Optuna search for FUNet |
 | `poetry run ssnet-train [config.yaml]` | Fine-tune NeoSSNet |
 | `poetry run ssnet-optimize [config.yaml] [--trials N]` | Optuna search for SSNet |
+| `poetry run tslnet-train [config.yaml]` | Train TSLNet's head (backbone stays frozen) |
+| `poetry run tslnet-optimize [config.yaml] [--trials N]` | Optuna search for TSLNet |
 | `poetry run beat-app` | Serve the beat-marking web app |
 | `poetry run fhr-snippets <clips.yaml> --out-dir out/` | Build training snippet sets |
 | `poetry run fhr-pico2data` | Convert PicoScope CSV exports |
@@ -171,8 +177,8 @@ named `funet.py` shadows the `funet` package and breaks
 `from funet.config import ...` with a confusing `'funet' is not a package`.
 
 So: **don't name a module or subpackage after one of the packages in the table
-above** (`analyze`, `beat_app`, `fhr_bin`, `common`, `funet`, `ssnet`, `models`,
-`utils`, `loss_fn`). Two renames exist for exactly this reason —
+above** (`analyze`, `beat_app`, `fhr_bin`, `common`, `funet`, `ssnet`, `tslnet`,
+`models`, `utils`, `loss_fn`). Two renames exist for exactly this reason —
 `analyze/funet_pipeline.py` (not `funet.py`) and `fhr_bin/plots/` (not
 `fhr_bin/analyze/`). One dormant case is left, `src/analyze/hr/utils.py`, which
 would shadow `utils` if anything in that directory were ever run as a script.

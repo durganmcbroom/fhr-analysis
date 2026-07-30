@@ -6,7 +6,7 @@ from analyze.evaluate import evaluate, combine_evaluations, plot_evaluation
 from analyze.evaluate_v2 import evaluate_v2
 from analyze.evaluate_v3 import evaluate_v3
 from analyze.filters import abdomen_bp, bp, notch
-from analyze.funet_pipeline import run_funet_pipeline, run_funet_belly_machine, run_funet_no_sot
+from analyze.funet_runner import run_funet_pipeline, run_funet_belly_machine, run_funet_no_sot
 from analyze.hr import fiber_beats, sot_beats
 from analyze.hr.classify import classify_sources
 from analyze.hr.detect import v1_beat_detector

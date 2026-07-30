@@ -5,12 +5,12 @@ import copy
 from torch import nn
 
 from common.errors import InfeasibleConfig
+from common.losses import CorrAmpLoss, CorrelationLoss, MSELoss, SNRLoss
 from common.optim import OPTIMIZERS
 from common.task import Task
 
 from funet.config import FUNetConfig
 from funet.data import make_dataloader, stft_output_shape
-from funet.loss import CorrAmpLoss, CorrelationLoss, MSELoss, SNRLoss
 from funet.model import FUNet
 
 # loss name -> (config -> loss module, matching model output head). Factories take the config

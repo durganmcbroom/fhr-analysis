@@ -33,6 +33,7 @@ dependencies = [
     "torchaudio>=2.11",
     "torchmetrics>=1.9",
     "tqdm>=4.67",
+    "transformers (>=5.14.1,<6.0.0)",
 ]
 
 [project.scripts]
@@ -41,6 +42,8 @@ funet-train = "funet.train:main"
 funet-optimize = "funet.optimize:main"
 ssnet-train = "ssnet.main:main"
 ssnet-optimize = "ssnet.optimize:main"
+tslnet-train = "tslnet.train:main"
+tslnet-optimize = "tslnet.optimize:main"
 # Analysis
 main = "analyze.main:main"
 beat-app = "beat_app.server:main"
@@ -57,7 +60,7 @@ fhr-peak-det = "fhr_bin.peak_det.plot_peak_detectors:main"
 [tool.poetry.group.dev.dependencies]
 pytest = ">=9.0"
 
-# Seven source roots that used to be stitched together at runtime with sys.path
+# Eight source roots that used to be stitched together at runtime with sys.path
 # inserts. Declaring them here makes the import names real, so nothing depends
 # on CWD or on which script happened to be the entry point.
 #
@@ -77,6 +80,7 @@ packages = [
     { include = "common", from = "lib" },
     { include = "funet", from = "lib/funet" },
     { include = "ssnet", from = "lib/tune-ssnet" },
+    { include = "tslnet", from = "lib/tslnet" },
     { include = "models", from = "lib/neossnet" },
     { include = "utils", from = "lib/neossnet" },
     { include = "loss_fn.py", from = "lib/neossnet" },

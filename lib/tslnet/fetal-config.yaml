@@ -1,0 +1,52 @@
+model:
+  channels: 3          # abdomen fibers stacked as separate univariate series
+  # Downloaded to the Hugging Face cache on first run (~2 GB), then reused.
+  checkpoint: 'google/timesfm-2.0-500m-pytorch'
+  head_hidden: 256     # bottleneck width of the trainable MLP
+  dropout: 0.0
+
+  # Declared, not read off the checkpoint, so check_feasible runs offline; build_model
+  # verifies both against the backbone it loads and raises on a mismatch.
+  context_length: 2048
+  patch_length: 32
+
+  # Envelope front-end: part of the model's input contract, so a checkpoint is only loadable
+  # alongside these. hop 16 at 4 kHz = a 250 Hz series, which makes one 32-frame patch 128 ms
+  # (~3 per beat); a 7 s crop is 1750 frames, just inside the 2048 context.
+  n_fft: 128
+  hop_length: 16
+  band: [100.0, 300.0]   # Hz; null for the full spectrum. Matches the analyze pipeline's bandpass.
+  log_envelope: true     # log1p-compress; false keeps beats peakier (searched -- see task.suggest)
+
+train:
+  optimizer: 'AdamW'   # SGD, Adam, AdamW
+  learning_rate: 1.e-3  # higher than FUNet's: this only fits a head over frozen features
+  weight_decay: 0.1
+  batch_size: 8
+  epochs: 80
+  # crop_len and hop_length are coupled, and the window is narrow: the crop has to fit the
+  # 2048-step context (hop >= crop_len*4000/2048) while a 32-frame patch stays under half a
+  # beat (hop <= 18). At 7 s that leaves hop 14-18; past ~9 s nothing works at all. See
+  # tslnet.task.feasible_hop_range, which is also what the search samples within.
+  crop_len: 7
+  clip: 5.0             # max gradient norm
+  loss: 'corr_amp'   # 'kldiv' | 'snr' | 'corr' | 'corr_amp' (corr + d' peak-contrast) | 'mse'
+  lr_schedule: 'plateau'  # 'none' (constant LR) | 'cosine' (anneal learning_rate -> min_lr) | 'plateau'
+  min_lr: 1.e-5         # cosine floor only; unused by 'none' and 'plateau'
+  plateau_factor: 0.5
+  plateau_patience: 3
+  # corr_amp only (ignored by other losses): d' rewards beats standing clear of a quiet floor.
+  amp_weight: 0.1
+  amp_beat_threshold: 0.1
+  # Regularisation (train-only). Applied to the waveform before the envelope is taken.
+  augment: ['channel_dropout', 'gain', 'noise']
+
+data:
+  # Written by ./generate_training_snippets.sh from training_clips.yaml, which routes whole
+  # patients to fetal-train/ or fetal-test/ by their `mode`. Paths resolve relative to this
+  # file, not the working directory.
+  train_dir: 'training/stereo_v12/fetal-train'
+  val_dir: 'training/stereo_v12/fetal-test'   # held-out patient; selects model_best.pt
+  num_workers: 8
+
+model_dir: 'models/tslnet-v1/'
