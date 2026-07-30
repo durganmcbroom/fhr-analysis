@@ -7,7 +7,7 @@ model:
   # 1 = a plain linear probe straight to the frame grid (123k params, and head_hidden is then
   # unused). The probe is the standard baseline for a frozen backbone and worth running: if it
   # matches the deeper head, the extra layers are only capacity to overfit two patients with.
-  head_layers: 1
+  head_layers: 3
   dropout: 0.0
 
   # Declared, not read off the checkpoint, so check_feasible runs offline; build_model
@@ -54,4 +54,4 @@ data:
   val_dir: 'training/stereo_v1/fetal-test'   # held-out patient; selects model_best.pt
   num_workers: 8
 
-model_dir: 'models/tslnet-v1/'
+model_dir: 'models/tslnet-v2/'
