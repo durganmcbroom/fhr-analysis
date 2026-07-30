@@ -39,6 +39,38 @@ DEFAULT_CHECKPOINT = "google/timesfm-2.0-500m-pytorch"
 HIGH_FREQUENCY = 0
 
 
+def head_mlp(in_features: int, hidden: int, out_features: int, layers: int,
+             dropout: float) -> nn.Sequential:
+    """The trainable head: ``layers`` Linear layers, all but the last ``hidden`` wide.
+
+    ``layers`` counts Linear layers, so 3 is ``in -> hidden -> hidden -> out`` and ``hidden``
+    is meaningless at 1 -- which is not a degenerate case worth rejecting but the classic
+    baseline for a frozen backbone, a plain linear probe (123k params here against 1.06M at
+    the default depth). If a linear probe matches a deeper head, the backbone's features are
+    already linearly separable and depth is not what is limiting the model.
+
+    ReLU between layers is not decoration: stacked Linears with nothing between them collapse
+    to a single affine map. There is deliberately no activation after the *last* layer -- the
+    output is a signal, not a rate, and a trailing ReLU would zero every frame whose
+    pre-activation went negative and kill its gradient permanently.
+
+    Dropout modules are inserted even at p=0. Sequential keys are positional, so omitting them
+    would shift every Linear's key (mlp.0/3/6 -> mlp.0/2/4) and orphan existing checkpoints,
+    which were all written with the Dropouts present. This is the opposite of funet.model's
+    choice, for the same reason: match whatever the checkpoints on disk already have.
+    """
+    if layers < 1:
+        raise ValueError(f"head_layers must be at least 1, got {layers}")
+
+    modules: list[nn.Module] = []
+    width = in_features
+    for _ in range(layers - 1):
+        modules += [nn.Linear(width, hidden), nn.ReLU(), nn.Dropout(dropout)]
+        width = hidden
+    modules.append(nn.Linear(width, out_features))
+    return nn.Sequential(*modules)
+
+
 def load_backbone(checkpoint: str = DEFAULT_CHECKPOINT) -> nn.Module:
     from transformers import TimesFmModelForPrediction   # local: keeps 2 GB off `import tslnet`
 
@@ -60,6 +92,7 @@ class TSLNet(nn.Module):
         channels: int = 3,
         checkpoint: str = DEFAULT_CHECKPOINT,
         head_hidden: int = 256,
+        head_layers: int = 3,        # Linear layers in the head; 1 = a plain linear probe
         dropout: float = 0.0,
         head: str = "signal",        # "logprob" -> log_softmax (KLDivLoss); "signal" -> raw
         backbone: Optional[nn.Module] = None,
@@ -80,14 +113,16 @@ class TSLNet(nn.Module):
         self.backbone.requires_grad_(False)
         self.backbone.eval()
 
-        self.mlp = nn.Sequential(
-            nn.Linear(channels * config.hidden_size, head_hidden),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(head_hidden, head_hidden),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(head_hidden, self.patch_length),
+        # Every channel's view of a patch, concatenated, down to that patch's worth of output
+        # frames. The final layer emitting patch_length values *is* the upsample back to the
+        # frame grid: it inverts the backbone's patching exactly, with no interpolation to
+        # blur beat timing.
+        self.mlp = head_mlp(
+            in_features=channels * config.hidden_size,
+            hidden=head_hidden,
+            out_features=self.patch_length,
+            layers=head_layers,
+            dropout=dropout,
         )
 
     # --------------------------------------------------------------- frozen-backbone glue
@@ -108,9 +143,25 @@ class TSLNet(nn.Module):
                           if not k.startswith(f"{prefix}backbone."))
 
     def load_state_dict(self, state_dict, strict: bool = True, assign: bool = False):
-        """Load a head-only checkpoint. ``strict`` is forced off because the backbone keys are
-        absent by construction (see ``state_dict``), not because they are optional."""
-        return super().load_state_dict(state_dict, strict=False, assign=assign)
+        """Load a head-only checkpoint.
+
+        The backbone's keys are absent by construction (see ``state_dict``), so those are the
+        one thing allowed to be missing -- everything else is still held to ``strict``. That
+        matters now that head_layers/head_hidden are config knobs: a blanket ``strict=False``
+        would let a checkpoint from a differently shaped head load nothing at all and leave a
+        randomly-initialised head behind, silently, with inference then reporting noise.
+        (Shape mismatches raise either way; it is *missing* keys that would pass unnoticed.)
+        """
+        result = super().load_state_dict(state_dict, strict=False, assign=assign)
+        missing = [k for k in result.missing_keys if not k.startswith("backbone.")]
+        if strict and (missing or result.unexpected_keys):
+            raise RuntimeError(
+                "head checkpoint does not match this config"
+                + (f"; missing {missing}" if missing else "")
+                + (f"; unexpected {list(result.unexpected_keys)}" if result.unexpected_keys else "")
+                + " -- check model.head_layers / head_hidden / channels against the config "
+                  "archived next to the checkpoint")
+        return type(result)(missing, result.unexpected_keys)
 
     # --------------------------------------------------------------------------- forward
     def forward(self, x: torch.Tensor) -> torch.Tensor:

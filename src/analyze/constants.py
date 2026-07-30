@@ -26,6 +26,15 @@ FUNET_MODEL = "funet-v24"
 FUNET_CONFIG = os.path.join(PROJECT_DIR, f"lib/funet/models/{FUNET_MODEL}/fetal-config.yaml")
 FUNET_MODEL_PATH = os.path.join(PROJECT_DIR, f"lib/funet/models/{FUNET_MODEL}/model_best.pt")
 
+# TSLNet beat-activity model (lib/tslnet). The checkpoint holds the trainable head only --
+# the frozen TimesFM backbone is named in the config and comes from the Hugging Face cache.
+# 'config.yaml' rather than funet's 'fetal-config.yaml': that is the name
+# common.phases.train archives next to a checkpoint (train.CONFIG), so a run's output
+# directory works here as-is with nothing to rename.
+TSLNET_MODEL = "tslnet-v1"
+TSLNET_CONFIG = os.path.join(PROJECT_DIR, f"lib/tslnet/models/{TSLNET_MODEL}/config.yaml")
+TSLNET_MODEL_PATH = os.path.join(PROJECT_DIR, f"lib/tslnet/models/{TSLNET_MODEL}/model_best.pt")
+
 FIBER_BUNDLE_A = "ps4000.npy"   # chest device bundle
 FIBER_BUNDLE_B = "ps3000a.npy"  # abdomen device bundle
 MIC_FILE = "microphone.wav"

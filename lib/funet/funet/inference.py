@@ -16,7 +16,9 @@ import torch
 import torchaudio
 
 from common.audio import SAMPLE_RATE, resample
-from common.phases.inference import frames_to_native, load_model, run_windowed
+from common.phases.inference import (
+    activity_postprocess, frames_to_native, load_model, normalize_blocks, run_windowed,
+)
 from common.preprocess import Preprocessor
 
 from funet.model import FUNet
@@ -43,8 +45,6 @@ def run_funet(
     probability; for the signal head it is the softmax'd output. Relative peaks (not absolute
     scale) are what carry the beats.
     """
-    is_logprob = model.head == "logprob"
-
     x = np.asarray(x, dtype=np.float32)
     if x.ndim == 1:
         x = x[None, :]                      # (1, T)
@@ -57,9 +57,11 @@ def run_funet(
             f"{config.model.channels} (config.model.channels)"
         )
 
-    # Match training preprocessing: peak-normalise, then resample to the model rate.
-    peak = float(np.max(np.abs(x))) + 1e-12
-    x = resample(x / peak, src_hz, SAMPLE_RATE)
+    # Match training preprocessing: resample to the model rate, then peak-normalise on the
+    # same time scale a training snippet was normalised on -- not across the whole recording,
+    # which lets one loud transient rescale everything else (see normalize_blocks).
+    x = resample(x, src_hz, SAMPLE_RATE)
+    x = normalize_blocks(x, config.train.crop_len * SAMPLE_RATE)
 
     hop = config.model.hop_length
     divisor = 2 ** len(config.model.dilations)
@@ -77,13 +79,14 @@ def run_funet(
     # Window the time axis to a training-sized crop, rounded down to a multiple of divisor.
     window = max(divisor, ((config.train.crop_len * SAMPLE_RATE) // hop) // divisor * divisor)
 
-    # Both heads become a per-window softmax activity envelope: logprob already applied
-    # log_softmax in forward (exp -> softmax); the signal head (corr/snr) is affine-invariant
-    # -- corr never pins a baseline or scale -- so softmax normalizes its arbitrary offset
-    # away into a clean positive envelope. Full-size windows keep the normalization consistent
-    # across them. NOTE: inference-only; training optimizes the raw signal-head output.
-    def postprocess(out: torch.Tensor) -> torch.Tensor:
-        return out.exp() if is_logprob else out.softmax(dim=-1)
+    # How a window of raw output becomes activity depends on what the loss pinned down, so the
+    # readout is chosen from the loss rather than fixed here -- see ACTIVITY_POSTPROCESS. This
+    # matters for FUNet in the opposite direction to TSLNet: trained with 'mse' its output is
+    # already calibrated to a unit-peak comb, and the old blanket softmax over ~100+ frames
+    # flattened those calibrated peaks toward uniform -- a plausible contributor to the
+    # weak-peak problem, which is now just a clamp.
+    # NOTE: inference-only; training optimizes the raw signal-head output.
+    postprocess = activity_postprocess(config.train.loss)
 
     activity = run_windowed(model, S, window, device=device, postprocess=postprocess)
 

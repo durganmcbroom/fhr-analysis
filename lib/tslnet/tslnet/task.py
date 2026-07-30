@@ -82,6 +82,7 @@ class TSLNetTask(Task):
             channels=m.channels,
             checkpoint=m.checkpoint,
             head_hidden=m.head_hidden,
+            head_layers=m.head_layers,
             dropout=m.dropout,
             head=self.head_for(config),
         )
@@ -124,6 +125,11 @@ class TSLNetTask(Task):
         the optimize phase can prune a bad trial before spending anything on it.
         """
         m, data = config.model, config.data
+
+        if m.head_layers < 1:
+            raise InfeasibleConfig(
+                f"model.head_layers must be at least 1, got {m.head_layers}; 1 is a linear "
+                "probe straight from the patch embeddings to the frame grid")
 
         if not data.val_dir and not 0 < data.val_fraction < 1:
             raise InfeasibleConfig(
@@ -173,6 +179,10 @@ class TSLNetTask(Task):
         model, train = config.model, config.train
 
         # -- Head --
+        # Depth is worth searching precisely because 1 (a linear probe) is a real hypothesis
+        # here, not a degenerate corner: if the frozen features are already linearly separable,
+        # the extra layers are just capacity to overfit two patients with.
+        model.head_layers = trial.suggest_int("head_layers", 1, 4)
         model.head_hidden = trial.suggest_categorical("head_hidden", [64, 128, 256, 512])
         model.dropout = trial.suggest_float("dropout", 0.0, 0.5)
 
@@ -210,6 +220,7 @@ class TSLNetTask(Task):
         ``suggest`` assigns -- keep the two together."""
         return {
             "model": {
+                "head_layers": config.model.head_layers,
                 "head_hidden": config.model.head_hidden,
                 "dropout": config.model.dropout,
                 "hop_length": config.model.hop_length,

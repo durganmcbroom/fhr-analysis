@@ -44,7 +44,6 @@ def _inst_hr_v2(
     Beats are sorted first so a stray out-of-order detection can't fold the line.
     """
     beats = np.sort(np.asarray(beats, dtype=float))
-    print(f"{beats} L:{len(beats)}")
     if beats.size < 2:
         return np.array([]), np.array([])
 
@@ -70,7 +69,6 @@ def _inst_hr(
     Beats are sorted first so a stray out-of-order detection can't fold the line.
     """
     beats = np.sort(np.asarray(beats, dtype=float))
-    print(f"{beats} L:{len(beats)}")
     if beats.size < 2:
         return np.array([]), np.array([])
 

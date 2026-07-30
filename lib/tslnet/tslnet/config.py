@@ -21,6 +21,9 @@ class TSLNetModelConfig:
     channels: int = 3            # abdomen fibers stacked as separate univariate series
     checkpoint: str = DEFAULT_CHECKPOINT
     head_hidden: int = 256       # bottleneck width of the trainable MLP
+    # Linear layers in the head. 3 is in -> hidden -> hidden -> out; 1 is a plain linear probe
+    # (head_hidden then does nothing), which is the standard baseline for a frozen backbone.
+    head_layers: int = 3
     dropout: float = 0.0         # between the MLP's layers; 0 = off
 
     # Declared rather than read off the backbone so check_feasible stays offline -- otherwise

@@ -16,6 +16,87 @@ import torch
 from torch import nn
 
 
+# Loss name -> how to read that model's raw output as a non-negative activity envelope.
+#
+# Keyed by loss, because the loss is what does (or does not) pin the output's scale, and the
+# postprocess has to be invariant to exactly what the loss was invariant to:
+#
+#   kldiv       the model already emitted log-probabilities, so exp is the real distribution.
+#   mse         regressed to a unit-peak comb, so the scale is calibrated -- keep it, just
+#               drop the sub-zero floor.
+#   snr/corr/   all affine-invariant (CorrelationLoss divides by both norms; CorrAmpLoss's d'
+#   corr_amp    is documented as invariant to affine scaling of the output). Nothing in
+#               training pins the scale, so the readout must not care about it either.
+#
+# This table replaced a blanket softmax for every signal-head loss, which was the worst
+# possible choice for the affine-invariant ones: softmax is shift-invariant but responds to
+# scale *exponentially*, so an output that drifted to a large scale collapsed to a near
+# argmax. A perfect 16-beat window came out as 3 spikes at scale 16 and 8 at scale 8, while
+# the scale itself was free to be anything.
+ACTIVITY_POSTPROCESS = {
+    "kldiv":    "exp",
+    "mse":      "clamp",
+    "snr":      "standardize",
+    "corr":     "standardize",
+    "corr_amp": "standardize",
+}
+
+
+def activity_postprocess(loss: str, eps: float = 1e-8) -> Callable[[torch.Tensor], torch.Tensor]:
+    """The per-window readout for a model trained under ``loss`` (see ACTIVITY_POSTPROCESS).
+
+    Every variant returns a non-negative envelope, which is the contract the beat detectors
+    downstream expect; only relative peak height carries information.
+    """
+    try:
+        kind = ACTIVITY_POSTPROCESS[loss]
+    except KeyError:
+        raise ValueError(
+            f"no activity readout for loss {loss!r} (known: {sorted(ACTIVITY_POSTPROCESS)})"
+        ) from None
+
+    if kind == "exp":
+        return lambda out: out.exp()
+    if kind == "clamp":
+        return lambda out: out.clamp_min(0)
+
+    # standardize: scale- and shift-invariant, matching the loss. The clamp drops the
+    # below-mean floor, leaving peaks measured in standard deviations above it. A constant
+    # window yields all zeros rather than a NaN.
+    def standardize(out: torch.Tensor) -> torch.Tensor:
+        return ((out - out.mean()) / (out.std() + eps)).clamp_min(0)
+
+    return standardize
+
+
+def normalize_blocks(x: np.ndarray, block_samples: int, eps: float = 1e-12) -> np.ndarray:
+    """Peak-normalise a ``(channels, time)`` waveform in blocks of ``block_samples``.
+
+    Training normalises per *snippet* (generate_training_snippets.write_multichannel peak-
+    normalises each one), so a model only ever saw waveforms scaled by a local peak. Scaling a
+    whole recording by its single global peak -- which is what inference used to do -- lets one
+    loud transient shrink everything else: a 5x gap on a recording with one burst, which
+    survives into the input because the log1p envelope is nonlinear, so the backbone's own
+    z-scoring cannot undo it.
+
+    The gain is interpolated between block centres rather than applied per block. A hard block
+    boundary is a step in amplitude, and a step is broadband -- inside a 100-300 Hz passband it
+    would look like a beat, manufacturing one false peak every block.
+
+    One peak across all channels, as in training: relative fiber loudness is signal.
+    """
+    total = x.shape[-1]
+    if block_samples <= 0 or total <= block_samples:
+        return x / (float(np.max(np.abs(x))) + eps)
+
+    starts = np.arange(0, total, block_samples)
+    peaks = np.array([float(np.max(np.abs(x[..., s:s + block_samples]))) for s in starts])
+    centres = np.minimum(starts + block_samples / 2.0, total - 1)
+
+    gains = np.interp(np.arange(total), centres, 1.0 / (peaks + eps))
+    return (x * gains).astype(np.float32, copy=False)
+
+
 def load_model(task, config, checkpoint: str, device: Optional[torch.device] = None) -> nn.Module:
     """Build the model ``config`` describes and load ``checkpoint`` into it, in eval mode."""
     device = device or torch.device("cpu")

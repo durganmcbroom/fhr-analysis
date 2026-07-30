@@ -3,6 +3,11 @@ model:
   # Downloaded to the Hugging Face cache on first run (~2 GB), then reused.
   checkpoint: 'google/timesfm-2.0-500m-pytorch'
   head_hidden: 256     # bottleneck width of the trainable MLP
+  # Linear layers in the head. 3 = in -> hidden -> hidden -> out (1.06M params at hidden 256);
+  # 1 = a plain linear probe straight to the frame grid (123k params, and head_hidden is then
+  # unused). The probe is the standard baseline for a frozen backbone and worth running: if it
+  # matches the deeper head, the extra layers are only capacity to overfit two patients with.
+  head_layers: 1
   dropout: 0.0
 
   # Declared, not read off the checkpoint, so check_feasible runs offline; build_model

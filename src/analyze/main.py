@@ -21,6 +21,7 @@ from analyze.nmcf import run_nmcf
 from analyze.pipeline import Pipeline
 from analyze.plot_hr import plot_hr, plot_peaks
 from analyze.sot import load_sot, combine_sot_results
+from analyze.tslnet_runner import run_tslnet_pipeline
 from analyze.util import run_neossnet
 from analyze.constants import PROJECT_DIR, FETAL_ACOUSTIC_BAND_HZ, BROADBAND_FILTER_HZ, POWERLINE_NOTCH_HZ
 
@@ -239,7 +240,7 @@ def main():
         DATA_DIR,
         # fibers = fibers
     )
-    run_neossnet_pipeline(
+    run_tslnet_pipeline(
         PATIENT,
         WINDOW,
         DATA_DIR,

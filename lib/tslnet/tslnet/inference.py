@@ -15,7 +15,9 @@ import numpy as np
 import torch
 
 from common.audio import SAMPLE_RATE, resample
-from common.phases.inference import frames_to_native, load_model, run_windowed
+from common.phases.inference import (
+    activity_postprocess, frames_to_native, load_model, normalize_blocks, run_windowed,
+)
 from common.preprocess import Preprocessor
 
 from tslnet.data import Envelope
@@ -44,10 +46,9 @@ def run_tslnet(
 
     Returns a non-negative activity signal the same length as ``x`` and sampled at ``src_hz``:
     high where the model thinks a fetal beat occurs. Relative peaks (not absolute scale) are
-    what carry the beats.
+    what carry the beats -- under the affine-invariant losses the units are standard deviations
+    above the window's own floor.
     """
-    is_logprob = model.head == "logprob"
-
     x = np.asarray(x, dtype=np.float32)
     if x.ndim == 1:
         x = x[None, :]                      # (1, T)
@@ -59,9 +60,11 @@ def run_tslnet(
             f"waveform has {channels} channel(s) but the model expects "
             f"{config.model.channels} (config.model.channels)")
 
-    # Match training preprocessing: peak-normalise, resample to the model rate, envelope.
-    peak = float(np.max(np.abs(x))) + 1e-12
-    x = resample(x / peak, src_hz, SAMPLE_RATE)
+    # Match training preprocessing: resample to the model rate, then peak-normalise on the
+    # same time scale a training snippet was normalised on -- not across the whole recording,
+    # which lets one loud transient rescale everything else (see normalize_blocks).
+    x = resample(x, src_hz, SAMPLE_RATE)
+    x = normalize_blocks(x, config.train.crop_len * SAMPLE_RATE)
 
     m = config.model
     # The same deterministic transforms the dataset applied, or the model meets an input
@@ -76,13 +79,10 @@ def run_tslnet(
     frames_per_crop = config.train.crop_len * SAMPLE_RATE // m.hop_length
     window = max(m.patch_length, frames_per_crop // m.patch_length * m.patch_length)
 
-    # Both heads become a per-window softmax activity envelope: logprob already applied
-    # log_softmax in forward (exp -> softmax); the signal head's losses are affine-invariant,
-    # so softmax normalizes its arbitrary offset and scale away into a clean positive envelope.
-    # Full-size windows keep that normalization consistent across them.
+    # How a window of raw output becomes activity depends on what the loss pinned down, so the
+    # readout is chosen from the loss rather than fixed here -- see ACTIVITY_POSTPROCESS.
     # NOTE: inference-only; training optimizes the raw signal-head output.
-    def postprocess(out: torch.Tensor) -> torch.Tensor:
-        return out.exp() if is_logprob else out.softmax(dim=-1)
+    postprocess = activity_postprocess(config.train.loss)
 
     activity = run_windowed(model, series, window, device=device, postprocess=postprocess)
 
