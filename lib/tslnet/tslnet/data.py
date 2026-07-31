@@ -1,104 +1,100 @@
-"""The envelope front-end and paired dataset for TSLNet.
+"""The waveform front-end and paired dataset for TSLNet.
 
-TimesFM consumes a low-rate univariate series, so the 4 kHz fiber audio is reduced to a
-per-fiber band-energy envelope first: STFT, sum power across the passband, square-root back to
-amplitude. At the default hop of 16 that is a 250 Hz series in which a beat is a bump a few
-frames wide -- a shape the backbone's pretraining corpus is full of, unlike raw acoustics.
+TimesFM consumes a low-rate univariate series, so the 4 kHz fiber audio is decimated to
+``model_hz`` and handed over as-is -- no spectrogram, no derived features.
 
-The target is built exactly as FUNet builds it, on the same frame grid as the envelope, so the
-two stay time-aligned and the same losses apply to both models.
+The rate is set by Nyquist, not by convenience. Fetal heart sound runs to ~300 Hz, so the
+model rate has to keep 600 Hz underneath it, plus headroom: an anti-alias filter is not a
+brick wall, and at 600 Hz a 295 Hz component survives at 0.59 amplitude. 800 Hz is the lowest
+*clean divisor of 4 kHz* that passes the whole band untouched (Nyquist 400), which also makes
+decimation an exact 1/5 and lets the target pool into whole 5-sample bins.
+
+At 800 Hz the 2048-step context holds 2.56 s -- about six beats, enough for the model to see
+rhythm -- and one 32-step patch is 40 ms, under a tenth of a beat.
+
+Note this front-end does no band-limiting of its own; decimation only removes content above
+Nyquist. Everything below the fetal band (maternal sounds, motion) still arrives unless
+``data.preprocess`` includes ``bandpass``, which is why the shipped config enables it and
+``check_feasible`` warns when it is off.
+
+The target is built by pooling the heart comb into the same ``SAMPLE_RATE // model_hz`` bins,
+rather than resampling it: a comb put through an anti-alias lowpass rings and smears, and beat
+*timing* is the label.
 """
 
 import math
 
+import numpy as np
 import torch
-import torchaudio
 from torch.utils.data import DataLoader, Dataset
 
-from common.audio import SAMPLE_RATE, crop_time, holdout_split, load_wav, pad_time, snippet_indices
+from common.audio import (
+    SAMPLE_RATE, crop_time, holdout_split, load_wav, pad_time, resample, snippet_indices,
+)
 from common.augment import Augmenter
 from common.preprocess import Preprocessor
 
 
-def envelope_frames(config) -> int:
-    """Frames the envelope has for one training crop, before the patch-length floor.
+def decimation(model_hz: int) -> int:
+    """Samples of 4 kHz audio per model step. Exact only when model_hz divides SAMPLE_RATE,
+    which ``check_feasible`` enforces -- the target pooling below reshapes by this number."""
+    return SAMPLE_RATE // model_hz
 
-    Matches torchaudio's default (onesided, center=True) Spectrogram: 1 + samples // hop.
+
+def crop_samples(config) -> int:
+    """Length of one training crop in 4 kHz samples. crop_len is a float for TSLNet (see
+    TSLNetTrainConfig) so a crop can line up exactly with the backbone's context: 2.56 s at
+    800 Hz is 2048 steps, and rounding that to whole seconds would waste a fifth of it."""
+    return int(round(config.train.crop_len * SAMPLE_RATE))
+
+
+def model_steps(config) -> int:
+    """Steps one crop becomes at the model rate, before the patch-length floor.
+
     ``TSLNetPairs`` then floors this to a multiple of patch_length; this is the pre-floor
     count, which is what a feasibility check wants -- a crop yielding fewer than one patch
-    floors to 0. Lets the tuner reject an unusable crop_len/hop_length pair without
-    downloading the backbone.
+    floors to 0. Lets the tuner reject an unusable crop_len/model_hz pair without downloading
+    the backbone.
     """
-    return 1 + config.train.crop_len * SAMPLE_RATE // config.model.hop_length
+    return crop_samples(config) // decimation(config.model.model_hz)
 
 
-def band_bins(n_fft: int, band, sample_rate: int = SAMPLE_RATE) -> tuple[int, int]:
-    """Half-open ``[lo, hi)`` STFT bin range covering ``band`` (a ``[low_hz, high_hz]`` pair),
-    or every bin when ``band`` is None.
+def to_model_rate(waveform: torch.Tensor, model_hz: int) -> torch.Tensor:
+    """Decimate a ``(channels, samples)`` waveform from SAMPLE_RATE down to ``model_hz``.
 
-    Bin k is centred at ``k * sample_rate / n_fft``. The range is widened outward (floor the
-    low edge, ceil the high) so the requested band is fully covered rather than shaved.
+    ``resample`` is polyphase (scipy ``resample_poly``), so the anti-alias filter comes with
+    it; at 800 Hz that filter has nothing left to remove if the passband is already 100-300 Hz.
     """
-    n_bins = n_fft // 2 + 1
-    if band is None:
-        return 0, n_bins
-
-    low, high = band
-    if not 0 <= low < high:
-        raise ValueError(f"band must be [low, high] with 0 <= low < high, got {band}")
-
-    hz_per_bin = sample_rate / n_fft
-    lo = max(0, math.floor(low / hz_per_bin))
-    hi = min(n_bins, math.ceil(high / hz_per_bin) + 1)   # +1: the range is half-open
-    if hi <= lo:
-        raise ValueError(
-            f"band {band} Hz selects no STFT bins at n_fft={n_fft} (bin width "
-            f"{hz_per_bin:.1f} Hz, Nyquist {sample_rate // 2} Hz)")
-    return lo, hi
-
-
-class Envelope:
-    """Waveform ``(channels, samples)`` -> band-energy envelope ``(channels, frames)``."""
-
-    def __init__(self, n_fft: int, hop_length: int, band=None, log: bool = True):
-        self.spectrogram = torchaudio.transforms.Spectrogram(n_fft=n_fft, hop_length=hop_length)
-        self.lo, self.hi = band_bins(n_fft, band)
-        self.log = log
-
-    def __call__(self, waveform: torch.Tensor) -> torch.Tensor:
-        power = self.spectrogram(waveform)[:, self.lo:self.hi, :]   # (channels, bins, frames)
-        # Sum power (not magnitude) across the band, then sqrt: that is the band-limited
-        # amplitude envelope by Parseval, and it keeps a beat's energy from being diluted by
-        # however many bins happen to be in the passband.
-        envelope = power.sum(dim=1).clamp_min(0).sqrt()
-        return torch.log1p(envelope) if self.log else envelope
+    if model_hz == SAMPLE_RATE:
+        return waveform
+    decimated = resample(waveform.numpy(), SAMPLE_RATE, model_hz)
+    return torch.from_numpy(np.ascontiguousarray(decimated, dtype=np.float32))
 
 
 class TSLNetPairs(Dataset):
     """Paired snippet dataset in the shared training layout: ``{i}_mix.wav`` (multi-channel)
     plus mono ``{i}_heart.wav``.
 
-    mix    -> (channels, frames): per-fiber band-energy envelope
-    target -> (frames,): per-frame heart-beat activity, normalised to sum to 1
+    mix    -> (channels, steps): per-fiber waveform at the model rate
+    target -> (steps,): per-step heart-beat activity, normalised to sum to 1
 
     mix and heart are cropped in the time domain with a single shared offset so they stay
-    aligned, and to a fixed length so the frame count (and the default collate) is consistent
+    aligned, and to a fixed length so the step count (and the default collate) is consistent
     across the batch. Short clips are zero-padded.
     """
 
-    def __init__(self, snippet_dir: str, indices: list, crop_samples: int, train: bool,
-                 n_fft: int, hop_length: int, band=None, log_envelope: bool = True,
-                 patch_length: int = 1, augment=(), preprocess=()):
+    def __init__(self, snippet_dir: str, indices: list, crop_length: int, train: bool,
+                 model_hz: int, patch_length: int = 1, augment=(), preprocess=()):
         self.dir = snippet_dir
         self.indices = indices
-        self.crop_samples = crop_samples
+        self.crop_length = crop_length
         self.train = train  # train => random crop offset + augmentation; eval => deterministic
-        self.hop_length = hop_length
+        self.model_hz = model_hz
+        self.decimation = decimation(model_hz)
         self.patch_length = patch_length
         self.augmenter = Augmenter(augment)
         # Unlike the augmenter, this is passed for validation too -- see common.preprocess.
         self.preprocessor = Preprocessor(preprocess)
-        self.envelope = Envelope(n_fft, hop_length, band, log=log_envelope)
 
     def __len__(self):
         return len(self.indices)
@@ -111,33 +107,30 @@ class TSLNetPairs(Dataset):
         mix = self._load(f"{idx}_mix.wav")
         heart = self._load(f"{idx}_heart.wav")
 
-        # Crop/pad to a fixed length (random offset when training) and layer on the enabled
-        # input augmentations (train-only; empty Augmenter is a no-op for validation).
-        # Augment first, then preprocess: it band-limits the augmentation noise the same way
-        # real in-band noise arrives, and leaves peak normalisation with the last word.
-        mix, heart = crop_time([mix, heart], self.crop_samples, random_offset=self.train)
+        # Crop/pad to a fixed length (random offset when training), then augment and
+        # preprocess at 4 kHz -- the rate common.preprocess designs its bandpass for.
+        mix, heart = crop_time([mix, heart], self.crop_length, random_offset=self.train)
         mix = self.preprocessor(self.augmenter(mix))
 
-        envelope = self.envelope(mix)
+        series = to_model_rate(mix, self.model_hz)
 
-        # Floor the frame count to a whole number of patches: the backbone views the series as
-        # (batch, frames/patch_length, patch_length), so a partial trailing patch is not a
+        # Floor to a whole number of patches: the backbone views the series as
+        # (batch, steps/patch_length, patch_length), so a partial trailing patch is not a
         # shape it can take at all (see TSLNet.forward).
-        frames = envelope.shape[-1]
-        frames -= frames % self.patch_length
-        envelope = envelope[:, :frames]
+        steps = series.shape[-1]
+        steps -= steps % self.patch_length
+        series = series[:, :steps]
 
-        # Build the target on the SAME frame grid so beats stay aligned with the input. A
-        # torchaudio frame t sits at sample t*hop_length, so the kept frames span the first
-        # frames*hop_length samples; pool the heart into those hop-sized bins. clamp_min(0)
-        # drops the gated/negative lobes; normalising to sum 1 makes it a valid KLDivLoss
-        # target for the log-softmax head.
-        covered = frames * self.hop_length
+        # Build the target on the SAME grid so beats stay aligned with the input. Step t covers
+        # samples [t*decimation, (t+1)*decimation) of the 4 kHz heart comb; pool it into those
+        # bins. clamp_min(0) drops the gated/negative lobes; normalising to sum 1 makes it a
+        # valid KLDivLoss target for the log-softmax head.
+        covered = steps * self.decimation
         heart_flat = pad_time(heart, covered)[0, :covered]           # (covered,)
-        heart_target = heart_flat.reshape(frames, self.hop_length).clamp_min(0).mean(dim=-1)
+        heart_target = heart_flat.reshape(steps, self.decimation).clamp_min(0).mean(dim=-1)
         heart_target = heart_target / (heart_target.sum() + 1e-12)
 
-        return envelope.float(), heart_target.float()
+        return series.float(), heart_target.float()
 
 
 def make_dataloader(config, snippet_dir: str, *, train: bool) -> DataLoader:
@@ -149,7 +142,6 @@ def make_dataloader(config, snippet_dir: str, *, train: bool) -> DataLoader:
     only when it is set and no ``val_dir`` is given.
     """
     m = config.model
-    crop_samples = config.train.crop_len * SAMPLE_RATE
 
     indices = snippet_indices(snippet_dir)
     split_note = ""
@@ -160,9 +152,8 @@ def make_dataloader(config, snippet_dir: str, *, train: bool) -> DataLoader:
     else:
         chosen = indices
 
-    ds = TSLNetPairs(snippet_dir, chosen, crop_samples, train=train,
-                     n_fft=m.n_fft, hop_length=m.hop_length, band=m.band,
-                     log_envelope=m.log_envelope, patch_length=m.patch_length,
+    ds = TSLNetPairs(snippet_dir, chosen, crop_samples(config), train=train,
+                     model_hz=m.model_hz, patch_length=m.patch_length,
                      augment=config.train.augment if train else (),
                      preprocess=config.data.preprocess)   # every split, not just train
 

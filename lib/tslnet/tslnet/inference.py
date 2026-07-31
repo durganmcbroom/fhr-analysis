@@ -1,13 +1,13 @@
 """Run a trained TSLNet on a raw waveform and get a beat-activity signal over time.
 
 Mirrors ``funet.inference`` -- same signature, same return contract -- so the analyze pipeline
-can swap one model for the other. The difference is only the front-end: TSLNet turns the
-stacked fibers into a band-energy envelope (``tslnet.data.Envelope``) rather than a
+can swap one model for the other. The difference is only the front-end: TSLNet decimates the
+stacked fibers to ``model_hz`` (``tslnet.data.to_model_rate``) rather than building a
 spectrogram.
 
-The model trains on fixed crop_len-second crops, so inference processes the envelope in equal
-frame windows (matching the training frame count) and stitches the per-window activity back
-together -- see common.phases.inference.run_windowed. The frame-rate activity is then mapped
+The model trains on fixed crop_len-second crops, so inference processes the series in equal
+step windows (matching the training step count) and stitches the per-window activity back
+together -- see common.phases.inference.run_windowed. The step-rate activity is then mapped
 onto the input's own time axis so it lines up sample-for-sample with the source waveform.
 """
 
@@ -20,7 +20,7 @@ from common.phases.inference import (
 )
 from common.preprocess import Preprocessor
 
-from tslnet.data import Envelope
+from tslnet.data import crop_samples, decimation, model_steps, to_model_rate
 from tslnet.model import TSLNet
 from tslnet.task import TSLNetTask
 
@@ -64,20 +64,22 @@ def run_tslnet(
     # same time scale a training snippet was normalised on -- not across the whole recording,
     # which lets one loud transient rescale everything else (see normalize_blocks).
     x = resample(x, src_hz, SAMPLE_RATE)
-    x = normalize_blocks(x, config.train.crop_len * SAMPLE_RATE)
+    # crop_samples(), not crop_len * SAMPLE_RATE: TSLNet's crop_len is a float (2.56 s), so the
+    # product is a float, and this is the exact same block size the dataset cropped to.
+    x = normalize_blocks(x, crop_samples(config))
 
     m = config.model
-    # The same deterministic transforms the dataset applied, or the model meets an input
-    # distribution it never trained on (see common.preprocess).
+    # The same deterministic transforms the dataset applied, at the same 4 kHz rate, or the
+    # model meets an input distribution it never trained on (see common.preprocess). This is
+    # also where band-limiting happens: the waveform front-end does none of its own.
     waveform = Preprocessor(config.data.preprocess)(torch.from_numpy(np.ascontiguousarray(x)))
 
-    envelope = Envelope(m.n_fft, m.hop_length, m.band, log=m.log_envelope)
-    series = envelope(waveform)                                    # (channels, frames)
+    series = to_model_rate(waveform, m.model_hz)                   # (channels, steps)
 
-    # Window the frame axis to a training-sized crop, rounded down to a whole number of
-    # patches -- the only frame count the backbone can take.
-    frames_per_crop = config.train.crop_len * SAMPLE_RATE // m.hop_length
-    window = max(m.patch_length, frames_per_crop // m.patch_length * m.patch_length)
+    # Window the step axis to a training-sized crop, rounded down to a whole number of
+    # patches -- the only step count the backbone can take.
+    steps_per_crop = model_steps(config)
+    window = max(m.patch_length, steps_per_crop // m.patch_length * m.patch_length)
 
     # How a window of raw output becomes activity depends on what the loss pinned down, so the
     # readout is chosen from the loss rather than fixed here -- see ACTIVITY_POSTPROCESS.
@@ -86,4 +88,6 @@ def run_tslnet(
 
     activity = run_windowed(model, series, window, device=device, postprocess=postprocess)
 
-    return frames_to_native(activity, m.hop_length, SAMPLE_RATE, n_native, src_hz)
+    # Step t sits at sample t*decimation of the 4 kHz signal, so that is the hop that maps the
+    # result back onto the source waveform's own time axis.
+    return frames_to_native(activity, decimation(m.model_hz), SAMPLE_RATE, n_native, src_hz)

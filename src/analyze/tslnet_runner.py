@@ -6,18 +6,17 @@ the real package (the editable install's finder sits at the *end* of sys.meta_pa
 sys.path always wins). Same reason funet_runner is not called funet.
 
 Structurally identical to funet_runner.run_funet_pipeline -- load fibers, window, run the model
-to get a beat-activity envelope, peak-pick that for beat times and heart rate, then score
-against the SOT -- because TSLNet answers the same question with the same output contract: a
+to get a beat-activity signal, peak-pick that for beat times and heart rate, then score against
+the SOT -- because TSLNet answers the same question with the same output contract: a
 non-negative per-sample activity signal on the input's own time axis. What differs is only how
-it gets there (frozen TimesFM over a band-energy envelope, not a learned spectrogram U-Net).
+it gets there (frozen TimesFM over the decimated waveform, not a learned spectrogram U-Net).
 
 One deliberate omission versus the FUNet pipeline: there is no `bp(100, 300)` stage before the
-model. TSLNet already band-limits internally -- `config.model.band` picks the STFT bins its
-envelope sums over, which is the same 100-300 Hz by frequency-domain selection rather than by
-filtering. Adding the filter here would restrict the band twice and, more importantly, hand the
-model an input its training data never saw: tslnet.data builds the envelope straight from the
-snippet audio. Extra filtering, if it is ever wanted, belongs in `config.data.preprocess`, which
-tslnet.data and tslnet.inference both apply so training and inference cannot drift apart.
+model. TSLNet does need band-limiting -- its front-end only decimates, so nothing below Nyquist
+is removed -- but that belongs in `config.data.preprocess`, not here. tslnet.data and
+tslnet.inference both apply it, at 4 kHz before decimation, which is what keeps training and
+inference from drifting apart; a stage here would filter only at inference and would stack a
+second bandpass on top of the one the model trained under.
 """
 
 from pathlib import Path

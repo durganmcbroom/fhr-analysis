@@ -85,6 +85,10 @@ def normalize_blocks(x: np.ndarray, block_samples: int, eps: float = 1e-12) -> n
 
     One peak across all channels, as in training: relative fiber loudness is signal.
     """
+    # Coerced because a caller deriving this from a float crop_len (TSLNet's is 2.56 s) would
+    # otherwise hand in 10240.0 and fail on the slice indices below, several lines later.
+    block_samples = int(block_samples)
+
     total = x.shape[-1]
     if block_samples <= 0 or total <= block_samples:
         return x / (float(np.max(np.abs(x))) + eps)

@@ -1,5 +1,4 @@
 from dataclasses import dataclass, field
-from typing import List, Optional
 
 from common.config import Config, DataConfig, TrainConfig
 from common.config import load_config as _load_config
@@ -11,11 +10,10 @@ from tslnet.model import DEFAULT_CHECKPOINT
 class TSLNetModelConfig:
     """Architecture plus the input contract.
 
-    The envelope front-end (n_fft/hop_length/band/log_envelope) lives here rather than in
-    ``data`` for the same reason FUNet's spectrogram geometry does: it fixes the series the
-    backbone sees, and a checkpoint cannot be run without it. ``crop_len`` stays in ``train``
-    -- it only sets how many patches a batch covers, and any multiple of ``patch_length`` up
-    to the context works.
+    ``model_hz`` lives here rather than in ``data`` for the same reason FUNet's spectrogram
+    geometry does: it fixes the series the backbone sees, and a checkpoint cannot be run
+    without it. ``crop_len`` stays in ``train`` -- it only sets how many patches a batch
+    covers, and any multiple of ``patch_length`` up to the context works.
     """
 
     channels: int = 3            # abdomen fibers stacked as separate univariate series
@@ -32,23 +30,22 @@ class TSLNetModelConfig:
     context_length: int = 2048
     patch_length: int = 32
 
-    # Envelope front-end. hop_length sets the frame rate (SAMPLE_RATE / hop = 250 Hz at 16),
-    # which is what makes a 32-frame patch 0.13 s; n_fft sets the analysis window (32 ms at
-    # 128), long enough to resolve the 100-300 Hz band the beats live in.
-    n_fft: int = 128
-    hop_length: int = 16
-    # Passband in Hz for the envelope, or null for the full spectrum. Defaults to the same
-    # 100-300 Hz the analyze pipeline bandpasses fibers to before FUNet sees them.
-    band: Optional[List[float]] = field(default_factory=lambda: [100.0, 300.0])
-    # log1p-compress the envelope. On, it matches FUNet's front-end and tames the dynamic
-    # range of raw fiber audio; off, beats stay peakier and the backbone's own z-scoring
-    # handles the scale. Genuinely unclear which transfers better, so it is searched.
-    log_envelope: bool = True
+    # Rate the waveform is decimated to before the backbone sees it. Bounded below by Nyquist
+    # (the fetal band runs to 300 Hz, and an anti-alias filter needs headroom above that) and
+    # above by the context, since crop_len * model_hz steps have to fit in context_length.
+    # Must divide SAMPLE_RATE evenly so decimation and the target pooling are exact.
+    model_hz: int = 800
 
 
 @dataclass(kw_only=True)
 class TSLNetTrainConfig(TrainConfig):
     """Base knobs plus the loss options shared with FUNet's beat-activity objectives."""
+
+    # Widened from the base class's int. TSLNet wants a crop that fills the backbone's context
+    # exactly -- 2048 steps at 800 Hz is 2.56 s -- and rounding to whole seconds would either
+    # overflow the context or leave a fifth of it unused. Only tslnet.data reads this, so
+    # funet and ssnet keep their integer seconds.
+    crop_len: float = 2.56
 
     loss: str = "corr_amp"   # 'kldiv' | 'snr' | 'corr' | 'corr_amp' | 'mse'; see task.LOSSES
     amp_weight: float = 0.1          # corr_amp only: weight on the d' peak-contrast term

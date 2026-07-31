@@ -15,13 +15,7 @@ model:
   context_length: 2048
   patch_length: 32
 
-  # Envelope front-end: part of the model's input contract, so a checkpoint is only loadable
-  # alongside these. hop 16 at 4 kHz = a 250 Hz series, which makes one 32-frame patch 128 ms
-  # (~3 per beat); a 7 s crop is 1750 frames, just inside the 2048 context.
-  n_fft: 128
-  hop_length: 16
-  band: [100.0, 300.0]   # Hz; null for the full spectrum. Matches the analyze pipeline's bandpass.
-  log_envelope: true     # log1p-compress; false keeps beats peakier (searched -- see task.suggest)
+  model_hz: 800
 
 train:
   optimizer: 'AdamW'   # SGD, Adam, AdamW
@@ -29,11 +23,11 @@ train:
   weight_decay: 0.1
   batch_size: 8
   epochs: 80
-  # crop_len and hop_length are coupled, and the window is narrow: the crop has to fit the
-  # 2048-step context (hop >= crop_len*4000/2048) while a 32-frame patch stays under half a
-  # beat (hop <= 18). At 7 s that leaves hop 14-18; past ~9 s nothing works at all. See
-  # tslnet.task.feasible_hop_range, which is also what the search samples within.
-  crop_len: 7
+  # Seconds, and a float here (TSLNet widens the base config's int) so the crop lands exactly
+  # on the context: 2.56 * 800 = 2048 steps = 64 patches. Rounding to 2 s would leave a fifth
+  # of the context unused; 3 s would overflow it. If you change model_hz, change this to
+  # context_length / model_hz -- check_feasible prints the value that fits.
+  crop_len: 2.56
   clip: 5.0             # max gradient norm
   loss: 'corr_amp'   # 'kldiv' | 'snr' | 'corr' | 'corr_amp' (corr + d' peak-contrast) | 'mse'
   lr_schedule: 'plateau'  # 'none' (constant LR) | 'cosine' (anneal learning_rate -> min_lr) | 'plateau'
@@ -43,7 +37,7 @@ train:
   # corr_amp only (ignored by other losses): d' rewards beats standing clear of a quiet floor.
   amp_weight: 0.1
   amp_beat_threshold: 0.1
-  # Regularisation (train-only). Applied to the waveform before the envelope is taken.
+  # Regularisation (train-only). Applied at 4 kHz, before preprocess and decimation.
   augment: ['channel_dropout', 'gain', 'noise']
 
 data:
@@ -53,5 +47,11 @@ data:
   train_dir: 'training/stereo_v1/fetal-train'
   val_dir: 'training/stereo_v1/fetal-test'   # held-out patient; selects model_best.pt
   num_workers: 8
+  # Load-bearing now, not optional. The waveform front-end does no band-limiting of its own --
+  # decimation only removes content above Nyquist (400 Hz) -- so without 'bandpass' the model
+  # sees maternal sounds and motion below the fetal band too. This is what the old envelope's
+  # `band: [100, 300]` used to do implicitly by picking STFT bins. Applied to both splits and
+  # at inference, at 4 kHz, before decimation. check_feasible warns if you drop it.
+  preprocess: ['bandpass', 'normalize']
 
-model_dir: 'models/tslnet-v2/'
+model_dir: 'models/tslnet-v3/'

@@ -12,10 +12,11 @@ from common.audio import SAMPLE_RATE
 from common.errors import InfeasibleConfig
 from common.losses import CorrAmpLoss, CorrelationLoss, MSELoss, SNRLoss
 from common.optim import OPTIMIZERS
+from common.preprocess import BANDPASS_HZ
 from common.task import Task
 
 from tslnet.config import TSLNetConfig
-from tslnet.data import band_bins, envelope_frames, make_dataloader
+from tslnet.data import make_dataloader, model_steps
 from tslnet.model import TSLNet
 
 # loss name -> (config -> loss module, matching model output head), identical to FUNet's table:
@@ -35,31 +36,37 @@ LOSSES = {
 # this fraction of that starts merging adjacent beats into one embedding.
 MAX_PATCH_BEAT_FRACTION = 0.5
 FASTEST_FETAL_INTERVAL = 60.0 / 200.0   # seconds
+TYPICAL_FETAL_BPM = 140.0   # only for reporting how many beats a crop covers
+
+# Warn when Nyquist is under this multiple of the passband top. An anti-alias filter needs a
+# transition band, so sitting right on the edge quietly costs signal: decimating to 600 Hz
+# leaves a 295 Hz component at 0.59 amplitude even though 295 < 300 = Nyquist.
+NYQUIST_HEADROOM = 1.25
 
 
-def feasible_hop_range(config) -> tuple[int, int]:
-    """Inclusive ``(lo, hi)`` hop_length bounds for this config's crop_len, from the two
-    constraints ``check_feasible`` enforces.
+# Model rates that divide 4 kHz evenly (so decimation and target pooling are exact) AND keep
+# Nyquist clear of the fetal band with headroom. The list is short because 4000 = 2^5 * 5^3
+# leaves only 800, 1000 and 2000 as divisors at or above 800, and each rate implies the crop
+# that exactly fills the context:
+#
+#     800 Hz -> 2.56 s, 6.0 beats, 40 ms patches      (default: most beats with a clean band)
+#    1000 Hz -> 2.05 s, 4.8 beats, 32 ms patches
+#
+# 2000 Hz divides evenly and has ample Nyquist, but its context covers 1.02 s -- 2.4 beats --
+# which is too little rhythm to be worth the finer patches. Below 800 nothing is legal: 500 Hz
+# divides evenly but its 250 Hz Nyquist cuts into the band, and 600 Hz neither divides 4000
+# nor keeps 295 Hz intact (it survives at 0.59 amplitude).
+MODEL_RATES = [800, 1000]
 
-    They pull in opposite directions and leave far less room than it looks:
 
-    * a smaller hop means more frames per crop, and the crop has to fit the context ->
-      ``hop >= crop_len * SAMPLE_RATE / context_length``
-    * a larger hop means a longer patch, and a patch has to stay well inside one beat ->
-      ``hop <= MAX_PATCH_BEAT_FRACTION * FASTEST_FETAL_INTERVAL * SAMPLE_RATE / patch_length``
+def context_filling_crop(config, model_hz: int) -> float:
+    """The crop length, in seconds, whose decimated length is exactly ``context_length`` steps.
 
-    At crop_len 7 with the 2.0-500m checkpoint that is [14, 18] -- which is why the search
-    derives the range instead of offering a categorical. Sampling from [8, 16, 32] pruned two
-    trials in three before either had built a model.
-
-    ``lo > hi`` means no hop works at this crop_len (above ~9.6 s nothing does, since filling
-    the context then forces a patch past half a beat); the caller is expected to leave the
-    config alone and let ``check_feasible`` produce the real error.
+    The backbone costs the same whether the context is full or half empty, so there is no
+    reason to run it short -- and a crop rounded to whole seconds would leave up to a fifth of
+    the context unused at 800 Hz. This is why TSLNetTrainConfig widens crop_len to a float.
     """
-    lo = -(-config.train.crop_len * SAMPLE_RATE // config.model.context_length)   # ceil
-    hi = int(MAX_PATCH_BEAT_FRACTION * FASTEST_FETAL_INTERVAL * SAMPLE_RATE
-             / config.model.patch_length)
-    return lo, hi
+    return config.model.context_length / model_hz
 
 
 class TSLNetTask(Task):
@@ -119,7 +126,7 @@ class TSLNetTask(Task):
 
     # ------------------------------------------------------------------ optional
     def check_feasible(self, config) -> None:
-        """Reject a config whose envelope cannot be fed to the backbone.
+        """Reject a config whose decimated waveform cannot be fed to the backbone.
 
         Everything here is computed from declared values only -- no checkpoint download -- so
         the optimize phase can prune a bad trial before spending anything on it.
@@ -136,42 +143,66 @@ class TSLNetTask(Task):
                 "no validation split: set data.val_dir (a held-out patient, preferred) or "
                 "data.val_fraction in (0, 1) to carve one out of train_dir")
 
-        try:
-            lo, hi = band_bins(m.n_fft, m.band)
-        except ValueError as e:
-            raise InfeasibleConfig(str(e)) from None
+        if m.model_hz <= 0 or SAMPLE_RATE % m.model_hz:
+            raise InfeasibleConfig(
+                f"model_hz {m.model_hz} must divide the {SAMPLE_RATE} Hz snippet rate evenly, "
+                f"so decimation and the target pooling land on whole samples; valid rates "
+                f"near the usable range are {MODEL_RATES}")
 
-        frames = envelope_frames(config)
-        patches = frames // m.patch_length
+        # The whole reason the front-end is a decimated waveform rather than a spectrogram is
+        # that Nyquist permits it. Enforce that it actually does.
+        nyquist = m.model_hz / 2
+        if "bandpass" in config.data.preprocess:
+            top = BANDPASS_HZ[1]
+            if nyquist <= top:
+                raise InfeasibleConfig(
+                    f"model_hz {m.model_hz} has Nyquist {nyquist:.0f} Hz, at or below the "
+                    f"{top:.0f} Hz top of the bandpass; decimation would alias the fetal band "
+                    f"away. Raise model_hz (try {MODEL_RATES[0]})")
+            if nyquist < top * NYQUIST_HEADROOM:
+                print(f"WARNING: Nyquist {nyquist:.0f} Hz is close to the {top:.0f} Hz band "
+                      f"top; the anti-alias filter attenuates content near the edge.")
+        else:
+            print("WARNING: data.preprocess has no 'bandpass'. The waveform front-end does no "
+                  "band-limiting of its own -- decimation only removes content above "
+                  f"{nyquist:.0f} Hz, so maternal sounds and motion below the fetal band "
+                  "reach the model unchanged.")
+
+        steps = model_steps(config)
+        patches = steps // m.patch_length
         if patches < 1:
             raise InfeasibleConfig(
-                f"a {config.train.crop_len}s crop at hop_length {m.hop_length} is {frames} "
-                f"envelope frames, under the backbone's patch length ({m.patch_length}); "
-                "lengthen crop_len or lower hop_length")
+                f"a {config.train.crop_len}s crop at model_hz {m.model_hz} is {steps} steps, "
+                f"under the backbone's patch length ({m.patch_length}); lengthen crop_len or "
+                "raise model_hz")
         if patches * m.patch_length > m.context_length:
             raise InfeasibleConfig(
-                f"a {config.train.crop_len}s crop at hop_length {m.hop_length} is "
-                f"{patches * m.patch_length} envelope frames, over the backbone's context "
-                f"length ({m.context_length}); shorten crop_len or raise hop_length")
+                f"a {config.train.crop_len}s crop at model_hz {m.model_hz} is "
+                f"{patches * m.patch_length} steps, over the backbone's context length "
+                f"({m.context_length}); shorten crop_len (to "
+                f"{context_filling_crop(config, m.model_hz):.2f}s it fits exactly) or lower "
+                "model_hz")
 
-        patch_seconds = m.patch_length * m.hop_length / SAMPLE_RATE
+        patch_seconds = m.patch_length / m.model_hz
         if patch_seconds > MAX_PATCH_BEAT_FRACTION * FASTEST_FETAL_INTERVAL:
             raise InfeasibleConfig(
-                f"hop_length {m.hop_length} makes one {m.patch_length}-frame patch "
+                f"model_hz {m.model_hz} makes one {m.patch_length}-step patch "
                 f"{patch_seconds:.3f}s, over {MAX_PATCH_BEAT_FRACTION:g} of the "
                 f"{FASTEST_FETAL_INTERVAL:.2f}s fastest fetal beat interval; adjacent beats "
-                "would share an embedding. Lower hop_length")
+                "would share an embedding. Raise model_hz")
 
-        print(f"Envelope: {SAMPLE_RATE / m.hop_length:.0f} Hz, {frames} frames/crop "
-              f"-> {patches} patches of {patch_seconds * 1000:.0f} ms, "
-              f"STFT bins [{lo}, {hi}) of {m.n_fft // 2 + 1}")
+        beats = config.train.crop_len * TYPICAL_FETAL_BPM / 60.0
+        print(f"Waveform: {m.model_hz} Hz (Nyquist {nyquist:.0f}), {steps} steps/crop "
+              f"-> {patches} patches of {patch_seconds * 1000:.0f} ms; "
+              f"{config.train.crop_len:.2f}s ~ {beats:.1f} beats, "
+              f"{patches * m.patch_length / m.context_length:.0%} of the context")
 
     # ------------------------------------------------------- optimize phase only
     def suggest(self, trial, base):
         """Return a copy of ``base`` with the searched hyperparameters replaced for this trial.
 
         The backbone is frozen and never searched -- there is one checkpoint and no
-        architecture to vary. What is left is the head's capacity, the envelope front-end that
+        architecture to vary. What is left is the head's capacity, the model rate that
         decides what the backbone even sees, and the usual optimisation knobs.
         Keep in sync with ``searched_fields``.
         """
@@ -186,22 +217,13 @@ class TSLNetTask(Task):
         model.head_hidden = trial.suggest_categorical("head_hidden", [64, 128, 256, 512])
         model.dropout = trial.suggest_float("dropout", 0.0, 0.5)
 
-        # -- Envelope front-end (part of the input contract, hence model config) --
-        # hop_length sets both the frame rate and the patch duration, so it is squeezed
-        # between the context length and the beat interval; see feasible_hop_range. Sampling
-        # inside the derived range means no trial is spent on a config check_feasible would
-        # reject on sight. When the range is empty the base value is kept and check_feasible
-        # raises the real error -- suggest() runs outside objective()'s InfeasibleConfig
-        # handler, so it must not raise itself.
-        lo, hi = feasible_hop_range(config)
-        if lo <= hi:
-            model.hop_length = trial.suggest_int("hop_length", lo, hi)
-        model.n_fft = trial.suggest_categorical("n_fft", [64, 128, 256])
-        model.log_envelope = trial.suggest_categorical("log_envelope", [True, False])
-        # Sampled as (low, span) rather than two independent edges so high > low always holds.
-        band_low = trial.suggest_categorical("band_low", [0, 50, 100, 150])
-        band_span = trial.suggest_categorical("band_span", [150, 200, 400, 800])
-        model.band = [float(band_low), float(band_low + band_span)]
+        # -- Waveform front-end (part of the input contract, hence model config) --
+        # model_hz trades context against patch resolution, and crop_len follows from it: only
+        # the rates in MODEL_RATES are legal at all (they divide 4 kHz and clear Nyquist), and
+        # for each one there is exactly one crop that fills the context. Sampling the pair
+        # together means no trial is spent on a config check_feasible would reject on sight.
+        model.model_hz = trial.suggest_categorical("model_hz", MODEL_RATES)
+        train.crop_len = context_filling_crop(config, model.model_hz)
 
         # -- Optimisation --
         train.optimizer = trial.suggest_categorical("optimizer", list(OPTIMIZERS))
@@ -223,12 +245,12 @@ class TSLNetTask(Task):
                 "head_layers": config.model.head_layers,
                 "head_hidden": config.model.head_hidden,
                 "dropout": config.model.dropout,
-                "hop_length": config.model.hop_length,
-                "n_fft": config.model.n_fft,
-                "log_envelope": config.model.log_envelope,
-                "band": config.model.band,
+                "model_hz": config.model.model_hz,
             },
             "train": {
+                # Derived from model_hz rather than sampled, but emitted so the written config
+                # is runnable as-is instead of silently keeping the base file's crop_len.
+                "crop_len": config.train.crop_len,
                 "optimizer": config.train.optimizer,
                 "learning_rate": config.train.learning_rate,
                 "weight_decay": config.train.weight_decay,

@@ -5,16 +5,16 @@ so its representation of "quasi-periodic pulse train" should already be good, an
 fetal snippets here only have to pay for a head that reads beats out of it. Contrast FUNet,
 which learns its whole spectrogram front-end from those same 350 snippets.
 
-Input is a per-fiber amplitude envelope at ~250 Hz (see ``tslnet.data``), not a waveform:
-TimesFM's context is 2048 steps, so a 7-second crop of 4 kHz audio is 13x too long, and its
-patch length of 32 fixes the output resolution at 32 input steps. At 250 Hz that patch spans
-0.13 s -- about three per beat, fine enough to place one. At 4 kHz it would be 8 ms per patch
-and the whole 2048-step context would cover half a second, which localises nothing.
+Input is the per-fiber waveform decimated to ``model_hz`` (see ``tslnet.data``) -- the raw
+series, not a derived feature. 4 kHz audio does not fit: TimesFM's context is 2048 steps, which
+at 4 kHz is 0.51 s, barely one beat, so the model could never see rhythm. Decimating to 800 Hz
+buys 2.56 s (~6 beats) while Nyquist still clears the 300 Hz top of the fetal band, and one
+32-step patch becomes 40 ms, under a tenth of a beat.
 
 Two properties of the backbone are load-bearing and worth knowing before reading ``forward``:
 
 * **It normalises internally.** ``TimesFmModel._forward_transform`` z-scores each series by
-  its own masked mean/std, so the envelope is fed in raw -- standardising it here would just
+  its own masked mean/std, so the waveform is fed in raw -- standardising it here would just
   be undone.
 * **It is causal.** Attention is built with ``is_causal=True``, so the embedding for patch *i*
   sees patches <= *i* only. The head therefore reads causal features: no lookahead, which
@@ -34,8 +34,8 @@ from torch import nn
 # The 2.0 500m checkpoint: context_length 2048, patch_length 32, hidden_size 1280, 50 layers.
 DEFAULT_CHECKPOINT = "google/timesfm-2.0-500m-pytorch"
 
-# TimesFM tags each series with a frequency category (0 high, 1 medium, 2 low). A 250 Hz
-# envelope with beats every ~0.4 s is unambiguously the high-frequency category.
+# TimesFM tags each series with a frequency category (0 high, 1 medium, 2 low). An 800 Hz
+# waveform is unambiguously the high-frequency category.
 HIGH_FREQUENCY = 0
 
 
@@ -80,9 +80,9 @@ def load_backbone(checkpoint: str = DEFAULT_CHECKPOINT) -> nn.Module:
 
 
 class TSLNet(nn.Module):
-    """(batch, channels, frames) envelope -> (batch, frames) beat activity.
+    """(batch, channels, steps) waveform -> (batch, steps) beat activity.
 
-    ``frames`` must be a multiple of the backbone's patch length and no longer than its
+    ``steps`` must be a multiple of the backbone's patch length and no longer than its
     context; ``tslnet.data`` crops to satisfy both, and ``TSLNetTask.check_feasible`` rejects a
     config that cannot.
     """
@@ -166,26 +166,26 @@ class TSLNet(nn.Module):
     # --------------------------------------------------------------------------- forward
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.ndim != 3:
-            raise ValueError(f"TSLNet expects (batch, channels, frames), got {tuple(x.shape)}")
+            raise ValueError(f"TSLNet expects (batch, channels, steps), got {tuple(x.shape)}")
 
-        batch, channels, frames = x.shape
+        batch, channels, steps = x.shape
         if channels != self.channels:
             raise ValueError(
                 f"TSLNet was built for {self.channels} channel(s) but got {channels}; "
                 "config.model.channels must match the fibers being stacked")
-        if frames % self.patch_length:
+        if steps % self.patch_length:
             raise ValueError(
-                f"TSLNet input frames ({frames}) must be divisible by the backbone's patch "
-                f"length ({self.patch_length}); adjust hop_length or crop_len")
-        if frames > self.context_length:
+                f"TSLNet input steps ({steps}) must be divisible by the backbone's patch "
+                f"length ({self.patch_length}); adjust model_hz or crop_len")
+        if steps > self.context_length:
             raise ValueError(
-                f"TSLNet input frames ({frames}) exceed the backbone's context length "
-                f"({self.context_length}); shorten crop_len or raise hop_length")
+                f"TSLNet input steps ({steps}) exceed the backbone's context length "
+                f"({self.context_length}); shorten crop_len or raise model_hz")
 
         # TimesFM is univariate, so each fiber is its own series and the channels ride in the
         # batch dimension. Index (b, c) lands at b*channels + c, which is what the un-fold
         # below relies on.
-        series = x.reshape(batch * channels, frames)
+        series = x.reshape(batch * channels, steps)
         # 0 = "not padding" at every step: data.py crops to a whole number of patches, so
         # there is never a partial one to mask.
         padding = torch.zeros_like(series, dtype=torch.long)
@@ -204,7 +204,7 @@ class TSLNet(nn.Module):
         hidden = hidden.permute(0, 2, 1, 3).reshape(batch, patches, -1)
 
         y = self.mlp(hidden)                               # (batch, patches, patch_length)
-        y = y.reshape(batch, patches * self.patch_length)  # back onto the frame grid
+        y = y.reshape(batch, patches * self.patch_length)  # back onto the step grid
 
         if self.head == "logprob":
             y = y.log_softmax(dim=-1)   # KLDivLoss expects log-probabilities
