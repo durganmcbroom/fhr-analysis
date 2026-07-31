@@ -17,6 +17,13 @@ chmod a+x setup.sh
 chmod a+x lib/tslnet/generate_training_snippets.sh
 #lib/tslnet/generate_training_snippets.sh
 
-# The first run pulls the TimesFM checkpoint (~2 GB) into the Hugging Face cache. Point
-# HF_HOME at shared storage if the compute node's home is small or not persisted.
+# The TimesFM checkpoint is ~1.9 GB and is fetched once, then reused. Keep the cache beside
+# the repo rather than in the default ~/.cache: a compute node whose home is not shared (or is
+# wiped between allocations) otherwise re-downloads it on every single job. An HF_HOME already
+# set in the environment wins, so this only supplies a default.
+export HF_HOME="${HF_HOME:-$PWD/.hf-cache}"
+mkdir -p "$HF_HOME"
+
+# Within the run, the backbone is loaded once for all 75 trials (tslnet.model caches it), so
+# the search pays the load cost a single time rather than per trial.
 poetry run tslnet-optimize lib/tslnet/fetal-config.yaml --trials=75

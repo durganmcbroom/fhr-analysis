@@ -4,6 +4,7 @@ __pycache__/
 Banner_data/*
 lib/tune-ssnet/training/*
 lib/tslnet/training/*
+.hf-cache
 .venv
 .claude
 src/fhr_bin/snr/data/*

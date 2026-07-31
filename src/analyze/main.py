@@ -33,6 +33,7 @@ PATIENT = "PT12_2"
 # PATIENT = "session-02"
 # PATIENT = "band_durgan_1"
 WINDOW = 0, 340
+# WINDOW = 10, 1810
 # WINDOW = 220, 340
 # WINDOW = 60, 70
 # WINDOW = 10, 310

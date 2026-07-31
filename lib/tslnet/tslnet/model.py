@@ -26,6 +26,8 @@ both the optimiser (``common.optim.build_optimizer`` filters on ``requires_grad`
 checkpoint (see ``state_dict``).
 """
 
+import functools
+import os
 from typing import Optional
 
 import torch
@@ -71,12 +73,65 @@ def head_mlp(in_features: int, hidden: int, out_features: int, layers: int,
     return nn.Sequential(*modules)
 
 
-def load_backbone(checkpoint: str = DEFAULT_CHECKPOINT) -> nn.Module:
-    from transformers import TimesFmModelForPrediction   # local: keeps 2 GB off `import tslnet`
+@functools.cache
+def _load_backbone(checkpoint: str) -> nn.Module:
+    """Fetch ``checkpoint`` once per process and return its ``TimesFmModel`` decoder stack.
 
-    return TimesFmModelForPrediction.from_pretrained(
-        checkpoint, attn_implementation="sdpa",
-    ).decoder
+    Cached because ``TSLNetTask.build_model`` runs per Optuna trial and per inference call, and
+    each one otherwise re-reads 1.9 GB of weights and rebuilds 50 transformer layers. Sharing
+    one instance is safe: the backbone is frozen, kept in eval mode, and excluded from every
+    checkpoint, so nothing can mutate it between users. The one thing it does share is device
+    -- ``model.to(device)`` moves the instance every TSLNet holds -- which is fine while models
+    are built and run one at a time, as the train, optimize and inference phases all do.
+
+    ``local_files_only=True`` is tried first so a warm cache never touches the network: without
+    it every construction makes a hub round-trip to re-check etags, which stalls on a compute
+    node with no route out. The fallback is a real download, and only then is the progress bar
+    turned back on -- the "Loading weights" bar it prints for a *cached* read looks exactly
+    like downloading, which is misleading when it happens once per trial.
+
+    The published weights are laid out for the ``TimesFmModelForPrediction`` wrapper (their
+    keys live under ``decoder.*``), so loading that and taking ``.decoder`` is what actually
+    maps the tensors -- ``TimesFmModel.from_pretrained`` would find nothing under the names it
+    wants. The forecasting head that comes along is dropped: TSLNet reads hidden states.
+
+    Note there is no ``device_map``: the harness owns device placement (``pick_device`` picks
+    it, ``engine.fit`` calls ``model.to(device)`` each epoch), and accelerate's dispatch hooks
+    fight that.
+    """
+    from transformers import TimesFmModelForPrediction   # local: keeps 2 GB off `import tslnet`
+    from transformers.utils import logging as hf_logging
+
+    def fetch(local_only: bool):
+        return TimesFmModelForPrediction.from_pretrained(
+            checkpoint, attn_implementation="sdpa", local_files_only=local_only,
+        ).decoder
+
+    hf_logging.disable_progress_bar()
+    try:
+        backbone = fetch(local_only=True)
+        print(f"TSLNet backbone: '{checkpoint}' loaded from the local cache "
+              f"({os.environ.get('HF_HOME', '~/.cache/huggingface')})")
+    except OSError:
+        # Not cached yet. A genuine download is worth a progress bar.
+        hf_logging.enable_progress_bar()
+        print(f"TSLNet backbone: '{checkpoint}' is not cached -- downloading ~1.9 GB. This "
+              f"happens once; set HF_HOME to keep the cache somewhere persistent.")
+        backbone = fetch(local_only=False)
+    finally:
+        hf_logging.enable_progress_bar()
+    return backbone
+
+
+def load_backbone(checkpoint: str = DEFAULT_CHECKPOINT) -> nn.Module:
+    """The cached backbone for ``checkpoint``. See ``_load_backbone``.
+
+    The default is applied here rather than on the cached function so that ``load_backbone()``
+    and ``load_backbone(DEFAULT_CHECKPOINT)`` hit the same cache entry -- ``functools.cache``
+    keys on the arguments as passed, so a defaulted call and an explicit one would otherwise
+    load the weights twice.
+    """
+    return _load_backbone(checkpoint)
 
 
 class TSLNet(nn.Module):
