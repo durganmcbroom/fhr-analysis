@@ -37,6 +37,12 @@ class Task(ABC):
     #: Dotted config keys holding filesystem paths, resolved relative to the YAML's directory.
     path_keys: tuple = ("data.train_dir", "data.val_dir", "model_dir", "resume")
 
+    #: Dotted config keys the optimize phase must never change, e.g. ("model.freq_crop_hz",).
+    #: Every trial inherits these from the base config verbatim. Declaring one here is
+    #: enforced by common.phases.optimize on each trial rather than trusted to ``suggest``:
+    #: a guard written inside ``suggest`` is removed by the very edit that would break it.
+    frozen_fields: tuple = ()
+
     #: Extra environment variables that override device selection, most specific first.
     device_env_vars: tuple = ()
 

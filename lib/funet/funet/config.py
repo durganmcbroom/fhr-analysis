@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Optional
 
 from common.config import Config, DataConfig, TrainConfig
 from common.config import load_config as _load_config
@@ -13,6 +13,11 @@ class FUNetModelConfig:
     a checkpoint cannot be loaded or run without them (see stft_output_shape / inference) --
     the same test that puts base_channels here. crop_len stays in `train`, because FUNet is
     fully convolutional and runs on any length divisible by 2**depth.
+
+    freq_crop_hz is a model field by that same test: it changes how many spectrogram rows
+    reach the first conv, so a checkpoint trained with a crop cannot be run without it. It is
+    deliberately *not* in `data.preprocess` -- that list is shared verbatim by every model,
+    and the row range depends on this model's own n_fft.
     """
 
     channels: int = 4
@@ -24,6 +29,21 @@ class FUNetModelConfig:
     dropout: float = 0.0         # Dropout2d p in the bottleneck + deepest enc/dec level; 0 = off
     n_fft: int = 1024
     hop_length: int = 256
+
+    # Passband crop: keep only the spectrogram rows spanning [low, high] Hz, discarding the
+    # bands `data.preprocess`'s bandpass already emptied (log1p(0) == 0, so an out-of-band row
+    # is a constant-zero field every convolution still pays for). None = full height, which is
+    # the default so every existing checkpoint under models/ stays loadable and byte-identical.
+    # See data.freq_crop_bins for the exact rows this maps to.
+    freq_crop_hz: Optional[List[float]] = None
+
+    # Kill switch for the crop, independent of the band above. True restores the pre-crop
+    # front-end exactly -- full-height spectrogram, unchanged feasibility check, unchanged
+    # mask ordering -- while leaving freq_crop_hz in the file as a record of the band that
+    # was being used. Setting freq_crop_hz to null does the same thing but discards that.
+    # It is a model field for the same reason the band is: it decides how many rows reach
+    # the first conv, so a checkpoint cannot be run without knowing which way it was set.
+    disable_freq_crop: bool = False
 
 
 @dataclass(kw_only=True)

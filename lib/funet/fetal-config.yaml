@@ -10,6 +10,17 @@ model:
   # loadable alongside these.
   n_fft: 1024
   hop_length: 256
+  # Keep only the rows spanning this band; null = full height (what v34 and earlier trained
+  # on). data.preprocess bandpasses to 100-300 Hz and log1p(0) == 0, so at n_fft 1024 only
+  # ~53 of 513 rows carry anything -- the other ~87% is a constant-zero field every
+  # convolution still walks over. Measured on a bandpassed mix, [80, 350] keeps 99.7% of the
+  # spectrogram's mass (a hard [100, 300] keeps 97.4% and cuts into the filter's transition
+  # skirt, which is still >1% of peak out to ~344 Hz). 71 rows, which the depth-3 floor takes
+  # to exactly 64 -- so the trim off the top lands in the guard band, not in the signal.
+  freq_crop_hz: [80, 350]
+  # Kill switch: true restores the full-height v34 front-end exactly, keeping the band above
+  # on record. false (the default) runs the crop.
+  disable_freq_crop: false
 
 train:
   optimizer: 'AdamW'   # SGD, Adam, AdamW
@@ -43,4 +54,7 @@ data:
   # stay compatible with the existing funet-v33 weights.
   preprocess: ["bandpass", "normalize"]
 
-model_dir: 'models/funet-v34/'
+# v35 = v34 + freq_crop_hz. Everything else is byte-identical to models/funet-v34/
+# fetal-config.yaml (same data, same schedule, same seed-less init), so the val curve is a
+# controlled read on the crop alone against v34's train 0.041 / val 0.0661.
+model_dir: 'models/funet-v35/'

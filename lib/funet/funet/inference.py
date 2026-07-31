@@ -21,6 +21,7 @@ from common.phases.inference import (
 )
 from common.preprocess import Preprocessor
 
+from funet.data import freq_crop_bins
 from funet.model import FUNet
 from funet.task import FUNetTask
 
@@ -72,6 +73,12 @@ def run_funet(
 
     spec = torchaudio.transforms.Spectrogram(n_fft=config.model.n_fft, hop_length=hop)
     S = torch.log1p(spec(waveform))                       # (channels, freq, frames)
+
+    # Passband crop, from the same helper the dataset uses -- a checkpoint trained on a band
+    # must be run on that band, and two copies of the arithmetic would eventually disagree.
+    crop = freq_crop_bins(config)
+    if crop is not None:
+        S = S[:, crop[0]:crop[1], :]
 
     freq = S.shape[-2] - S.shape[-2] % divisor            # crop freq to a multiple of divisor
     S = S[:, :freq, :]

@@ -10,7 +10,7 @@ from common.optim import OPTIMIZERS
 from common.task import Task
 
 from funet.config import FUNetConfig
-from funet.data import make_dataloader, stft_output_shape
+from funet.data import freq_crop_bins, make_dataloader, stft_output_shape
 from funet.model import FUNet
 
 # loss name -> (config -> loss module, matching model output head). Factories take the config
@@ -32,6 +32,13 @@ class FUNetTask(Task):
     name = "funet"
     ConfigType = FUNetConfig
     device_env_vars = ("FUNET_DEVICE",)
+
+    # The passband crop is a deliberate, measured choice about which rows are signal, not a
+    # knob to sweep: the band follows from data.preprocess's bandpass, and letting a search
+    # wander it would trade a known 8x compute saving for trials that differ in what they can
+    # see. Both are inherited from the base config verbatim; common.phases.optimize enforces
+    # it per trial (see Task.frozen_fields).
+    frozen_fields = ("model.freq_crop_hz", "model.disable_freq_crop")
 
     def head_for(self, config) -> str:
         """Which output head this config's loss trains."""
@@ -74,14 +81,20 @@ class FUNetTask(Task):
 
         FUNet halves freq and time once per level, so it needs 2**depth <= both the freq-bin
         count and the frame count (see FUNet.forward / data.__getitem__). A deep net combined
-        with a small n_fft or a large hop violates that.
+        with a small n_fft or a large hop violates that -- and so does a narrow
+        model.freq_crop_hz, which stft_output_shape has already applied to freq_bins.
         """
         freq_bins, time_frames = stft_output_shape(config)
         divisor = 2 ** len(config.model.dilations)
         if divisor > freq_bins or divisor > time_frames:
+            # The effective crop, not the raw field: disable_freq_crop may have turned it off,
+            # and a message naming a band that was not applied sends the reader the wrong way.
+            crop = freq_crop_bins(config)
+            band = (f" (freq is the {freq_bins} row(s) kept by freq_crop_hz "
+                    f"{list(config.model.freq_crop_hz)})" if crop else "")
             raise InfeasibleConfig(
                 f"depth {len(config.model.dilations)} needs freq and time >= {divisor}, but "
-                f"this config yields freq={freq_bins}, time={time_frames}")
+                f"this config yields freq={freq_bins}, time={time_frames}{band}")
 
     # ------------------------------------------------------- optimize phase only
     def suggest(self, trial, base):
@@ -111,6 +124,9 @@ class FUNetTask(Task):
         # -- Spectrogram (part of the input contract, hence model config) --
         model.n_fft = trial.suggest_categorical("n_fft", [512, 1024, 2048])
         model.hop_length = trial.suggest_categorical("hop_length", [64, 128, 256, 512])
+        # freq_crop_hz / disable_freq_crop are frozen (see frozen_fields) -- never assign them
+        # here. Being stated in Hz, the band needs no per-trial adjustment anyway: whatever
+        # n_fft this trial drew resolves it to the right rows (see freq_crop_bins).
 
         # -- Optimisation --
         train.optimizer = trial.suggest_categorical("optimizer", list(OPTIMIZERS))

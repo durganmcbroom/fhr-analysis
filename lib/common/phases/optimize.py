@@ -67,11 +67,49 @@ def _best_value_so_far(study: optuna.Study) -> float:
         return float("inf")
 
 
+def _dotted(config, key: str):
+    """Read a dotted config key, e.g. ``"model.freq_crop_hz"``."""
+    obj = config
+    for name in key.split("."):
+        obj = getattr(obj, name)
+    return obj
+
+
+def check_frozen(task, base, config, searched: dict) -> None:
+    """Raise if this trial reached a field the task declared frozen (``Task.frozen_fields``).
+
+    A search has exactly two ways to move such a field, and both are checked here:
+    ``suggest`` assigning it, and ``searched_fields`` listing it -- the latter matters because
+    ``write_config`` overlays that dict onto the emitted YAML, so a frozen field named there
+    would be written into best-config.yaml even if the trial itself ran with the base value.
+
+    This is a programming error in the task's search space, not an unlucky sample, so it
+    raises rather than pruning: pruning would bury it as a run of skipped trials.
+    """
+    for key in task.frozen_fields:
+        want, got = _dotted(base, key), _dotted(config, key)
+        if got != want:
+            raise RuntimeError(
+                f"{task.name}.suggest changed frozen field {key!r}: base has {want!r}, the "
+                f"trial config has {got!r}. Frozen fields are inherited from the base config; "
+                f"remove the assignment or drop {key!r} from {type(task).__name__}.frozen_fields.")
+        section, _, field = key.rpartition(".")
+        if field in (searched.get(section) or {}):
+            raise RuntimeError(
+                f"{task.name}.searched_fields lists frozen field {key!r}, which would be "
+                f"written into the emitted config. Remove it, or drop {key!r} from "
+                f"{type(task).__name__}.frozen_fields.")
+
+
 def objective(trial: optuna.Trial, task, base, base_config_path: str,
               out_dir: str, epochs: Optional[int] = None) -> float:
     """Train one sampled config, persist it as the latest (and best, if it wins), and return
     its best validation loss (lower is better)."""
     config = task.suggest(trial, base)
+    # Before anything is built or trained, so a search space that reaches a frozen field fails
+    # on trial 1 rather than after a night of runs that quietly swept it.
+    searched = task.searched_fields(config)
+    check_frozen(task, base, config, searched)
 
     try:
         task.check_feasible(config)
@@ -98,7 +136,6 @@ def objective(trial: optuna.Trial, task, base, base_config_path: str,
     # leave latest-model.pt out of sync with latest-config.yaml. The finally cleans up the
     # temp file for any trial that doesn't promote it.
     trial_model = os.path.join(out_dir, f".trial-{trial.number}.pt")
-    searched = task.searched_fields(config)
     try:
         # run_training returns the single best epoch; we score on the trailing mean instead
         # (see SCORE_WINDOW), so ignore its return and derive the score from the history.
