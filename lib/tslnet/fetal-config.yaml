@@ -29,8 +29,8 @@ train:
   # context_length / model_hz -- check_feasible prints the value that fits.
   crop_len: 2.56
   clip: 5.0             # max gradient norm
-  loss: 'corr_amp'   # 'kldiv' | 'snr' | 'corr' | 'corr_amp' (corr + d' peak-contrast) | 'mse'
-  lr_schedule: 'plateau'  # 'none' (constant LR) | 'cosine' (anneal learning_rate -> min_lr) | 'plateau'
+  loss: 'mse'   # 'kldiv' | 'snr' | 'corr' | 'corr_amp' (corr + d' peak-contrast) | 'mse'
+  lr_schedule: 'cosine'  # 'none' (constant LR) | 'cosine' (anneal learning_rate -> min_lr) | 'plateau'
   min_lr: 1.e-5         # cosine floor only; unused by 'none' and 'plateau'
   plateau_factor: 0.5
   plateau_patience: 3
@@ -54,4 +54,4 @@ data:
   # at inference, at 4 kHz, before decimation. check_feasible warns if you drop it.
   preprocess: ['bandpass', 'normalize']
 
-model_dir: 'models/tslnet-v6/'
+model_dir: 'models/tslnet-v7/'
