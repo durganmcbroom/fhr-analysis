@@ -31,7 +31,7 @@ FUNET_MODEL_PATH = os.path.join(PROJECT_DIR, f"lib/funet/models/{FUNET_MODEL}/mo
 # 'config.yaml' rather than funet's 'fetal-config.yaml': that is the name
 # common.phases.train archives next to a checkpoint (train.CONFIG), so a run's output
 # directory works here as-is with nothing to rename.
-TSLNET_MODEL = "tslnet-v1"
+TSLNET_MODEL = "tslnet-v3"
 TSLNET_CONFIG = os.path.join(PROJECT_DIR, f"lib/tslnet/models/{TSLNET_MODEL}/config.yaml")
 TSLNET_MODEL_PATH = os.path.join(PROJECT_DIR, f"lib/tslnet/models/{TSLNET_MODEL}/model_best.pt")
 
