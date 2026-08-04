@@ -54,4 +54,4 @@ data:
   # at inference, at 4 kHz, before decimation. check_feasible warns if you drop it.
   preprocess: ['bandpass', 'normalize']
 
-model_dir: 'models/tslnet-v7/'
+model_dir: 'models/tslnet-v8/'
