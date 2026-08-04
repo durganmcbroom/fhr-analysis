@@ -22,7 +22,7 @@ train:
   learning_rate: 1.e-3  # higher than FUNet's: this only fits a head over frozen features
   weight_decay: 0.1
   batch_size: 8
-  epochs: 160
+  epochs: 50
   # Seconds, and a float here (TSLNet widens the base config's int) so the crop lands exactly
   # on the context: 2.56 * 800 = 2048 steps = 64 patches. Rounding to 2 s would leave a fifth
   # of the context unused; 3 s would overflow it. If you change model_hz, change this to
