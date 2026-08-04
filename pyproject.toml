@@ -56,6 +56,7 @@ fhr-snr = "fhr_bin.snr.calculate_snr:main"
 fhr-plot-clips = "fhr_bin.plots.plot_clips:main"
 fhr-plot-waveforms = "fhr_bin.plots.analyze_waveforms:main"
 fhr-peak-det = "fhr_bin.peak_det.plot_peak_detectors:main"
+fhr-beat-buildup = "fhr_bin.peak_det.plot_beat_buildup:main"
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=9.0"

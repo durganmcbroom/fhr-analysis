@@ -115,7 +115,7 @@ def run_tslnet_pipeline(patient, window, datadir, fibers=["1B", "2A", "2B"]):
         load_data,
         windowed(window[0], window[1]),
         use_tslnet(out_path, fibers),
-        fiber_beats(v2_beat_detector, out_path),
+        fiber_beats(v7_beat_detector, out_path),
         plot_hr(sot, out_path),
         evaluate_v3(sot, out_path, hr_smooth=20)
     ], f"{PROJECT_DIR}/.out/{patient}/tslnet/cache/", play_sound=False)

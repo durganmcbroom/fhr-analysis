@@ -74,8 +74,25 @@ def head_mlp(in_features: int, hidden: int, out_features: int, layers: int,
 
 
 @functools.cache
-def _load_backbone(checkpoint: str) -> nn.Module:
+def _load_backbone(checkpoint: str, pretrained: bool, seed: int) -> nn.Module:
     """Fetch ``checkpoint`` once per process and return its ``TimesFmModel`` decoder stack.
+
+    With ``pretrained=False`` the architecture is read from ``checkpoint`` but the weights are
+    randomly initialised. That is the control for the entire premise of this model: TSLNet
+    bets that TimesFM's pretraining transfers to fetal cardiac signals, and the way to test a
+    frozen-foundation-model bet is to run the identical pipeline over a random projection of
+    the same shape. If the pretrained arm does not beat the random arm, the 500M parameters
+    are contributing nothing and the head is just fitting an expensive random feature map.
+
+    The architecture comes from the real checkpoint's config (a ~1 KB read, cached alongside
+    the weights) rather than being restated here, so the two arms cannot drift apart in width,
+    depth, patch length or context.
+
+    Random init is seeded and wrapped in ``fork_rng`` so it neither depends on nor disturbs the
+    process RNG that drives shuffling and augmentation. That keeps head-only checkpoints valid
+    for this arm too: ``pretrained`` + ``seed`` reproduce the backbone exactly, so nothing
+    extra has to be written to disk. A single seed is one draw, though -- run the control at
+    two or three seeds before concluding anything from a small difference.
 
     Cached because ``TSLNetTask.build_model`` runs per Optuna trial and per inference call, and
     each one otherwise re-reads 1.9 GB of weights and rebuilds 50 transformer layers. Sharing
@@ -99,39 +116,55 @@ def _load_backbone(checkpoint: str) -> nn.Module:
     it, ``engine.fit`` calls ``model.to(device)`` each epoch), and accelerate's dispatch hooks
     fight that.
     """
-    from transformers import TimesFmModelForPrediction   # local: keeps 2 GB off `import tslnet`
+    from transformers import TimesFmConfig, TimesFmModelForPrediction  # local: 2 GB off import
     from transformers.utils import logging as hf_logging
 
+    cache_hint = os.environ.get("HF_HOME", "~/.cache/huggingface")
+
     def fetch(local_only: bool):
-        return TimesFmModelForPrediction.from_pretrained(
-            checkpoint, attn_implementation="sdpa", local_files_only=local_only,
-        ).decoder
+        if pretrained:
+            return TimesFmModelForPrediction.from_pretrained(
+                checkpoint, attn_implementation="sdpa", local_files_only=local_only,
+            ).decoder
+        # Architecture only, then random weights of exactly that shape.
+        architecture = TimesFmConfig.from_pretrained(checkpoint, local_files_only=local_only)
+        architecture._attn_implementation = "sdpa"
+        with torch.random.fork_rng(devices=[]):
+            torch.manual_seed(seed)
+            return TimesFmModelForPrediction(architecture).decoder
 
     hf_logging.disable_progress_bar()
     try:
         backbone = fetch(local_only=True)
-        print(f"TSLNet backbone: '{checkpoint}' loaded from the local cache "
-              f"({os.environ.get('HF_HOME', '~/.cache/huggingface')})")
+        if pretrained:
+            print(f"TSLNet backbone: '{checkpoint}' loaded from the local cache ({cache_hint})")
+        else:
+            # Loud, because a control run whose arm you cannot identify from the log later is
+            # worse than not running it.
+            print(f"TSLNet backbone: *** CONTROL ARM: RANDOM WEIGHTS, seed {seed} *** "
+                  f"(architecture from '{checkpoint}'; pretrained weights NOT loaded)")
     except OSError:
-        # Not cached yet. A genuine download is worth a progress bar.
+        # Not cached yet. A genuine download is worth a progress bar (the config alone is tiny,
+        # but it lives in the same repo, so the random arm needs the fetch too the first time).
         hf_logging.enable_progress_bar()
-        print(f"TSLNet backbone: '{checkpoint}' is not cached -- downloading ~1.9 GB. This "
-              f"happens once; set HF_HOME to keep the cache somewhere persistent.")
+        print(f"TSLNet backbone: '{checkpoint}' is not cached -- downloading. This happens "
+              f"once; set HF_HOME to keep the cache somewhere persistent.")
         backbone = fetch(local_only=False)
     finally:
         hf_logging.enable_progress_bar()
     return backbone
 
 
-def load_backbone(checkpoint: str = DEFAULT_CHECKPOINT) -> nn.Module:
+def load_backbone(checkpoint: str = DEFAULT_CHECKPOINT, pretrained: bool = True,
+                  seed: int = 0) -> nn.Module:
     """The cached backbone for ``checkpoint``. See ``_load_backbone``.
 
-    The default is applied here rather than on the cached function so that ``load_backbone()``
+    Defaults are applied here rather than on the cached function so that ``load_backbone()``
     and ``load_backbone(DEFAULT_CHECKPOINT)`` hit the same cache entry -- ``functools.cache``
     keys on the arguments as passed, so a defaulted call and an explicit one would otherwise
     load the weights twice.
     """
-    return _load_backbone(checkpoint)
+    return _load_backbone(checkpoint, pretrained, seed)
 
 
 class TSLNet(nn.Module):
@@ -146,6 +179,8 @@ class TSLNet(nn.Module):
         self,
         channels: int = 3,
         checkpoint: str = DEFAULT_CHECKPOINT,
+        pretrained: bool = True,     # False = the random-weights control; see load_backbone
+        backbone_seed: int = 0,      # only used when pretrained is False
         head_hidden: int = 256,
         head_layers: int = 3,        # Linear layers in the head; 1 = a plain linear probe
         dropout: float = 0.0,
@@ -160,7 +195,8 @@ class TSLNet(nn.Module):
         self.head = head
         self.channels = channels
 
-        self.backbone = load_backbone(checkpoint) if backbone is None else backbone
+        self.backbone = (backbone if backbone is not None else
+                         load_backbone(checkpoint, pretrained, backbone_seed))
         config = self.backbone.config
         self.patch_length = config.patch_length
         self.context_length = config.context_length

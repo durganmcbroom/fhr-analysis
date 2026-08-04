@@ -127,6 +127,7 @@ Every entry point is a console script, so it works from any directory:
 | `poetry run fhr-plot-clips <clips.yaml> --out-dir out/` | Plot the sections a clips yaml selects |
 | `poetry run fhr-plot-waveforms <dir>... --out-dir out/` | Plot every channel of a recording |
 | `poetry run fhr-peak-det` | Compare peak detectors |
+| `poetry run fhr-beat-buildup [patient] [--source mic\|fiber] [--variant v2\|v4\|v7\|all]` | Build a detector up one step at a time |
 
 Paths inside a config are resolved relative to that config file, not to the
 working directory, so `poetry run funet-train lib/funet/fetal-config.yaml`

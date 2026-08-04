@@ -145,7 +145,7 @@ def _plot_beats(out: Path, activity: Audio, beat_times) -> None:
     print(f"[funet] saved beats plot -> {out / 'funet_beats.png'}")
 
 
-def run_funet_pipeline(patient, window, datadir, fibers=["1B", "2A", "2B"]):
+def run_funet_pipeline(patient, window, datadir, fibers=["1B", "2A", "2B", "2C", "2D"]):
     """End-to-end: load fibers -> window -> FUNet beat activity -> beats + HR plots.
 
     ``fiber_names`` are the abdomen fibers to feed the model, in the order it was
@@ -196,7 +196,7 @@ def run_funet_belly_machine(
         load_no_chest_data_FULL,
         windowed(window[0], window[1]),
         use_funet(out_path, ["1A", "1B", "2A",
-                             # "2B", "2C"
+                             "2B", "2C"
                              ]),
         fiber_beats(v2_beat_detector, out_path),
         # phase_continuity(out_path),   # stitch S1<->S2 phase slips so HR doesn't lag/spike

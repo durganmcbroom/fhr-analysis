@@ -33,6 +33,7 @@ PATIENT = "PT12_2"
 # PATIENT = "session-02"
 # PATIENT = "band_durgan_1"
 WINDOW = 0, 340
+WINDOW = 0, 30
 # WINDOW = 10, 1810
 # WINDOW = 220, 340
 # WINDOW = 60, 70
@@ -254,7 +255,7 @@ def main():
     # )
 
     # w = (30, 90)
-    # pat = "5ch_belly_machine_2"
+    # pat = "5ch_belly_machine_1"
     # run_funet_belly_machine(
     #     "%s" % pat,
     #     w,

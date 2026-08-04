@@ -18,6 +18,18 @@ class TSLNetModelConfig:
 
     channels: int = 3            # abdomen fibers stacked as separate univariate series
     checkpoint: str = DEFAULT_CHECKPOINT
+
+    # The control for this model's whole premise. False keeps the architecture named by
+    # `checkpoint` but throws the pretrained weights away and initialises randomly, so a run
+    # measures what the head can do over a random projection of the same shape. If the
+    # pretrained arm does not beat it, TimesFM's pretraining is contributing nothing here.
+    #
+    # Not searched, deliberately: it is an experiment arm, not a hyperparameter.
+    pretrained: bool = True
+    # Makes the control reproducible, so head-only checkpoints stay valid for that arm too.
+    # Ignored when pretrained is True. One seed is one draw -- repeat at 2-3 before reading
+    # much into a small gap.
+    backbone_seed: int = 0
     head_hidden: int = 256       # bottleneck width of the trainable MLP
     # Linear layers in the head. 3 is in -> hidden -> hidden -> out; 1 is a plain linear probe
     # (head_hidden then does nothing), which is the standard baseline for a frozen backbone.

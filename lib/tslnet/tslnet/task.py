@@ -88,6 +88,8 @@ class TSLNetTask(Task):
         model = TSLNet(
             channels=m.channels,
             checkpoint=m.checkpoint,
+            pretrained=m.pretrained,
+            backbone_seed=m.backbone_seed,
             head_hidden=m.head_hidden,
             head_layers=m.head_layers,
             dropout=m.dropout,
@@ -107,8 +109,9 @@ class TSLNetTask(Task):
 
         trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
         frozen = sum(p.numel() for p in model.parameters() if not p.requires_grad)
+        arm = "pretrained" if m.pretrained else f"RANDOM CONTROL seed {m.backbone_seed}"
         print(f"TSLNet: {trainable:,} trainable head params over {frozen:,} frozen "
-              f"backbone params ({m.checkpoint})")
+              f"backbone params ({m.checkpoint}, {arm})")
         return model
 
     def build_loss(self, config):
