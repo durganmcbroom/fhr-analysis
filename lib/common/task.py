@@ -18,7 +18,7 @@ it just cannot be searched, and says so clearly instead of failing somewhere obs
 """
 
 from abc import ABC, abstractmethod
-from typing import Callable
+from typing import Callable, Optional
 
 from torch import nn
 from torch.utils.data import DataLoader
@@ -42,6 +42,13 @@ class Task(ABC):
     #: enforced by common.phases.optimize on each trial rather than trusted to ``suggest``:
     #: a guard written inside ``suggest`` is removed by the very edit that would break it.
     frozen_fields: tuple = ()
+
+    #: Dotted config keys whose value changes the *scale* of the training loss, so two trials
+    #: that differ in them cannot be ranked against each other by loss -- the smaller-loss one
+    #: may simply have picked the easier units. Declaring one here lets the optimize phase
+    #: refuse to rank on loss when the search moves it, which is the difference between a
+    #: search that finds a better model and one that finds a cheaper yardstick.
+    loss_scale_fields: tuple = ()
 
     #: Extra environment variables that override device selection, most specific first.
     device_env_vars: tuple = ()
@@ -115,6 +122,34 @@ class Task(ABC):
         raise NotImplementedError(
             f"task {self.name!r} defines no search space; the optimize phase needs "
             "searched_fields()")
+
+    def make_val_scorer(self, config) -> Optional[Callable[[], object]]:
+        """A factory building a fresh ``common.metrics.HRCorrelation`` per validation pass, or
+        None for tasks with no beat notion (the default).
+
+        Whatever this returns is measured on *every* validation pass, logged and plotted, so it
+        must stay cheap -- the FUNet scorer costs ~40 ms per epoch, i.e. seconds across a whole
+        run. It never changes how a model trains: the checkpoint, early stopping and the LR
+        schedule all key off validation loss regardless. It only becomes decisive when a search
+        is asked to rank trials by it (``optimize --objective hr_corr``).
+        """
+        return None
+
+    def baseline_params(self, base) -> Optional[dict]:
+        """The ``suggest`` parameters that reproduce ``base``, or None to skip anchoring.
+
+        The optimize phase enqueues this as the study's first trial, which makes the search
+        answer the only question that matters -- "can it beat the config I already have?" --
+        instead of reporting a winner nobody has compared against. It also hands TPE one
+        known-good point to model from rather than starting cold.
+
+        Must name every parameter ``suggest`` requests, including derived ones (a depth plus
+        its per-level dilations, a ratio rather than the absolute value it scales). The
+        optimize phase checks that by rebuilding the config from these params, so a parameter
+        added to ``suggest`` and forgotten here fails loudly instead of leaving the "baseline"
+        trial quietly sampling that dimension at random.
+        """
+        return None
 
     @property
     def supports_optimize(self) -> bool:

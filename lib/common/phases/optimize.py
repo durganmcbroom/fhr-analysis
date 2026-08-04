@@ -52,6 +52,13 @@ STUDY_DB = "study.db"
 # could win the search); a trailing mean is a stabler estimate of where a config settled.
 SCORE_WINDOW = 5
 
+#: What a trial can be scored by (``--objective``). 'loss' is the trailing-mean validation
+#: loss; 'hr_corr' is the HR-trace correlation at the epoch validation loss selected, which is
+#: the checkpoint the trial would actually hand you. A search-phase choice, so it lives on the
+#: CLI next to --trials/--epochs/--seed rather than in the config: it changes how trials are
+#: ranked, never how any individual model trains.
+OBJECTIVES = ("loss", "hr_corr")
+
 
 # --------------------------------------------------------------------------------------
 # Objective
@@ -101,8 +108,55 @@ def check_frozen(task, base, config, searched: dict) -> None:
                 f"{type(task).__name__}.frozen_fields.")
 
 
-def objective(trial: optuna.Trial, task, base, base_config_path: str,
-              out_dir: str, epochs: Optional[int] = None) -> float:
+def _trial_value(objective_name: str, result, val_history: list) -> tuple:
+    """The number Optuna minimises for a finished trial, plus a line describing it.
+
+    'hr_corr' scores the trial by the HR correlation *at the epoch validation loss selected* --
+    the checkpoint the trial would actually hand you -- negated, because the study minimises.
+    'loss' uses the trailing mean of the validation loss, stabler than its single best epoch on
+    a noisy curve (see SCORE_WINDOW).
+    """
+    if objective_name == "hr_corr":
+        score = result.best_score
+        if score is None:
+            raise optuna.TrialPruned(
+                "objective is 'hr_corr' but no HR correlation was measured -- this task "
+                "provides no scorer (Task.make_val_scorer), or every epoch was cut short")
+        return -score.mean, f"HR r {score} @ epoch {result.best_epoch + 1}"
+
+    window = val_history[-SCORE_WINDOW:]
+    value = sum(window) / len(window) if window else float("inf")
+    return value, f"val loss {value:.6f} (mean of last {len(window)} epochs)"
+
+
+def check_loss_comparable(task, base, config, objective_name: str) -> None:
+    """Refuse to rank trials by loss when the search moves a loss-scale field.
+
+    ``Task.loss_scale_fields`` names the settings that change what the loss measures rather
+    than how well the model does -- FUNet's spectrogram geometry, which sets the frame grid the
+    target comb is built on. Comparing losses across trials that differ there ranks the units,
+    not the models, and it is not a subtle effect: an all-zeros FUNet scores 0.116 at hop 64
+    against 0.139 at hop 256.
+
+    Raised rather than pruned, and on the first trial that moves the field, because it is a
+    misconfigured run: every trial after it would be just as meaningless, and the failure it
+    prevents is silent -- a search that finishes cleanly and reports a winner that is worse.
+    """
+    if objective_name != "loss":
+        return
+    moved = [key for key in task.loss_scale_fields
+             if _dotted(config, key) != _dotted(base, key)]
+    if moved:
+        raise RuntimeError(
+            f"{task.name}.suggest varies {moved}, which change the scale of the loss, but this "
+            f"search is ranking trials by loss -- so it would reward whichever trial picked the "
+            f"cheapest units rather than the best model. Re-run with '--objective hr_corr' "
+            f"(scale-free: it scores BPM traces in bpm against seconds), or stop searching "
+            f"{moved} by adding them to {type(task).__name__}.frozen_fields.")
+
+
+def objective(trial: optuna.Trial, task, base, base_config_path: str, out_dir: str,
+              epochs: Optional[int] = None, objective_name: str = "loss") -> float:
     """Train one sampled config, persist it as the latest (and best, if it wins), and return
     its best validation loss (lower is better)."""
     config = task.suggest(trial, base)
@@ -110,6 +164,7 @@ def objective(trial: optuna.Trial, task, base, base_config_path: str,
     # on trial 1 rather than after a night of runs that quietly swept it.
     searched = task.searched_fields(config)
     check_frozen(task, base, config, searched)
+    check_loss_comparable(task, base, config, objective_name)
 
     try:
         task.check_feasible(config)
@@ -124,8 +179,11 @@ def objective(trial: optuna.Trial, task, base, base_config_path: str,
 
     def on_epoch(epoch: int, val_loss: float) -> None:
         val_history.append(val_loss)
-        # Report the trailing mean, not the raw epoch loss, so a single noisy epoch neither
-        # trips the pruner nor (below) decides the trial's score.
+        # Pruning always watches the validation loss, even when the trial is *scored* on HR
+        # correlation: loss is dense and informative from epoch 1, whereas a model that has not
+        # yet learned to produce beats scores exactly 0 correlation for many epochs, which
+        # gives the pruner a flat line it cannot rank. Report the trailing mean, not the raw
+        # epoch loss, so a single noisy epoch does not trip it.
         window = val_history[-SCORE_WINDOW:]
         trial.report(sum(window) / len(window), epoch)
         if trial.should_prune():
@@ -137,20 +195,17 @@ def objective(trial: optuna.Trial, task, base, base_config_path: str,
     # temp file for any trial that doesn't promote it.
     trial_model = os.path.join(out_dir, f".trial-{trial.number}.pt")
     try:
-        # run_training returns the single best epoch; we score on the trailing mean instead
-        # (see SCORE_WINDOW), so ignore its return and derive the score from the history.
-        run_training(task, config, on_epoch=on_epoch, save_artifacts=False,
-                     best_model_path=trial_model)
-        window = val_history[-SCORE_WINDOW:]
-        loss = sum(window) / len(window) if window else float("inf")
+        result = run_training(task, config, on_epoch=on_epoch, save_artifacts=False,
+                              best_model_path=trial_model)
+        value, note = _trial_value(objective_name, result, val_history)
 
         os.replace(trial_model, os.path.join(out_dir, LATEST_MODEL))
         write_config(base_config_path, os.path.join(out_dir, LATEST_CONFIG), searched)
-        if loss < _best_value_so_far(trial.study):
+        if value < _best_value_so_far(trial.study):
             atomic_copy(os.path.join(out_dir, LATEST_MODEL), os.path.join(out_dir, BEST_MODEL))
             write_config(base_config_path, os.path.join(out_dir, BEST_CONFIG), searched)
-            print(f"  new best: {loss:.6f} -> saved {BEST_CONFIG} + {BEST_MODEL}")
-        return loss
+            print(f"  new best: {note} -> saved {BEST_CONFIG} + {BEST_MODEL}")
+        return value
     except RuntimeError as e:
         # One oversized model shouldn't sink the whole study -- treat OOM as an unfit trial.
         if "out of memory" in str(e).lower():
@@ -173,6 +228,35 @@ def config_from_params(task, base, params: dict):
 # Study driver / CLI
 # --------------------------------------------------------------------------------------
 
+def _enqueue_baseline(study: optuna.Study, task, base) -> None:
+    """Queue the base config itself as a trial, so the search has an anchor to beat.
+
+    Without this the study reports whichever sampled config won *among the sampled configs*,
+    with no evidence it beats the hand-tuned one it started from -- exactly how funet-v33
+    returned a "best" model that was worse in practice. Running the base config under the same
+    objective makes the comparison direct and puts a known-good point in TPE's model.
+
+    ``skip_if_exists`` keeps a resumed study from re-running the anchor on every restart.
+    """
+    params = task.baseline_params(base)
+    if params is None:
+        return
+
+    # Rebuild the config from these params before queueing: FixedTrial raises on any parameter
+    # `suggest` asks for that `baseline_params` omits, so drift between the two surfaces here
+    # rather than as an "anchor" trial that silently sampled the missing dimensions at random.
+    try:
+        config_from_params(task, base, params)
+    except Exception as e:
+        raise RuntimeError(
+            f"{type(task).__name__}.baseline_params does not reproduce the base config under "
+            f"suggest(): {e}. Every parameter suggest() requests must appear there.") from None
+
+    study.enqueue_trial(params, skip_if_exists=True)
+    print("Base config queued as the anchor trial -- the score every other trial must beat "
+          "(skipped if this study already ran it).")
+
+
 def parse_args(task, argv):
     p = argparse.ArgumentParser(
         prog=f"{task.name} optimize",
@@ -185,6 +269,10 @@ def parse_args(task, argv):
                    help="stop the search after this many seconds (default: no limit)")
     p.add_argument("--epochs", type=int, default=None,
                    help="epochs per trial (default: the config's epochs); fewer = faster search")
+    p.add_argument("--objective", choices=OBJECTIVES, default="loss",
+                   help="what to rank trials by: 'loss' = trailing-mean validation loss "
+                        "(default); 'hr_corr' = HR-trace correlation at the loss-selected "
+                        "epoch, maximised. Does not change how any model trains.")
     p.add_argument("--out-dir", default=None,
                    help="dir for best/latest config+model and the study db (default: model_dir)")
     p.add_argument("--storage", default=None,
@@ -216,6 +304,9 @@ def main(task, argv=None) -> None:
     print(f"Output dir:  '{out_dir}' (best/latest config+model, study db)")
     print(f"Storage:     {storage} (resumes if it already exists)")
     print(f"Trials: {args.trials}, epochs/trial: {args.epochs or base.train.epochs}")
+    print(f"Objective: {args.objective}"
+          f"{' (maximised)' if args.objective == 'hr_corr' else ' (minimised)'}"
+          " -- within a trial the checkpoint is still selected by validation loss")
 
     study = optuna.create_study(
         direction="minimize",
@@ -232,8 +323,11 @@ def main(task, argv=None) -> None:
         load_if_exists=True,
     )
 
+    _enqueue_baseline(study, task, base)
+
     study.optimize(
-        lambda trial: objective(trial, task, base, args.config, out_dir, epochs=args.epochs),
+        lambda trial: objective(trial, task, base, args.config, out_dir,
+                                epochs=args.epochs, objective_name=args.objective),
         n_trials=args.trials,
         timeout=args.timeout,
     )
@@ -241,7 +335,11 @@ def main(task, argv=None) -> None:
     print("\n===== Search complete =====")
     print(f"Completed trials: {len(study.get_trials(states=(optuna.trial.TrialState.COMPLETE,)))}"
           f" / {len(study.trials)}")
-    print(f"Best validation loss: {study.best_value:.6f}")
+    # study.best_value is what optuna minimised, which for hr_corr is the negated correlation.
+    if args.objective == "hr_corr":
+        print(f"Best HR correlation: {-study.best_value:.4f}")
+    else:
+        print(f"Best validation loss: {study.best_value:.6f}")
     print("Best hyperparameters:")
     for key, value in sorted(study.best_params.items()):
         print(f"  {key}: {value}")

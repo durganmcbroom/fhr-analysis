@@ -10,13 +10,14 @@ from typing import Callable, Optional
 import torch
 
 from common.device import pick_device
-from common.engine import fit
+from common.engine import FitResult, fit
 from common.io import write_config
 
 BEST_MODEL = "model_best.pt"
 LAST_MODEL = "model_last.pt"
 CURVES = "training_curves.png"
 CONFIG = "config.yaml"
+
 
 
 def run_training(
@@ -26,8 +27,8 @@ def run_training(
         on_epoch: Optional[Callable[[int, float], None]] = None,
         save_artifacts: bool = True,
         best_model_path: Optional[str] = None,
-) -> float:
-    """Build the model/data/optimiser from ``config``, train, and return the best val loss.
+) -> FitResult:
+    """Build the model/data/optimiser from ``config``, train, and return the run's FitResult.
 
     ``save_artifacts`` writes the usual best/last checkpoints, the archived config and the
     curves plot under ``config.model_dir``; the search turns it off and instead passes
@@ -52,6 +53,11 @@ def run_training(
     val_dl = task.make_val_loader(config)
     optimiser = task.build_optimizer(config, model)
     scheduler = task.build_scheduler(config, optimiser)
+    # Measured every epoch whenever the task offers it -- it costs milliseconds and only adds a
+    # log line and a curve. It never influences the run: the checkpoint, early stopping and the
+    # LR schedule all still key off validation loss. The optimize phase is the only place this
+    # number decides anything (see its --objective flag).
+    make_scorer = task.make_val_scorer(config)
 
     # A full run saves best/last/config/curves under model_dir; the search saves only the
     # best-epoch checkpoint at the path it hands us. atomic_save creates parent dirs.
@@ -80,6 +86,7 @@ def run_training(
         save_config=save_config,
         early_stop_patience=config.train.early_stop_patience,
         on_epoch=on_epoch,
+        make_scorer=make_scorer,
     )
 
 

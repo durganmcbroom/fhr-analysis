@@ -17,4 +17,9 @@ chmod a+x setup.sh
 chmod a+x lib/funet/generate_training_snippets.sh
 #lib/funet/generate_training_snippets.sh
 
-poetry run funet-optimize lib/funet/fetal-config.yaml --trials=75
+# --objective hr_corr ranks trials by the Pearson r between the predicted and target BPM
+# traces at the epoch validation loss selected, instead of by the loss itself. Without it the
+# search ranks on validation loss (the default). Either way each trial still picks its own
+# checkpoint by validation loss, and the per-epoch "HR r" is logged regardless -- so the log
+# shows whether loss and r agree even on a plain loss-ranked run.
+poetry run funet-optimize lib/funet/fetal-config.yaml --trials=100 --objective hr_corr

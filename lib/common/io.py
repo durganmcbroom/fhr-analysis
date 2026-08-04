@@ -63,8 +63,15 @@ def plot_training_curves(
         train_losses: List[Optional[float]],
         val_losses: List[Optional[float]],
         out_path: str,
+        scores: Optional[List[Optional[float]]] = None,
 ) -> None:
     """Save a train/validation loss-vs-epoch plot to ``out_path`` (PNG).
+
+    ``scores`` (mean HR correlation per epoch) is drawn on a right-hand axis when given. It is
+    plotted but does not select the checkpoint -- loss does -- so the marked epoch is the
+    lowest-loss one, and the R reading at that epoch is the number reported to the search.
+    Seeing both curves is the point: if R peaks somewhere far from the loss minimum, selecting
+    on loss is leaving something on the table.
 
     Imports matplotlib lazily and forces the headless Agg backend, so it works when training
     runs without a display (remote box, CI, nohup, ...).
@@ -80,21 +87,36 @@ def plot_training_curves(
     val = [float("nan") if v is None else v for v in val_losses]
 
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(epochs, train, label="Train", color="#1f77b4")
-    ax.plot(epochs, val, label="Validation", color="#d62728")
+    lines = ax.plot(epochs, train, label="Train", color="#1f77b4")
+    lines += ax.plot(epochs, val, label="Validation", color="#d62728")
 
     # Mark the lowest validation loss (the checkpoint saved as model_best.pt).
     finite = [(e, v) for e, v in zip(epochs, val) if v == v]  # v == v drops nan
+    best_e = None
     if finite:
         best_e, best_v = min(finite, key=lambda ev: ev[1])
         ax.scatter([best_e], [best_v], color="#d62728", zorder=5)
         ax.annotate(f"best: {best_v:.4f} @ epoch {best_e}", (best_e, best_v),
                     textcoords="offset points", xytext=(0, 9), ha="center", fontsize=8)
 
+    if scores is not None and any(s is not None for s in scores):
+        r = [float("nan") if s is None else s for s in scores]
+        ax2 = ax.twinx()
+        lines += ax2.plot(epochs, r, label="HR corr (r)", color="#2ca02c", alpha=0.85)
+        ax2.set_ylabel("HR correlation (r)")
+        ax2.set_ylim(-1.05, 1.05)
+        # Annotate R at the *selected* epoch, not at R's own maximum: that is the value the
+        # search receives, and the gap to the curve's peak shows what selection cost.
+        if best_e is not None and r[best_e - 1] == r[best_e - 1]:
+            ax2.scatter([best_e], [r[best_e - 1]], color="#2ca02c", zorder=5)
+            ax2.annotate(f"r: {r[best_e - 1]:.3f}", (best_e, r[best_e - 1]),
+                         textcoords="offset points", xytext=(0, -14), ha="center",
+                         fontsize=8, color="#2ca02c")
+
     ax.set_xlabel("Epoch")
     ax.set_ylabel("Loss")
     ax.set_title("Training curves")
-    ax.legend()
+    ax.legend(lines, [l.get_label() for l in lines])
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     # Force PNG rather than letting savefig infer from the extension: atomic_save hands this a

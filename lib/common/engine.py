@@ -9,6 +9,7 @@ the optimize phase, is the objective the search maximises against), which makes 
 validation set -- not a test set.
 """
 
+from dataclasses import dataclass, field
 from typing import Callable, List, Optional
 
 import torch
@@ -16,6 +17,25 @@ from torch import nn, optim
 from torch.utils.data import DataLoader
 
 from common.io import atomic_save, plot_training_curves
+from common.metrics import HRScore
+
+
+@dataclass
+class FitResult:
+    """What a training run produced, for the caller to select or score on.
+
+    ``best_val_loss`` is the selection criterion (the epoch saved as model_best.pt).
+    ``best_score`` is the HR-correlation *at that same epoch* -- not the best score seen, which
+    would describe a checkpoint nobody kept. Scoring the val-loss-selected epoch is what makes
+    the number match the model you would actually deploy.
+    """
+
+    best_val_loss: float
+    best_epoch: int
+    best_score: Optional[HRScore] = None
+    train_losses: List[float] = field(default_factory=list)
+    val_losses: List[float] = field(default_factory=list)
+    scores: List[Optional[HRScore]] = field(default_factory=list)
 
 
 def train_one_epoch(
@@ -63,8 +83,13 @@ def evaluate(
         device: torch.device,
         dataloader: DataLoader,
         loss_fn: Callable,
+        scorer=None,
 ) -> float:
-    """Mean loss over ``dataloader`` with grads disabled."""
+    """Mean loss over ``dataloader`` with grads disabled.
+
+    ``scorer``, when given (a ``common.metrics.HRCorrelation``), is fed every batch as it goes
+    by, so the HR-correlation costs one shared forward pass rather than a second sweep.
+    """
     model.to(device)
     model.eval()
     total_loss = 0.0
@@ -76,6 +101,8 @@ def evaluate(
 
             output = model(inpt)
             total_loss += loss_fn(output, target).item()
+            if scorer is not None:
+                scorer.update(output, target)
 
     return total_loss / len(dataloader)
 
@@ -96,8 +123,14 @@ def fit(
         save_config: Optional[Callable[[], None]] = None,
         early_stop_patience: Optional[int] = None,
         on_epoch: Optional[Callable[[int, float], None]] = None,
-) -> float:
-    """Train for ``epochs`` and return the best (lowest) validation loss seen.
+        make_scorer: Optional[Callable[[], object]] = None,
+) -> FitResult:
+    """Train for ``epochs`` and return a :class:`FitResult`.
+
+    ``make_scorer`` builds a fresh ``common.metrics.HRCorrelation`` per epoch (fresh because
+    one instance accumulates one pass over the split). The score is measured every epoch so the
+    curve can be plotted, but it does **not** select the checkpoint -- validation loss does,
+    unchanged. What the caller gets back is the score at the val-loss-selected epoch.
 
     Each ``*_path`` is saved only when given, and saved atomically, so an interrupted run
     never corrupts it. The best-epoch checkpoint is rewritten every time the validation loss
@@ -118,20 +151,28 @@ def fit(
     never imports optuna.
     """
     lowest_loss = float("inf")
+    best_epoch = -1
+    best_score: Optional[HRScore] = None
     epochs_since_improvement = 0
     train_losses: List[float] = []
     val_losses: List[float] = []
+    scores: List[Optional[HRScore]] = []
 
     for epoch in range(epochs):
         train_loss, max_grad_norm = train_one_epoch(
             model, train_data, optimiser, loss_fn, device, clip)
-        val_loss = evaluate(model, device, val_data, loss_fn)
+        scorer = make_scorer() if make_scorer is not None else None
+        val_loss = evaluate(model, device, val_data, loss_fn, scorer)
+        score = scorer.result() if scorer is not None else None
 
         train_losses.append(train_loss)
         val_losses.append(val_loss)
+        scores.append(score)
 
         if val_loss < lowest_loss:
             lowest_loss = val_loss
+            best_epoch = epoch
+            best_score = score
             epochs_since_improvement = 0
             if best_model_path is not None:
                 atomic_save(lambda p: torch.save(model.state_dict(), p), best_model_path)
@@ -147,8 +188,9 @@ def fit(
 
         grad_note = '' if max_grad_norm is None else \
             f', Max grad norm (pre-clip): {max_grad_norm:.4f}'
+        score_note = '' if score is None else f', HR r: {score}'
         print(f'[{epoch+1}|{epochs}] Train loss: {train_loss:.6f}, '
-              f'Val loss: {val_loss:.6f}{grad_note}{lr_note}')
+              f'Val loss: {val_loss:.6f}{score_note}{grad_note}{lr_note}')
 
         # After the epoch is fully logged so a pruning exception can't skip the print above.
         if on_epoch is not None:
@@ -163,7 +205,17 @@ def fit(
         if save_config is not None:
             save_config()
     if curves_path is not None:
-        atomic_save(lambda p: plot_training_curves(train_losses, val_losses, p), curves_path)
+        r_values = [None if s is None else s.mean for s in scores]
+        atomic_save(
+            lambda p: plot_training_curves(train_losses, val_losses, p, scores=r_values),
+            curves_path)
         print(f'Saved training curves to {curves_path}')
 
-    return lowest_loss
+    return FitResult(
+        best_val_loss=lowest_loss,
+        best_epoch=best_epoch,
+        best_score=best_score,
+        train_losses=train_losses,
+        val_losses=val_losses,
+        scores=scores,
+    )

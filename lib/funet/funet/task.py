@@ -4,9 +4,12 @@ import copy
 
 from torch import nn
 
+from common.audio import SAMPLE_RATE
 from common.errors import InfeasibleConfig
 from common.losses import CorrAmpLoss, CorrelationLoss, MSELoss, SNRLoss
+from common.metrics import HRCorrelation
 from common.optim import OPTIMIZERS
+from common.phases.inference import activity_postprocess
 from common.task import Task
 
 from funet.config import FUNetConfig
@@ -38,7 +41,20 @@ class FUNetTask(Task):
     # wander it would trade a known 8x compute saving for trials that differ in what they can
     # see. Both are inherited from the base config verbatim; common.phases.optimize enforces
     # it per trial (see Task.frozen_fields).
+    #
     frozen_fields = ("model.freq_crop_hz", "model.disable_freq_crop")
+
+    # n_fft/hop_length are searched, but they change what the loss *means*, not just the model:
+    # data.__getitem__ builds the target comb on the spectrogram's own frame grid, so halving
+    # the hop doubles the frame count and spreads the same beats over more (mostly-empty)
+    # frames -- mechanically lowering the MSE. Measured on real snippets, an all-zeros model
+    # scores 0.116 at hop 64 but 0.139 at hop 256: a 20% "win" for any trial that merely shrinks
+    # the hop. The funet-v33 search took exactly that (all 7 top trials chose hop 64, the
+    # minimum) and returned a config that beat the hand-tuned one on paper while being worse in
+    # practice. Ranking by hr_corr removes the loophole -- BPM traces are in bpm against
+    # seconds, so the score does not move with the frame rate -- and declaring the fields here
+    # makes the optimize phase enforce that pairing instead of trusting anyone to remember it.
+    loss_scale_fields = ("model.n_fft", "model.hop_length")
 
     def head_for(self, config) -> str:
         """Which output head this config's loss trains."""
@@ -96,6 +112,18 @@ class FUNetTask(Task):
                 f"depth {len(config.model.dilations)} needs freq and time >= {divisor}, but "
                 f"this config yields freq={freq_bins}, time={time_frames}{band}")
 
+    def make_val_scorer(self, config):
+        """Score validation by HR-trace correlation as well as loss.
+
+        The frame rate follows from the frozen hop: one output frame per ``hop_length`` input
+        samples. ``activity_postprocess`` is the same readout inference uses, so the beats are
+        picked out of exactly the envelope a deployed model would produce -- a log-prob head
+        has to be exp'd before its peaks mean anything.
+        """
+        frame_hz = SAMPLE_RATE / config.model.hop_length
+        postprocess = activity_postprocess(config.train.loss)
+        return lambda: HRCorrelation(frame_hz=frame_hz, postprocess=postprocess)
+
     # ------------------------------------------------------- optimize phase only
     def suggest(self, trial, base):
         """Return a copy of ``base`` with the searched hyperparameters replaced for this trial.
@@ -122,16 +150,20 @@ class FUNetTask(Task):
         model.dropout = trial.suggest_float("dropout", 0.0, 0.5)
 
         # -- Spectrogram (part of the input contract, hence model config) --
+        # Only rankable by an objective that does not move with the frame rate; see
+        # loss_scale_fields, which the optimize phase enforces.
         model.n_fft = trial.suggest_categorical("n_fft", [512, 1024, 2048])
         model.hop_length = trial.suggest_categorical("hop_length", [64, 128, 256, 512])
-        # freq_crop_hz / disable_freq_crop are frozen (see frozen_fields) -- never assign them
+        # freq_crop_hz / disable_freq_crop stay frozen (see frozen_fields) -- never assign them
         # here. Being stated in Hz, the band needs no per-trial adjustment anyway: whatever
         # n_fft this trial drew resolves it to the right rows (see freq_crop_bins).
 
         # -- Optimisation --
         train.optimizer = trial.suggest_categorical("optimizer", list(OPTIMIZERS))
         train.learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-1, log=True)
-        train.weight_decay = trial.suggest_float("weight_decay", 1e-6, 1e-1, log=True)
+        # Upper bound is 1.0, not 1e-1: the hand-tuned config runs weight_decay 0.2, so a 1e-1
+        # ceiling put the best known setting outside the search space entirely.
+        train.weight_decay = trial.suggest_float("weight_decay", 1e-6, 1.0, log=True)
         # min_lr is the cosine floor, so it is only meaningful below the peak LR. Sampling it
         # as a fraction of learning_rate guarantees min_lr < learning_rate for every trial
         # (sampling the two independently could put the floor above the peak). Only used when
@@ -144,6 +176,29 @@ class FUNetTask(Task):
 
         return config
 
+    def baseline_params(self, base) -> dict:
+        """The params reproducing ``base`` under ``suggest``, so the hand-tuned config runs as
+        the study's anchor trial. Mirrors ``suggest`` -- keep the two together."""
+        model, train = base.model, base.train
+        return {
+            "depth": len(model.dilations),
+            **{f"dilation_l{i}": d for i, d in enumerate(model.dilations)},
+            "bottleneck_dilation": model.bottleneck_dilation,
+            "bottleneck_convs": model.bottleneck_convs,
+            "codec_convolutions": model.codec_convolutions,
+            "base_channels": model.base_channels,
+            "dropout": model.dropout,
+            "n_fft": model.n_fft,
+            "hop_length": model.hop_length,
+            "optimizer": train.optimizer,
+            "learning_rate": train.learning_rate,
+            "weight_decay": train.weight_decay,
+            # suggest samples the cosine floor as a fraction of the peak LR, so invert that.
+            "min_lr_frac": train.min_lr / train.learning_rate,
+            "freq_mask": train.freq_mask,
+            "time_mask": train.time_mask,
+        }
+
     def searched_fields(self, config) -> dict:
         """The searched fields of ``config``, shaped like the config YAML. Mirrors the set
         ``suggest`` assigns -- keep the two together."""
@@ -155,6 +210,8 @@ class FUNetTask(Task):
                 "codec_convolutions": config.model.codec_convolutions,
                 "base_channels": config.model.base_channels,
                 "dropout": config.model.dropout,
+                # Must be emitted: they are the input contract, so a best-config.yaml carrying
+                # the base geometry would not load the checkpoint trained beside it.
                 "n_fft": config.model.n_fft,
                 "hop_length": config.model.hop_length,
             },
