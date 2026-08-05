@@ -33,7 +33,7 @@ PATIENT = "PT12_2"
 # PATIENT = "session-02"
 # PATIENT = "band_durgan_1"
 WINDOW = 0, 340
-WINDOW = 0, 30
+# WINDOW = 0, 30
 # WINDOW = 10, 1810
 # WINDOW = 220, 340
 # WINDOW = 60, 70
@@ -237,10 +237,9 @@ def main():
     #     PATIENT, WINDOW, DATA_DIR,
     # )
     run_funet_pipeline(
-        PATIENT,  # + f"/{fibers[0]}:{fibers[1]}",
+        PATIENT,
         WINDOW,
         DATA_DIR,
-        # fibers = fibers
     )
     run_tslnet_pipeline(
         PATIENT,

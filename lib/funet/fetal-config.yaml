@@ -39,7 +39,7 @@ train:
   # inference path: upsample, then v2_beat_detector) and draw it on the training curves.
   # Diagnostic only -- the checkpoint is still chosen by validation loss -- and costs ~17% wall
   # clock, so it is off by default. `funet-optimize --objective hr_corr` enables it by itself.
-  measure_hr_corr: false
+  measure_hr_corr: true
   # corr_amp only (ignored by other losses): d' rewards beats standing clear of a quiet floor.
   amp_weight: 0.1           # weight on the d' peak-contrast term; 0 = pure correlation (try 0.01-0.1)
   amp_beat_threshold: 0.1   # frac of per-item target peak above which a frame counts as a beat
