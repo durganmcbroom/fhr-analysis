@@ -152,8 +152,11 @@ class HRCorrelation:
         self._values: List[float] = []
         self._degenerate = 0
 
-    def _beats(self, frames: np.ndarray) -> np.ndarray:
-        """Frame-rate activity -> beat times, along the inference path."""
+    def beats(self, frames: np.ndarray) -> np.ndarray:
+        """Frame-rate activity -> beat times, along the inference path.
+
+        Public so a diagnostic can reuse the exact path the score is built from instead of
+        reimplementing it (see common.diagnostics)."""
         native = frames_to_native(
             frames,
             hop_length=self.hop_length,
@@ -165,11 +168,11 @@ class HRCorrelation:
 
     def _ref_beats(self, target: np.ndarray) -> np.ndarray:
         if self.reference_beats is None:
-            return self._beats(target)
+            return self.beats(target)
         key = target.tobytes()
         cached = self.reference_beats.get(key)
         if cached is None:
-            cached = self._beats(target)
+            cached = self.beats(target)
             self.reference_beats[key] = cached
         return cached
 
@@ -182,7 +185,7 @@ class HRCorrelation:
 
         for pred_i, target_i in zip(out, tgt):
             value = trace_correlation(
-                self._beats(pred_i), self._ref_beats(target_i), self.bpm_range)
+                self.beats(pred_i), self._ref_beats(target_i), self.bpm_range)
             if value is None:
                 self._degenerate += 1
                 value = 0.0

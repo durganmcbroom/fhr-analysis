@@ -16,5 +16,8 @@ chmod a+x setup.sh
 chmod a+x lib/funet/generate_training_snippets.sh
 #lib/funet/generate_training_snippets.sh
 
-poetry run funet-train lib/funet/fetal-config.yaml
+# --diagnostics writes snippet_diagnostics.png next to the checkpoints: the best model's
+# activity against the target, and the BPM traces those produce, for a few validation
+# snippets. Drop the flag to skip it (see common/diagnostics.py).
+poetry run funet-train lib/funet/fetal-config.yaml --diagnostics
 #python3 lib/funet/src/tune.py lib/funet/fetal-config.yaml --trials=75
