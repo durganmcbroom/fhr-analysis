@@ -4,6 +4,7 @@ from typing import Tuple
 
 import numpy as np
 from matplotlib import pyplot as plt
+from matplotlib.colors import to_rgba
 from scipy.ndimage import uniform_filter1d
 
 from analyze.hr import fHROutput, fHRMultiOutput
@@ -17,11 +18,18 @@ from analyze.constants import FETAL_BPM_RANGE
 # n_rows subplot-heights.
 # ---------------------------------------------------------------------------
 FIG_ASPECT = 16.0 / 6.0  # per-subplot width:height
+ROW_HEIGHT = 8.0 / FIG_ASPECT  # height of one subplot at the default width
 
 
-def _figsize(n_rows: int, width: float = 8.0) -> Tuple[float, float]:
-    """Figsize so each of ``n_rows`` stacked subplots is 4:3 (width:height)."""
-    return width, n_rows * width / FIG_ASPECT
+def _figsize(n_rows: int, width: float = 8.0,
+             row_height: float | None = None) -> Tuple[float, float]:
+    """Figsize so each of ``n_rows`` stacked subplots is 4:3 (width:height).
+
+    ``row_height`` pins each row's height instead of deriving it from the width, so a long
+    recording can be stretched along the time axis without the figure growing as tall as
+    it is wide.
+    """
+    return width, n_rows * (row_height if row_height is not None else width / FIG_ASPECT)
 
 
 # ---------------------------------------------------------------------------
@@ -169,29 +177,43 @@ def _plot_hr_axis_multi(
         sot_label: str,
         title: str,
         band: Tuple[float, float],
+        marker_size: float = 3.0,
 ) -> None:
     """Like ``_plot_hr_axis``, but overlays one trace per entry of ``pred_beats``
     (name -> beat times) instead of a single prediction."""
+    # Drop the SOT's own colour from the palette: past four overlaid traces tab10 reaches
+    # tab:red, and a prediction sharing the reference's colour is unreadable.
     cmap = plt.get_cmap("tab10")
+    sot_rgba = to_rgba(sot_color)
+    palette = [c for c in (cmap(i) for i in range(10)) if c != sot_rgba] or [cmap(i) for i in range(10)]
     traces = [(name, *_current_hr_func()(beats, band)) for name, beats in pred_beats.items()]
+
+    # marker_size <= 0 draws lines only. Once enough traces overlap, per-beat markers stop
+    # separating the series and just thicken them into a band.
+    ref_marker = 'o' if marker_size > 0 else None
+    trace_marker = 's' if marker_size > 0 else None
 
     if sot_beats is not None:
         sot_t, sot_y = _current_hr_func()(sot_beats, band)
         if sot_t.size:
             med = float(np.median(sot_y))
-            ax.plot(sot_t, sot_y, color=sot_color, lw=1.4, marker='o', ms=3,
+            ax.plot(sot_t, sot_y, color=sot_color, lw=1.4, marker=ref_marker, ms=marker_size,
                     alpha=0.9, label=f'{sot_label} (median {med:.1f})')
 
     for i, (name, t, y) in enumerate(traces):
         if t.size:
             med = float(np.median(y))
-            ax.plot(t, y, color=cmap(i % 10), lw=1.1, marker='s', ms=3,
-                    alpha=0.8, label=f'{name} (median {med:.1f})')
+            ax.plot(t, y, color=palette[i % len(palette)], lw=1.1, marker=trace_marker,
+                    ms=marker_size, alpha=0.8, label=f'{name} (median {med:.1f})')
 
     # Pairwise Pearson R between the overlaid HR traces -- how much the sources
     # agree beat-to-beat. Each trace is sampled at its own beat times, so resample
     # them all onto one uniform grid over their overlapping span before correlating.
+    # The reference joins as an ordinary series, so each source's R against it falls
+    # out of the same pass -- that is the number that ranks the sources.
     usable = [(n, t, y) for (n, t, y) in traces if t.size >= 2]
+    if sot_beats is not None and sot_t.size >= 2:
+        usable.append((sot_label, sot_t, sot_y))
     pair_r = {}
     if len(usable) >= 2:
         lo = max(float(t[0]) for (_, t, _) in usable)
@@ -206,15 +228,31 @@ def _plot_hr_axis_multi(
 
     if pair_r:
         mean_r = float(np.mean(list(pair_r.values())))
-        lines = [f"R (mean) = {mean_r:.2f}"]
-        if len(pair_r) <= 3:  # list each pair when there are few; else just the mean
-            lines += [f"{a}-{b}: {r:.2f}" for (a, b), r in pair_r.items()]
+        # R against the reference is listed in full however many sources there are: it is
+        # the comparison being made. The source-vs-source pairs stay on the stdout line,
+        # where they don't crowd the axes.
+        ref_r = {(a if b == sot_label else b): r
+                 for (a, b), r in pair_r.items() if sot_label in (a, b)}
+        if ref_r:
+            width = max(len(n) for n in ref_r)
+            lines = [f"R vs {sot_label}"]
+            lines += [f"{n:<{width}} {r:+.3f}" for n, r in ref_r.items()]
+            lines.append(f"{'mean':<{width}} {float(np.mean(list(ref_r.values()))):+.3f}")
+        else:
+            lines = [f"R (mean) = {mean_r:.2f}"]
+            if len(pair_r) <= 3:  # list each pair when there are few; else just the mean
+                lines += [f"{a}-{b}: {r:.2f}" for (a, b), r in pair_r.items()]
+
         ax.text(0.01, 0.98, "\n".join(lines), transform=ax.transAxes, va='top', ha='left',
                 fontsize=7, family='monospace',
                 bbox=dict(boxstyle='round', facecolor='white', edgecolor='0.7', alpha=0.8))
         print("[plot_hr_multi] pairwise HR corr coef: "
               + ", ".join(f"{a}-{b}={r:.3f}" for (a, b), r in pair_r.items())
               + f" (mean {mean_r:.3f})")
+        if ref_r:
+            print(f"[plot_hr_multi] HR corr coef vs {sot_label}: "
+                  + ", ".join(f"{n}={r:.3f}" for n, r in ref_r.items())
+                  + f" (mean {float(np.mean(list(ref_r.values()))):.3f})")
 
     ylim_traces = [(t, y) for (_, t, y) in traces]
     if sot_beats is not None:
@@ -232,9 +270,17 @@ def plot_hr_multi_comparison(
         sot: SOTResult | None,
         out: Path,
         filename: str = "hr_comparison_multi.png",
+        title: str = "Instantaneous heart rate: all abdomen fibers vs SOT",
+        panel_title: str = "Fetal instantaneous HR — all abdomen fibers",
+        width: float = 8.0,
+        marker_size: float = 3.0,
+        row_height: float = ROW_HEIGHT,
 ) -> None:
-    """One fetal-HR panel with every abdomen fiber's trace overlaid (plus an
-    optional maternal panel), for spotting overall trends across fibers."""
+    """One fetal-HR panel with every trace in ``multi.fetal_beats`` overlaid (plus an
+    optional maternal panel), for spotting overall trends across them.
+
+    The titles default to the abdomen-fiber wording this was written for; callers
+    overlaying something else (model versions, detectors) should pass their own."""
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -253,8 +299,8 @@ def plot_hr_multi_comparison(
         t_end = float(any_source.time[-1])
 
     if multi.maternal_beats is not None:
-        fig, (ax_m, ax_f) = plt.subplots(2, 1, figsize=_figsize(2), sharex=True,
-                                         constrained_layout=True)
+        fig, (ax_m, ax_f) = plt.subplots(2, 1, figsize=_figsize(2, width, row_height),
+                                         sharex=True, constrained_layout=True)
         _plot_hr_axis(
             ax_m,
             sot_beats=sot.ppg_beats if sot is not None else None,
@@ -265,7 +311,8 @@ def plot_hr_multi_comparison(
             band=(30.0, 160.0),
         )
     else:
-        fig, ax_f = plt.subplots(1, 1, figsize=_figsize(1), constrained_layout=True)
+        fig, ax_f = plt.subplots(1, 1, figsize=_figsize(1, width, row_height),
+                                 constrained_layout=True)
 
     _plot_hr_axis_multi(
         ax_f,
@@ -273,13 +320,14 @@ def plot_hr_multi_comparison(
         pred_beats=multi.fetal_beats,
         sot_color='tab:red',
         sot_label='Mic (SOT)',
-        title="Fetal instantaneous HR — all abdomen fibers",
+        title=panel_title,
         band=FETAL_BPM_RANGE,
+        marker_size=marker_size,
     )
 
     ax_f.set_xlabel("Time (s)", fontsize=8)
     ax_f.set_xlim(t_start, t_end)
-    fig.suptitle("Instantaneous heart rate: all abdomen fibers vs SOT", fontsize=11)
+    fig.suptitle(title, fontsize=11)
     plt.savefig(out / filename, dpi=500)
     plt.close()
 

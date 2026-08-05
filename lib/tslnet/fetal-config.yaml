@@ -1,57 +1,93 @@
+#model:
+#  channels: 3          # abdomen fibers stacked as separate univariate series
+#  # Downloaded to the Hugging Face cache on first run (~2 GB), then reused.
+#  checkpoint: 'google/timesfm-2.0-500m-pytorch'
+#  head_hidden: 256     # bottleneck width of the trainable MLP
+#  # Linear layers in the head. 3 = in -> hidden -> hidden -> out (1.06M params at hidden 256);
+#  # 1 = a plain linear probe straight to the frame grid (123k params, and head_hidden is then
+#  # unused). The probe is the standard baseline for a frozen backbone and worth running: if it
+#  # matches the deeper head, the extra layers are only capacity to overfit two patients with.
+#  head_layers: 2
+#  dropout: 0.0
+#
+#  # Declared, not read off the checkpoint, so check_feasible runs offline; build_model
+#  # verifies both against the backbone it loads and raises on a mismatch.
+#  context_length: 2048
+#  patch_length: 32
+#
+#  model_hz: 800
+#
+#train:
+#  optimizer: 'AdamW'   # SGD, Adam, AdamW
+#  learning_rate: 1.e-3  # higher than FUNet's: this only fits a head over frozen features
+#  weight_decay: 0.1
+#  batch_size: 8
+#  epochs: 50
+#  # Seconds, and a float here (TSLNet widens the base config's int) so the crop lands exactly
+#  # on the context: 2.56 * 800 = 2048 steps = 64 patches. Rounding to 2 s would leave a fifth
+#  # of the context unused; 3 s would overflow it. If you change model_hz, change this to
+#  # context_length / model_hz -- check_feasible prints the value that fits.
+#  crop_len: 2.56
+#  clip: 5.0             # max gradient norm
+#  loss: 'mse'   # 'kldiv' | 'snr' | 'corr' | 'corr_amp' (corr + d' peak-contrast) | 'mse'
+#  lr_schedule: 'cosine'  # 'none' (constant LR) | 'cosine' (anneal learning_rate -> min_lr) | 'plateau'
+#  min_lr: 1.e-5         # cosine floor only; unused by 'none' and 'plateau'
+#  plateau_factor: 0.5
+#  plateau_patience: 3
+#  # corr_amp only (ignored by other losses): d' rewards beats standing clear of a quiet floor.
+#  amp_weight: 0.1
+#  amp_beat_threshold: 0.1
+#  # Regularisation (train-only). Applied at 4 kHz, before preprocess and decimation.
+#  augment: ['channel_dropout', 'gain', 'noise']
+#
+#data:
+#  # Written by ./generate_training_snippets.sh from training_clips.yaml, which routes whole
+#  # patients to fetal-train/ or fetal-test/ by their `mode`. Paths resolve relative to this
+#  # file, not the working directory.
+#  train_dir: 'training/stereo_v1/fetal-train'
+#  val_dir: 'training/stereo_v1/fetal-test'   # held-out patient; selects model_best.pt
+#  num_workers: 8
+#  # Load-bearing now, not optional. The waveform front-end does no band-limiting of its own --
+#  # decimation only removes content above Nyquist (400 Hz) -- so without 'bandpass' the model
+#  # sees maternal sounds and motion below the fetal band too. This is what the old envelope's
+#  # `band: [100, 300]` used to do implicitly by picking STFT bins. Applied to both splits and
+#  # at inference, at 4 kHz, before decimation. check_feasible warns if you drop it.
+#  preprocess: ['bandpass', 'normalize']
+#
+#model_dir: 'models/tslnet-v8/'
 model:
-  channels: 3          # abdomen fibers stacked as separate univariate series
-  # Downloaded to the Hugging Face cache on first run (~2 GB), then reused.
-  checkpoint: 'google/timesfm-2.0-500m-pytorch'
-  head_hidden: 256     # bottleneck width of the trainable MLP
-  # Linear layers in the head. 3 = in -> hidden -> hidden -> out (1.06M params at hidden 256);
-  # 1 = a plain linear probe straight to the frame grid (123k params, and head_hidden is then
-  # unused). The probe is the standard baseline for a frozen backbone and worth running: if it
-  # matches the deeper head, the extra layers are only capacity to overfit two patients with.
-  head_layers: 2
-  dropout: 0.0
-
-  # Declared, not read off the checkpoint, so check_feasible runs offline; build_model
-  # verifies both against the backbone it loads and raises on a mismatch.
+  channels: 3
+  checkpoint: google/timesfm-2.0-500m-pytorch
+  head_hidden: 256
+  head_layers: 4
+  dropout: 2.3601268360405993e-05
   context_length: 2048
   patch_length: 32
-
-  model_hz: 800
-
+  model_hz: 1000
 train:
-  optimizer: 'AdamW'   # SGD, Adam, AdamW
-  learning_rate: 1.e-3  # higher than FUNet's: this only fits a head over frozen features
-  weight_decay: 0.1
+  optimizer: AdamW
+  learning_rate: 0.0006465975908742037
+  weight_decay: 0.004895852144722669
   batch_size: 8
   epochs: 50
-  # Seconds, and a float here (TSLNet widens the base config's int) so the crop lands exactly
-  # on the context: 2.56 * 800 = 2048 steps = 64 patches. Rounding to 2 s would leave a fifth
-  # of the context unused; 3 s would overflow it. If you change model_hz, change this to
-  # context_length / model_hz -- check_feasible prints the value that fits.
-  crop_len: 2.56
-  clip: 5.0             # max gradient norm
-  loss: 'mse'   # 'kldiv' | 'snr' | 'corr' | 'corr_amp' (corr + d' peak-contrast) | 'mse'
-  lr_schedule: 'cosine'  # 'none' (constant LR) | 'cosine' (anneal learning_rate -> min_lr) | 'plateau'
-  min_lr: 1.e-5         # cosine floor only; unused by 'none' and 'plateau'
+  crop_len: 2.048
+  clip: 5.0
+  loss: mse
+  lr_schedule: cosine
+  min_lr: 2.983657093124185e-06
   plateau_factor: 0.5
   plateau_patience: 3
-  # corr_amp only (ignored by other losses): d' rewards beats standing clear of a quiet floor.
   amp_weight: 0.1
   amp_beat_threshold: 0.1
-  # Regularisation (train-only). Applied at 4 kHz, before preprocess and decimation.
-  augment: ['channel_dropout', 'gain', 'noise']
-
+  augment:
+  - channel_dropout
+  - gain
+  - noise
 data:
-  # Written by ./generate_training_snippets.sh from training_clips.yaml, which routes whole
-  # patients to fetal-train/ or fetal-test/ by their `mode`. Paths resolve relative to this
-  # file, not the working directory.
-  train_dir: 'training/stereo_v1/fetal-train'
-  val_dir: 'training/stereo_v1/fetal-test'   # held-out patient; selects model_best.pt
+  train_dir: training/stereo_v1/fetal-train
+  val_dir: training/stereo_v1/fetal-test
   num_workers: 8
-  # Load-bearing now, not optional. The waveform front-end does no band-limiting of its own --
-  # decimation only removes content above Nyquist (400 Hz) -- so without 'bandpass' the model
-  # sees maternal sounds and motion below the fetal band too. This is what the old envelope's
-  # `band: [100, 300]` used to do implicitly by picking STFT bins. Applied to both splits and
-  # at inference, at 4 kHz, before decimation. check_feasible warns if you drop it.
-  preprocess: ['bandpass', 'normalize']
-
-model_dir: 'models/tslnet-v8/'
+  preprocess:
+  - bandpass
+  - normalize
+model_dir: models/tslnet-v8/

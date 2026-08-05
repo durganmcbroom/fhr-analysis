@@ -34,6 +34,7 @@ dependencies = [
     "torchmetrics>=1.9",
     "tqdm>=4.67",
     "transformers (>=5.14.1,<6.0.0)",
+    "optuna-dashboard (>=0.20.0,<0.21.0)",
 ]
 
 [project.scripts]

@@ -195,8 +195,11 @@ def objective(trial: optuna.Trial, task, base, base_config_path: str, out_dir: s
     # temp file for any trial that doesn't promote it.
     trial_model = os.path.join(out_dir, f".trial-{trial.number}.pt")
     try:
+        # Force the metric on when it is the objective, so a search never depends on the config
+        # remembering to enable it; None otherwise, leaving train.measure_hr_corr to decide.
         result = run_training(task, config, on_epoch=on_epoch, save_artifacts=False,
-                              best_model_path=trial_model)
+                              best_model_path=trial_model,
+                              measure_hr_corr=True if objective_name == "hr_corr" else None)
         value, note = _trial_value(objective_name, result, val_history)
 
         os.replace(trial_model, os.path.join(out_dir, LATEST_MODEL))
@@ -292,6 +295,14 @@ def main(task, argv=None) -> None:
 
     args = parse_args(task, argv)
     base = load_config(args.config, task)
+
+    # Before any training: a search that cannot compute its own objective should say so now,
+    # not after the first trial has run to completion.
+    if args.objective == "hr_corr" and task.make_val_scorer(base) is None:
+        raise SystemExit(
+            f"--objective hr_corr needs a validation scorer, but task {task.name!r} provides "
+            f"none (Task.make_val_scorer returned None). Use '--objective loss', or implement "
+            f"the hook for this task.")
 
     out_dir = args.out_dir or base.model_dir
     os.makedirs(out_dir, exist_ok=True)

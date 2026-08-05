@@ -4,10 +4,12 @@ import copy
 
 from torch import nn
 
+import numpy as np
+
 from common.audio import SAMPLE_RATE
 from common.errors import InfeasibleConfig
 from common.losses import CorrAmpLoss, CorrelationLoss, MSELoss, SNRLoss
-from common.metrics import HRCorrelation
+from common.metrics import FETAL_BPM_RANGE, HRCorrelation
 from common.optim import OPTIMIZERS
 from common.phases.inference import activity_postprocess
 from common.task import Task
@@ -113,16 +115,37 @@ class FUNetTask(Task):
                 f"this config yields freq={freq_bins}, time={time_frames}{band}")
 
     def make_val_scorer(self, config):
-        """Score validation by HR-trace correlation as well as loss.
+        """Score validation by HR-trace correlation, along the real inference path.
 
-        The frame rate follows from the frozen hop: one output frame per ``hop_length`` input
-        samples. ``activity_postprocess`` is the same readout inference uses, so the beats are
-        picked out of exactly the envelope a deployed model would produce -- a log-prob head
-        has to be exp'd before its peaks mean anything.
+        The detector is ``analyze.hr.detect_v2.v2_beat_detector`` -- literally the one
+        ``analyze.funet_runner`` runs on a deployed model -- so the score cannot drift from
+        what the pipeline actually does. HRCorrelation supplies the rest of that path
+        (``activity_postprocess`` then ``frames_to_native``); see its docstring for why picking
+        peaks off the frame grid instead quantises the BPM trace into uselessness.
+
+        Imported lazily and locally: ``analyze`` is the analysis application and pulls in
+        matplotlib and the neossnet utils, which a plain ``--objective loss`` training run has
+        no business loading. Doing it here also keeps the import out of ``common``, which must
+        not depend on the analysis stack.
         """
-        frame_hz = SAMPLE_RATE / config.model.hop_length
         postprocess = activity_postprocess(config.train.loss)
-        return lambda: HRCorrelation(frame_hz=frame_hz, postprocess=postprocess)
+
+        def detect(activity, hz):
+            from analyze.data import Audio
+            from analyze.hr.detect_v2 import v2_beat_detector
+            time = np.arange(activity.size) / hz
+            # out=None suppresses the detector's diagnostic PNG, making it pure and in-memory.
+            return v2_beat_detector(Audio(time, hz, activity), FETAL_BPM_RANGE, None)["times"]
+
+        # Shared across epochs so each target's beats are detected once, not every epoch.
+        reference_beats: dict = {}
+        return lambda: HRCorrelation(
+            detect=detect,
+            hop_length=config.model.hop_length,
+            sample_rate=SAMPLE_RATE,
+            postprocess=postprocess,
+            reference_beats=reference_beats,
+        )
 
     # ------------------------------------------------------- optimize phase only
     def suggest(self, trial, base):

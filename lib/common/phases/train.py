@@ -27,6 +27,7 @@ def run_training(
         on_epoch: Optional[Callable[[int, float], None]] = None,
         save_artifacts: bool = True,
         best_model_path: Optional[str] = None,
+        measure_hr_corr: Optional[bool] = None,
 ) -> FitResult:
     """Build the model/data/optimiser from ``config``, train, and return the run's FitResult.
 
@@ -34,6 +35,10 @@ def run_training(
     curves plot under ``config.model_dir``; the search turns it off and instead passes
     ``best_model_path`` to capture just that trial's best-epoch checkpoint, plus an
     ``on_epoch`` callback to report and prune trials.
+
+    ``measure_hr_corr`` overrides ``train.measure_hr_corr``; ``None`` (the default) defers to
+    the config. The optimize phase passes ``True`` when it is ranking trials by the metric, so
+    a search never depends on the config remembering to enable what it needs.
     """
     device = pick_device(*task.device_env_vars)
     print(f"Using device: {device}")
@@ -53,11 +58,21 @@ def run_training(
     val_dl = task.make_val_loader(config)
     optimiser = task.build_optimizer(config, model)
     scheduler = task.build_scheduler(config, optimiser)
-    # Measured every epoch whenever the task offers it -- it costs milliseconds and only adds a
-    # log line and a curve. It never influences the run: the checkpoint, early stopping and the
-    # LR schedule all still key off validation loss. The optimize phase is the only place this
-    # number decides anything (see its --objective flag).
-    make_scorer = task.make_val_scorer(config)
+    # Unlike the loss, the HR correlation is not free: it runs the full inference path (beat
+    # detection over an upsampled activity) for every validation snippet, ~0.7 s per epoch on a
+    # few hundred snippets. So it is opt-in, and off by default. Whether it runs never changes
+    # the model -- the checkpoint, early stopping and the LR schedule all key off validation
+    # loss regardless; it only adds a log line, a curve, and something for a search to rank by.
+    if measure_hr_corr is None:
+        measure_hr_corr = config.train.measure_hr_corr
+    make_scorer = task.make_val_scorer(config) if measure_hr_corr else None
+    if measure_hr_corr and make_scorer is None:
+        raise ValueError(
+            f"HR correlation was requested but task {task.name!r} provides no scorer "
+            f"(Task.make_val_scorer returned None).")
+    if make_scorer is not None:
+        print("Measuring HR-trace correlation each epoch (diagnostic; the checkpoint is still "
+              "selected by validation loss)")
 
     # A full run saves best/last/config/curves under model_dir; the search saves only the
     # best-epoch checkpoint at the path it hands us. atomic_save creates parent dirs.
