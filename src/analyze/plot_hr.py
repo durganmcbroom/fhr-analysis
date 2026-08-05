@@ -18,10 +18,11 @@ from analyze.constants import FETAL_BPM_RANGE
 # n_rows subplot-heights.
 # ---------------------------------------------------------------------------
 FIG_ASPECT = 16.0 / 6.0  # per-subplot width:height
-ROW_HEIGHT = 8.0 / FIG_ASPECT  # height of one subplot at the default width
+DEFAULT_WIDTH = 8.0
+ROW_HEIGHT = DEFAULT_WIDTH / FIG_ASPECT  # height of one subplot at the default width
 
 
-def _figsize(n_rows: int, width: float = 8.0,
+def _figsize(n_rows: int, width: float = DEFAULT_WIDTH,
              row_height: float | None = None) -> Tuple[float, float]:
     """Figsize so each of ``n_rows`` stacked subplots is 4:3 (width:height).
 
@@ -133,6 +134,40 @@ def _hr_ylim(traces, band: Tuple[float, float], pad: float = 0.1):
     return lo - margin, hi + margin
 
 
+def _pairwise_r(named, grid_hz: float = 4.0):
+    """Pearson R between every pair of HR traces, over the span all of them share.
+
+    Each trace is sampled at its own beat times, so they have to be resampled onto one
+    common grid before they can be correlated. Returns ``{(name_a, name_b): r}``, omitting
+    pairs with no shared span or a constant trace (where R is undefined).
+    """
+    usable = [(n, t, y) for (n, t, y) in named if t is not None and t.size >= 2]
+    if len(usable) < 2:
+        return {}
+
+    lo = max(float(t[0]) for (_, t, _) in usable)
+    hi = min(float(t[-1]) for (_, t, _) in usable)
+    if hi <= lo:
+        return {}
+
+    grid = np.arange(lo, hi, 1.0 / grid_hz)
+    resampled = {n: np.interp(grid, t, y) for (n, t, y) in usable}
+
+    out = {}
+    for a, b in combinations(resampled, 2):
+        ya, yb = resampled[a], resampled[b]
+        if ya.std() > 0 and yb.std() > 0:
+            out[(a, b)] = float(np.corrcoef(ya, yb)[0, 1])
+    return out
+
+
+def _r_box(ax, lines) -> None:
+    """Draw the R readout in the upper-left, opposite the legend."""
+    ax.text(0.01, 0.98, "\n".join(lines), transform=ax.transAxes, va='top', ha='left',
+            fontsize=7, family='monospace',
+            bbox=dict(boxstyle='round', facecolor='white', edgecolor='0.7', alpha=0.8))
+
+
 def _plot_hr_axis(
         ax,
         sot_beats: np.ndarray,
@@ -143,20 +178,34 @@ def _plot_hr_axis(
         pred_label: str,
         title: str,
         band: Tuple[float, float],
+        marker_size: float = 3.0,
 ) -> None:
     if sot_beats is not None:
         sot_t, sot_y = _current_hr_func()(sot_beats, band)
 
     pred_t, pred_y = _current_hr_func()(pred_beats, band)
 
+    # marker_size <= 0 draws the curves only. Over a long recording the per-beat markers
+    # touch and read as a thick band, which hides the shape of the trace.
+    ref_marker = 'o' if marker_size > 0 else None
+    pred_marker = 's' if marker_size > 0 else None
+
     if sot_beats is not None and sot_t.size:
         med = float(np.median(sot_y))
-        ax.plot(sot_t, sot_y, color=sot_color, lw=1.4, marker='o', ms=3,
+        ax.plot(sot_t, sot_y, color=sot_color, lw=1.4, marker=ref_marker, ms=marker_size,
                 alpha=0.9, label=f'{sot_label} (median {med:.1f})')
     if pred_t.size:
         med = float(np.median(pred_y))
-        ax.plot(pred_t, pred_y, color=pred_color, lw=1.1, marker='s', ms=3,
+        ax.plot(pred_t, pred_y, color=pred_color, lw=1.1, marker=pred_marker, ms=marker_size,
                 alpha=0.8, label=f'{pred_label} (median {med:.1f})')
+
+    # Agreement with the reference, on the same footing as the multi-trace panel.
+    if sot_beats is not None and sot_t.size and pred_t.size:
+        pair = _pairwise_r([(pred_label, pred_t, pred_y), (sot_label, sot_t, sot_y)])
+        r = next(iter(pair.values()), None)
+        if r is not None:
+            _r_box(ax, [f"R vs {sot_label}  {r:+.3f}"])
+            print(f"[plot_hr] {pred_label} vs {sot_label}: R={r:.3f}")
 
     ylim_traces = [(pred_t, pred_y)]
     if sot_beats is not None:
@@ -206,25 +255,13 @@ def _plot_hr_axis_multi(
             ax.plot(t, y, color=palette[i % len(palette)], lw=1.1, marker=trace_marker,
                     ms=marker_size, alpha=0.8, label=f'{name} (median {med:.1f})')
 
-    # Pairwise Pearson R between the overlaid HR traces -- how much the sources
-    # agree beat-to-beat. Each trace is sampled at its own beat times, so resample
-    # them all onto one uniform grid over their overlapping span before correlating.
-    # The reference joins as an ordinary series, so each source's R against it falls
-    # out of the same pass -- that is the number that ranks the sources.
-    usable = [(n, t, y) for (n, t, y) in traces if t.size >= 2]
-    if sot_beats is not None and sot_t.size >= 2:
+    # Pairwise Pearson R between the overlaid HR traces -- how much the sources agree
+    # beat-to-beat. The reference joins as an ordinary series, so each source's R against
+    # it falls out of the same pass -- that is the number that ranks the sources.
+    usable = list(traces)
+    if sot_beats is not None:
         usable.append((sot_label, sot_t, sot_y))
-    pair_r = {}
-    if len(usable) >= 2:
-        lo = max(float(t[0]) for (_, t, _) in usable)
-        hi = min(float(t[-1]) for (_, t, _) in usable)
-        if hi > lo:
-            grid = np.arange(lo, hi, 0.25)  # 4 Hz shared grid
-            resampled = {n: np.interp(grid, t, y) for (n, t, y) in usable}
-            for a, b in combinations(resampled, 2):
-                ya, yb = resampled[a], resampled[b]
-                if ya.std() > 0 and yb.std() > 0:
-                    pair_r[(a, b)] = float(np.corrcoef(ya, yb)[0, 1])
+    pair_r = _pairwise_r(usable)
 
     if pair_r:
         mean_r = float(np.mean(list(pair_r.values())))
@@ -243,9 +280,7 @@ def _plot_hr_axis_multi(
             if len(pair_r) <= 3:  # list each pair when there are few; else just the mean
                 lines += [f"{a}-{b}: {r:.2f}" for (a, b), r in pair_r.items()]
 
-        ax.text(0.01, 0.98, "\n".join(lines), transform=ax.transAxes, va='top', ha='left',
-                fontsize=7, family='monospace',
-                bbox=dict(boxstyle='round', facecolor='white', edgecolor='0.7', alpha=0.8))
+        _r_box(ax, lines)
         print("[plot_hr_multi] pairwise HR corr coef: "
               + ", ".join(f"{a}-{b}={r:.3f}" for (a, b), r in pair_r.items())
               + f" (mean {mean_r:.3f})")
@@ -309,6 +344,7 @@ def plot_hr_multi_comparison(
             sot_label='PPG (SOT)', pred_label='Fiber chest',
             title="Maternal instantaneous HR — fiber vs SOT",
             band=(30.0, 160.0),
+            marker_size=marker_size,
         )
     else:
         fig, ax_f = plt.subplots(1, 1, figsize=_figsize(1, width, row_height),
@@ -337,9 +373,17 @@ def plot_hr_comparison(
         sot: SOTResult | None,
         out: Path,
         filename: str = "hr_comparison.png",
+        width: float = 3 * DEFAULT_WIDTH,
+        marker_size: float = 0.0,
+        row_height: float = ROW_HEIGHT,
 ) -> None:
     """Two stacked panels — maternal (top) and fetal (bottom) — each comparing
-    the fiber pipeline's instantaneous HR against the SOT reference."""
+    the fiber pipeline's instantaneous HR against the SOT reference.
+
+    Drawn three times the default width, at unchanged panel height, so a full recording
+    spreads along the time axis instead of collapsing into a band; ``marker_size=0`` leaves
+    the curves without per-beat markers for the same reason.
+    """
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
 
@@ -361,8 +405,8 @@ def plot_hr_comparison(
         t_start = t[0]
         t_end = t[-1]
 
-    fig, (ax_m, ax_f) = plt.subplots(2, 1, figsize=_figsize(2), sharex=True,
-                                     constrained_layout=True)
+    fig, (ax_m, ax_f) = plt.subplots(2, 1, figsize=_figsize(2, width, row_height),
+                                     sharex=True, constrained_layout=True)
 
     # Top: maternal (fiber chest vs PPG SOT). Colors match evaluate.py.
     if fetal_result.maternal_beats is not None:
@@ -374,6 +418,7 @@ def plot_hr_comparison(
             sot_label='PPG (SOT)', pred_label='Fiber chest',
             title="Maternal instantaneous HR — fiber vs SOT",
             band=(30.0, 160.0),
+            marker_size=marker_size,
         )
 
     # Bottom: fetal (fiber fetal vs mic SOT).
@@ -385,6 +430,7 @@ def plot_hr_comparison(
         sot_label='Mic (SOT)', pred_label='Fiber fetal',
         title="Fetal instantaneous HR — fiber vs SOT",
         band=FETAL_BPM_RANGE,
+        marker_size=marker_size,
     )
 
     ax_f.set_xlabel("Time (s)", fontsize=8)

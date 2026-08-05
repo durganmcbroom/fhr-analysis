@@ -48,6 +48,9 @@ tslnet-optimize = "tslnet.optimize:main"
 # Analysis
 main = "analyze.main:main"
 beat-app = "beat_app.server:main"
+# Live rig: recording + real-time HR, served to a browser (src/rtmon)
+rtmon = "rtmon.server:main"
+rtmon-recover = "rtmon.recover_cli:main"
 # Data prep and diagnostics (src/fhr_bin)
 fhr-snippets = "fhr_bin.generate_training_snippets:main"
 fhr-pico2data = "fhr_bin.pico2data:main"
@@ -62,6 +65,22 @@ fhr-beat-buildup = "fhr_bin.peak_det.plot_beat_buildup:main"
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=9.0"
+
+# Hardware drivers for the live rig (`rtmon`). Optional, and deliberately so: the
+# server, its UI, every model and the simulated sources all run without them, and
+# these are the dependencies that are painful or impossible on a given machine --
+# picosdk needs the matching PicoSDK shared libraries, pyaudio/sounddevice need
+# PortAudio, bleak needs a Bluetooth stack. A machine missing one gets a source that
+# probes as unavailable, not an import error at startup.
+#
+#     poetry install --with record
+[tool.poetry.group.record]
+optional = true
+
+[tool.poetry.group.record.dependencies]
+bleak = ">=3.0"                                       # Polar Verity Sense (BLE PPG)
+sounddevice = ">=0.5"                                 # microphone (preferred backend)
+picosdk = { path = "bin/record/lib/pico", develop = true }
 
 # Eight source roots that used to be stitched together at runtime with sys.path
 # inserts. Declaring them here makes the import names real, so nothing depends
@@ -80,6 +99,7 @@ packages = [
     { include = "analyze", from = "src" },
     { include = "beat_app", from = "src" },
     { include = "fhr_bin", from = "src" },
+    { include = "rtmon", from = "src" },
     { include = "common", from = "lib" },
     { include = "funet", from = "lib/funet" },
     { include = "ssnet", from = "lib/tune-ssnet" },

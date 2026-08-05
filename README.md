@@ -61,6 +61,7 @@ every package is importable by name from any working directory — no
 |---|---|---|
 | `analyze` | `src/analyze/` | Core library: pipeline stages, detectors, scoring |
 | `beat_app` | `src/beat_app/` | Local beat-marking web app |
+| `rtmon` | `src/rtmon/` | Live rig: recording + real-time HR, served to a browser ([README](src/rtmon/README.md)) |
 | `fhr_bin` | `src/fhr_bin/` | Standalone CLI utilities |
 | `common` | `lib/common/` | Shared training engine: config, phases, optim, losses, io |
 | `funet` | `lib/funet/funet/` | FUNet beat-activity model |
@@ -88,6 +89,10 @@ src/
     plots/            Waveform/clip plotting scripts.
     snr/, peak_det/   SNR and peak-detector comparison scripts.
   beat_app/          -> package `beat_app`
+  rtmon/             -> package `rtmon`; the live rig — probed device sources, the
+                        configurable processing matrix, streamed recording, and the
+                        browser UI it all serves. Replaces the old PyQt5 app in
+                        bin/record_with_realtime_tracking/.
 
 lib/
   common/            -> package `common`; training loop + losses shared by every model.
@@ -119,6 +124,8 @@ Every entry point is a console script, so it works from any directory:
 | `poetry run tslnet-train [config.yaml]` | Train TSLNet's head (backbone stays frozen) |
 | `poetry run tslnet-optimize [config.yaml] [--trials N]` | Optuna search for TSLNet |
 | `poetry run beat-app` | Serve the beat-marking web app |
+| `poetry run rtmon` | Live rig: record the fibers and track fetal HR in real time |
+| `poetry run rtmon-recover <session-dir>` | Finalize a recording whose server was killed |
 | `poetry run fhr-snippets <clips.yaml> --out-dir out/` | Build training snippet sets |
 | `poetry run fhr-pico2data` | Convert PicoScope CSV exports |
 | `poetry run fhr-concat` | Concatenate two `.npy` recordings |
@@ -178,8 +185,8 @@ named `funet.py` shadows the `funet` package and breaks
 `from funet.config import ...` with a confusing `'funet' is not a package`.
 
 So: **don't name a module or subpackage after one of the packages in the table
-above** (`analyze`, `beat_app`, `fhr_bin`, `common`, `funet`, `ssnet`, `tslnet`,
-`models`, `utils`, `loss_fn`). Two renames exist for exactly this reason —
+above** (`analyze`, `beat_app`, `rtmon`, `fhr_bin`, `common`, `funet`, `ssnet`,
+`tslnet`, `models`, `utils`, `loss_fn`). Two renames exist for exactly this reason —
 `analyze/funet_pipeline.py` (not `funet.py`) and `fhr_bin/plots/` (not
 `fhr_bin/analyze/`). One dormant case is left, `src/analyze/hr/utils.py`, which
 would shadow `utils` if anything in that directory were ever run as a script.

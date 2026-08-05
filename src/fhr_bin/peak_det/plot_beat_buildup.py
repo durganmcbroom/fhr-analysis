@@ -2,7 +2,7 @@
 """
 plot_beat_buildup.py — build the fetal beat detectors up one step at a time.
 
-Renders one figure per detector variant (v2, v4, v7). Each figure is a vertical
+Renders one figure per detector variant (v2, V9, v7). Each figure is a vertical
 stack of stages: stage 1 is the raw waveform, and every stage after it is exactly
 *one* transformation, ending in the detected beats. The point is to be able to
 point at any stage and name the thing that was added.
@@ -17,9 +17,11 @@ All three variants open with the same stages -----------------------------------
 
     v2  light smoothing -> distance-only peak picking -> recentre each peak on its
         half-max lobe midpoint.
-    v4  Gaussian smoothing -> height-gated peak picking -> grow each peak to its
-        half-maximum (FWHM) extent -> merge and duration-gate the regions -> region
-        midpoints -> amplitude-aware IBI rejection.
+    V9  Gaussian smoothing -> peak picking gated on a *local* height floor (a percentile
+        measured per 4 s block, so the gate steps with the loudness of each stretch rather
+        than sitting at one global level) -> grow each peak to its half-maximum (FWHM)
+        extent -> merge and duration-gate the regions -> region midpoints ->
+        amplitude-aware IBI rejection.
     v7  resample to a normalised 100 Hz envelope -> autocorrelation for the cycle length
         and systolic interval -> Gaussian duration priors -> HSMM Viterbi over
         S1/systole/S2/diastole -> beats are the S1 segment midpoints.
@@ -35,7 +37,7 @@ are the source of truth, this is the explanation of them. Three deliberate
 divergences:
 
   * every variant uses an **RMS envelope**, where the real v2/v7 use Shannon energy
-    and the real v4 uses the Hilbert analytic envelope;
+    and the real V9 uses the Hilbert analytic envelope;
   * machinery that does not earn a stage is dropped (v7's transient suppression,
     v2's disabled MAD floor, v2's Hilbert-of-the-already-smoothed-energy); and
   * parameters are stated in seconds rather than taps, so the figures look the same
@@ -55,7 +57,7 @@ Examples
     python src/fhr_bin/peak_det/plot_beat_buildup.py
 
     # one variant, explicit window
-    python src/fhr_bin/peak_det/plot_beat_buildup.py "Patient 6" --variant v4 \
+    python src/fhr_bin/peak_det/plot_beat_buildup.py "Patient 6" --variant V9 \
         --start 200 --end 210
 
     # off a fiber instead of the mic (1B by default)
@@ -108,18 +110,26 @@ BP_ORDER = 3
 BP_RIPPLE_DB = 1.0
 FETAL_BPM_RANGE = (90.0, 280.0)
 
-RMS_WIN_S = 0.030                         # shared envelope window (all three variants)
+RMS_WIN_S = 0.100                         # shared envelope window (all three variants)
 
 # v2
 V2_SMOOTH_S = 0.0125                      # = the original's 100-tap moving average at 8 kHz
 V2_ENERGY_RANGE = 0.5                     # lobe edge = this fraction of the peak
 
-# v4
-V4_SIGMA_S = 0.020                        # Gaussian smoothing sigma
-V4_HEIGHT_PCT = 65.0                      # percentile height gate on the smoothed envelope
-V4_HALF_MAX_LIMIT_S = 0.120               # cap on how far a peak may grow to half-max
-V4_MERGE_GAP_S = 0.040                    # regions closer than this are merged
-V4_MIN_DUR_S, V4_MAX_DUR_S = 0.040, 0.300  # physiological region duration gate
+# V9
+V9_SIGMA_S = 0.020                        # Gaussian smoothing sigma
+V9_HEIGHT_PCT = 20.0                      # percentile of the block: the local baseline estimate
+V9_FLOOR_SCALE = 1                     # multiplier on that percentile -- THIS is the knob that
+                                          # goes low. A percentile is an order statistic, so it
+                                          # bottoms out at the block minimum (q=0) no matter how
+                                          # small q gets; a scale factor has no lower bound. Below
+                                          # ~0.3 the floor drops under the block minimum, at which
+                                          # point the height gate stops rejecting anything; 0.0
+                                          # disables it outright.
+V9_FLOOR_WINDOW_S = 4.0                   # window the gate is measured in (local, not global)
+V9_HALF_MAX_LIMIT_S = 0.120               # cap on how far a peak may grow to half-max
+V9_MERGE_GAP_S = 0.040                    # regions closer than this are merged
+V9_MIN_DUR_S, V9_MAX_DUR_S = 0.040, 0.300  # physiological region duration gate
 
 # v7
 V7_FEAT_FS = 100.0                        # feature grid for the HSMM
@@ -239,6 +249,34 @@ def moving_average(x: np.ndarray, fs: float, win_s: float) -> np.ndarray:
 def min_gap_samples(fs: float, bpm_max: float) -> int:
     """Minimum inter-beat spacing in samples implied by the fastest allowed rate."""
     return max(1, int(round(60.0 / bpm_max * fs)))
+
+
+def block_percentile(x: np.ndarray, fs: float, pct: float, win_s: float) -> np.ndarray:
+    """Percentile of ``x`` within each non-overlapping ``win_s`` block, held flat across the
+    block, as a per-sample array.
+
+    A single percentile over the whole clip is a *global* floor: one loud stretch lifts it
+    for the entire recording, so quiet beats elsewhere fall under the gate and are lost.
+    Measuring it per block gates each beat against its own stretch of signal instead.
+
+    The blocks tumble rather than slide, so the floor is a step function -- it changes only
+    at block edges, and the figure shows exactly which block's threshold judged each beat.
+    The cost is that the gate jumps mid-signal: two beats either side of an edge are judged
+    against different levels.
+    """
+    n = len(x)
+    win = max(1, int(round(win_s * fs)))
+    edges = list(range(0, n, win))
+    # A short final block would take its percentile from very few samples; fold it into the
+    # previous one rather than ending the clip on a noisy step.
+    if len(edges) > 1 and n - edges[-1] < win // 2:
+        edges.pop()
+
+    out = np.empty(n, dtype=float)
+    for i, lo in enumerate(edges):
+        hi = edges[i + 1] if i + 1 < len(edges) else n
+        out[lo:hi] = np.percentile(x[lo:hi], pct)
+    return out
 
 
 def median_bpm(times: Sequence[float]) -> float:
@@ -509,21 +547,24 @@ def build_v2(sp: Spine) -> Tuple[List[Stage], np.ndarray]:
 
 
 # --------------------------------------------------------------------------------
-# v4 -- FWHM regions, duration gate, amplitude-aware IBI rejection
+# V9 -- FWHM regions, duration gate, amplitude-aware IBI rejection
 # --------------------------------------------------------------------------------
 
-def build_v4(sp: Spine) -> Tuple[List[Stage], np.ndarray]:
+def build_V9(sp: Spine) -> Tuple[List[Stage], np.ndarray]:
     t, fs, env = sp.t, sp.fs, sp.env
     bpm_max = FETAL_BPM_RANGE[1]
 
-    smooth = gaussian_filter1d(env, sigma=V4_SIGMA_S * fs, truncate=4.0, mode="reflect")
+    smooth = gaussian_filter1d(env, sigma=V9_SIGMA_S * fs, truncate=4.0, mode="reflect")
     gap = min_gap_samples(fs, bpm_max)
-    height_th = float(np.percentile(smooth, V4_HEIGHT_PCT))
+    # Local floor: the gate is the percentile of the V9_FLOOR_WINDOW_S block each sample
+    # falls in, so find_peaks compares every candidate against its own stretch of signal.
+    # Passing an array here is element-wise, one threshold per sample.
+    height_th = V9_FLOOR_SCALE * block_percentile(smooth, fs, V9_HEIGHT_PCT, V9_FLOOR_WINDOW_S)
     pk, _ = find_peaks(smooth, distance=gap, height=height_th)
 
     # Grow each peak out to where the envelope drops below half its height, capped so
     # a peak sitting on a plateau cannot swallow the whole window.
-    half_cap = int(np.floor(V4_HALF_MAX_LIMIT_S * fs))
+    half_cap = int(np.floor(V9_HALF_MAX_LIMIT_S * fs))
     n = len(smooth)
     raw_regions = np.zeros((len(pk), 2), dtype=float)
     for k, p in enumerate(pk):
@@ -539,14 +580,14 @@ def build_v4(sp: Spine) -> Tuple[List[Stage], np.ndarray]:
     # Merge regions that nearly touch, then keep only physiologically-sized ones.
     merged: List[List[float]] = []
     for s, e in raw_regions[np.argsort(raw_regions[:, 0])] if len(raw_regions) else []:
-        if merged and (s - merged[-1][1]) <= V4_MERGE_GAP_S:
+        if merged and (s - merged[-1][1]) <= V9_MERGE_GAP_S:
             merged[-1][1] = max(merged[-1][1], e)
         else:
             merged.append([s, e])
     merged_arr = np.asarray(merged, dtype=float) if merged else np.zeros((0, 2), float)
     if len(merged_arr):
         dur = merged_arr[:, 1] - merged_arr[:, 0]
-        keep_mask = (dur >= V4_MIN_DUR_S) & (dur <= V4_MAX_DUR_S)
+        keep_mask = (dur >= V9_MIN_DUR_S) & (dur <= V9_MAX_DUR_S)
     else:
         keep_mask = np.zeros(0, dtype=bool)
     kept = merged_arr[keep_mask] if len(merged_arr) else merged_arr
@@ -584,8 +625,9 @@ def build_v4(sp: Spine) -> Tuple[List[Stage], np.ndarray]:
 
     def s7(ax: plt.Axes) -> None:
         ax.plot(t, smooth, lw=0.9, color=C_SMOOTH)
-        ax.axhline(height_th, color=C_REJECT, lw=0.9, ls="--",
-                   label=f"{V4_HEIGHT_PCT:.0f}th pct = {height_th:.4g}")
+        ax.plot(t, height_th, color=C_REJECT, lw=0.9, ls="--",
+                label=f"{V9_FLOOR_SCALE:g} x {V9_HEIGHT_PCT:.0f}th pct "
+                      f"per {V9_FLOOR_WINDOW_S:.0f}s block")
         if len(pk):
             ax.plot(t[pk], smooth[pk], "x", color=C_PEAK, ms=6, mew=1.2)
         ax.set_ylabel("RMS (a.u.)")
@@ -627,14 +669,15 @@ def build_v4(sp: Spine) -> Tuple[List[Stage], np.ndarray]:
                   f"{len(rejected)} rejected")
 
     stages = [
-        Stage(f"Gaussian smoothing  [σ = {V4_SIGMA_S * 1000:.0f} ms]", s6),
+        Stage(f"Gaussian smoothing  [σ = {V9_SIGMA_S * 1000:.0f} ms]", s6),
         Stage(f"Peak picking  [min separation {60.0 / bpm_max * 1000:.0f} ms, "
-              f"height ≥ {V4_HEIGHT_PCT:.0f}th percentile]", s7),
+              f"height ≥ {V9_FLOOR_SCALE:g} x the {V9_HEIGHT_PCT:.0f}th percentile per "
+              f"{V9_FLOOR_WINDOW_S:.0f} s block]", s7),
         Stage(f"Half-maximum extent  [FWHM, capped at "
-              f"{V4_HALF_MAX_LIMIT_S * 1000:.0f} ms]", s8),
+              f"{V9_HALF_MAX_LIMIT_S * 1000:.0f} ms]", s8),
         Stage(f"Region merge and duration gate  [merge < "
-              f"{V4_MERGE_GAP_S * 1000:.0f} ms, keep "
-              f"{V4_MIN_DUR_S * 1000:.0f}–{V4_MAX_DUR_S * 1000:.0f} ms]", s9),
+              f"{V9_MERGE_GAP_S * 1000:.0f} ms, keep "
+              f"{V9_MIN_DUR_S * 1000:.0f}–{V9_MAX_DUR_S * 1000:.0f} ms]", s9),
         Stage(f"Region midpoints, amplitude-aware IBI rejection  "
               f"[min {min_ibi * 1000:.0f} ms, drop lower-amplitude]", s10),
     ]
@@ -896,10 +939,10 @@ def render_comparison(sp: Spine, results: List[Tuple[str, np.ndarray]],
 
 # --------------------------------------------------------------------------------
 
-VARIANTS = {"v2": build_v2, "v4": build_v4, "v7": build_v7}
+VARIANTS = {"v2": build_v2, "V9": build_V9, "v7": build_v7}
 VARIANT_BLURB = {
     "v2": "envelope peaks, distance only",
-    "v4": "FWHM regions + duration gate + IBI rejection",
+    "V9": "FWHM regions + duration gate + IBI rejection",
     "v7": "duration-dependent HMM over the cardiac cycle",
 }
 
@@ -980,7 +1023,7 @@ def main() -> None:
 
     if len(results) > 1:
         stem = f"{name}_buildup_{src_tag}_compare_{win_tag}"
-        title = (f"Beat detection build-up — naive → v2 → v4 → v7   |   {name}, "
+        title = (f"Beat detection build-up — naive → v2 → V9 → v7   |   {name}, "
                  f"{src_label}, {win_title}")
         render_comparison(sp, results, gt, title, args.out_dir / f"{stem}.png",
                           args.dpi, window)

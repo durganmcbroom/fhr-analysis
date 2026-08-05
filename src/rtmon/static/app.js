@@ -1,0 +1,1360 @@
+/* rtmon frontend.
+ *
+ * No build step and no framework, matching beat_app: one page, one operator, on
+ * loopback. The parts that matter for a live instrument are the ones worth writing by
+ * hand anyway —
+ *
+ *   - the socket carries binary frames (a JSON header describing float32 arrays), so a
+ *     frame is a couple of typed-array views rather than a JSON parse;
+ *   - waveforms arrive already reduced to a min/max envelope, so a scope draws one
+ *     path of ~1 point per pixel no matter how fast the fiber samples;
+ *   - drawing is driven by requestAnimationFrame off the latest frame, never by the
+ *     socket, so a burst of frames cannot queue up work the display will discard.
+ */
+'use strict';
+
+// ---------------------------------------------------------------------------
+// Palette. The server assigns each track a light-mode slot; these are the same
+// eight hues stepped for the dark surface, so a track keeps its identity across
+// modes rather than being tinted by an automatic filter.
+// ---------------------------------------------------------------------------
+const DARK_OF = {
+  '#2a78d6': '#3987e5', '#eb6834': '#d95926', '#1baf7a': '#199e70', '#eda100': '#c98500',
+  '#e87ba4': '#d55181', '#008300': '#008300', '#4a3aa7': '#9085e9', '#e34948': '#e66767',
+};
+const seriesColor = (hex) => (isDark() ? (DARK_OF[hex] || hex) : hex);
+const isDark = () => document.documentElement.dataset.theme !== 'light';
+const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+const state = {
+  hub: null, setup: null, catalog: null, presets: [],
+  status: null, tracks: [],
+};
+const live = {
+  now: 0,
+  waves: new Map(),      // channel id -> {t0, dt, lo, hi, stamp}
+  series: new Map(),     // track id   -> {t, y}
+  activity: new Map(),   // track id   -> {t, y}
+};
+const view = { windowS: 10, hrWindowS: 300, buckets: 1200 };
+const yScales = new Map();   // channel id -> {lo, hi} smoothed
+let hrDomain = null;         // {lo, hi} smoothed
+let socket = null, dirty = true, hover = null;
+
+const $ = (sel) => document.querySelector(sel);
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text != null) n.textContent = text;
+  return n;
+};
+
+// ---------------------------------------------------------------------------
+// API
+// ---------------------------------------------------------------------------
+async function api(path, body) {
+  const res = await fetch(path, {
+    method: body === undefined ? 'GET' : 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.error) throw new Error(data.error || `${res.status} ${res.statusText}`);
+  return data;
+}
+
+function applyState(s) {
+  if (!s) return;
+  state.hub = s.hub;
+  state.setup = s.setup;
+  state.catalog = s.catalog;
+  state.presets = s.presets || [];
+  if (s.tracks) state.tracks = s.tracks;
+  // Fold the HTTP answer into the same block the stream delivers. Without this the
+  // chrome (Record button, elapsed timer, channel rates) keeps rendering from the
+  // last status frame, so arming a device left Record disabled for up to a second —
+  // long enough that reloading the page looked like the fix.
+  state.status = {
+    ...(state.status || {}),
+    ...(s.align ? { align: s.align } : {}),
+    recording: s.hub.recording,
+    sources: Object.fromEntries(s.hub.sources.map((x) => [x.id, {running: x.running, error: x.error}])),
+    channels: s.hub.channels.map((c) => ({id: c.id, hz: c.hz, silent: c.silent})),
+    tracks: s.tracks || (state.status && state.status.tracks) || [],
+  };
+  view.windowS = s.setup.window_s || view.windowS;
+  $('#scope-window').value = String(view.windowS);
+  sendView();
+  renderAll();
+}
+
+let toastTimer = null;
+function toast(message, bad) {
+  const node = $('#toast');
+  node.textContent = message;
+  node.classList.toggle('bad', !!bad);
+  node.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { node.hidden = true; }, bad ? 8000 : 3500);
+}
+
+const guard = (fn) => async (...args) => {
+  try { await fn(...args); } catch (err) { toast(err.message, true); }
+};
+
+// ---------------------------------------------------------------------------
+// WebSocket
+// ---------------------------------------------------------------------------
+function connect() {
+  const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
+  socket = new WebSocket(url);
+  socket.binaryType = 'arraybuffer';
+
+  socket.onopen = () => { setLink('live'); sendView(); };
+  socket.onclose = () => { setLink('down'); setTimeout(connect, 1200); };
+  socket.onerror = () => setLink('down');
+  socket.onmessage = (event) => {
+    if (typeof event.data === 'string') {
+      const message = JSON.parse(event.data);
+      if (message.state) applyState(message.state);
+      return;
+    }
+    readFrame(event.data);
+  };
+}
+
+function setLink(cls) {
+  const dot = $('#link-dot');
+  dot.className = `dot ${cls}`;
+  dot.title = cls === 'live' ? 'connected' : 'reconnecting…';
+}
+
+function sendView() {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  socket.send(JSON.stringify({
+    type: 'view',
+    window_s: view.windowS,
+    hr_window_s: view.hrWindowS,
+    buckets: view.buckets,
+    channels: (state.setup && state.setup.channels) || [],
+    // A backgrounded tab stops running requestAnimationFrame, so every waveform frame
+    // sent to it is decoded by nobody. Say so, and the server drops to status-only
+    // until the tab comes back — which matters here because the operator's other
+    // screen is usually what is in front, and the recording must not pay for it.
+    paused: document.visibilityState === 'hidden',
+  }));
+}
+
+function readFrame(buffer) {
+  const dv = new DataView(buffer);
+  const headLen = dv.getUint32(0, true);
+  const head = JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, 4, headLen)));
+  const base = 4 + headLen;
+  const grab = (ref) => new Float32Array(buffer, base + ref.off, ref.n);
+
+  live.now = head.now;
+  for (const w of head.waves || []) {
+    live.waves.set(w.ch, { t0: w.t0, dt: w.dt, lo: grab(w.lo), hi: grab(w.hi) });
+  }
+  if (head.tracks) {
+    live.series.clear();
+    live.activity.clear();
+    for (const t of head.tracks) {
+      live.series.set(t.id, { t: grab(t.t), y: grab(t.y) });
+      if (t.activity) live.activity.set(t.id, { t: grab(t.activity.t), y: grab(t.activity.y) });
+    }
+  }
+  if (head.status) {
+    state.status = head.status;
+    state.tracks = head.status.tracks || state.tracks;
+    renderStatus();
+  }
+  dirty = true;
+}
+
+// ---------------------------------------------------------------------------
+// Canvas helpers
+// ---------------------------------------------------------------------------
+function fitCanvas(canvas) {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  const w = Math.max(1, Math.round(rect.width * dpr));
+  const h = Math.max(1, Math.round(rect.height * dpr));
+  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, w: rect.width, h: rect.height };
+}
+
+/* Ease a domain toward its target instead of snapping. An axis that rescales on every
+ * frame makes a steady trace look like it is moving, which on a heart-rate display is
+ * actively misleading. */
+function ease(current, target, rate = 0.16) {
+  if (!current) return { ...target };
+  return { lo: current.lo + (target.lo - current.lo) * rate,
+           hi: current.hi + (target.hi - current.hi) * rate };
+}
+
+function niceStep(span, targetTicks) {
+  const raw = span / Math.max(1, targetTicks);
+  const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+  const norm = raw / mag;
+  const step = norm >= 5 ? 5 : norm >= 2 ? 2 : 1;
+  return step * mag;
+}
+
+// ---------------------------------------------------------------------------
+// HR chart
+// ---------------------------------------------------------------------------
+const PAD = { l: 46, r: 96, t: 12, b: 22 };
+
+function drawHR() {
+  const canvas = $('#hr-canvas');
+  const { ctx, w, h } = fitCanvas(canvas);
+  ctx.clearRect(0, 0, w, h);
+
+  const tracks = state.tracks.filter((t) => t.enabled && live.series.has(t.id));
+  const visible = tracks.filter((t) => live.series.get(t.id).t.length > 1);
+  $('#hr-empty').hidden = visible.length > 0;
+  if (!visible.length) { hover = null; return; }
+
+  // ---- domain
+  let lo = Infinity, hi = -Infinity;
+  for (const t of visible) {
+    const s = live.series.get(t.id);
+    for (let i = 0; i < s.y.length; i++) {
+      if (s.t[i] < -view.hrWindowS) continue;
+      if (s.y[i] < lo) lo = s.y[i];
+      if (s.y[i] > hi) hi = s.y[i];
+    }
+  }
+  if (!isFinite(lo)) { lo = 100; hi = 180; }
+  const pad = Math.max(6, (hi - lo) * 0.18);
+  let target = { lo: lo - pad, hi: hi + pad };
+  if (target.hi - target.lo < 25) {
+    const mid = (target.hi + target.lo) / 2;
+    target = { lo: mid - 12.5, hi: mid + 12.5 };
+  }
+  hrDomain = ease(hrDomain, target);
+  const dom = hrDomain;
+
+  const plot = { x: PAD.l, y: PAD.t, w: w - PAD.l - PAD.r, h: h - PAD.t - PAD.b };
+  const X = (tRel) => plot.x + plot.w * (1 + tRel / view.hrWindowS);
+  const Y = (bpm) => plot.y + plot.h * (1 - (bpm - dom.lo) / (dom.hi - dom.lo));
+
+  // ---- grid: recessive, behind everything
+  ctx.save();
+  ctx.strokeStyle = cssVar('--line-soft');
+  ctx.fillStyle = cssVar('--text-3');
+  ctx.lineWidth = 1;
+  ctx.font = '11px var(--mono), monospace';
+
+  const bpmStep = niceStep(dom.hi - dom.lo, 5);
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  for (let v = Math.ceil(dom.lo / bpmStep) * bpmStep; v <= dom.hi; v += bpmStep) {
+    const y = Math.round(Y(v)) + 0.5;
+    ctx.beginPath(); ctx.moveTo(plot.x, y); ctx.lineTo(plot.x + plot.w, y); ctx.stroke();
+    ctx.fillText(String(Math.round(v)), plot.x - 8, y);
+  }
+
+  const tStep = niceStep(view.hrWindowS, 6);
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  for (let s = 0; s <= view.hrWindowS + 1e-6; s += tStep) {
+    const x = Math.round(X(-s)) + 0.5;
+    if (x < plot.x - 1) continue;
+    ctx.beginPath(); ctx.moveTo(x, plot.y); ctx.lineTo(x, plot.y + plot.h); ctx.stroke();
+    ctx.fillText(s === 0 ? 'now' : `-${fmtDuration(s)}`, x, plot.y + plot.h + 5);
+  }
+  ctx.restore();
+
+  // ---- beat-activity underlays, drawn first so they never obscure a trace
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(plot.x, plot.y, plot.w, plot.h);
+  ctx.clip();
+  for (const t of visible) {
+    const act = live.activity.get(t.id);
+    if (!act || act.t.length < 2) continue;
+    let peak = 0;
+    for (let i = 0; i < act.y.length; i++) if (act.y[i] > peak) peak = act.y[i];
+    if (peak <= 0) continue;
+    ctx.globalAlpha = 0.16;
+    ctx.fillStyle = seriesColor(t.color);
+    ctx.beginPath();
+    ctx.moveTo(X(act.t[0]), plot.y + plot.h);
+    for (let i = 0; i < act.t.length; i++) {
+      ctx.lineTo(X(act.t[i]), plot.y + plot.h - (act.y[i] / peak) * plot.h * 0.22);
+    }
+    ctx.lineTo(X(act.t[act.t.length - 1]), plot.y + plot.h);
+    ctx.closePath();
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // ---- traces; the source of truth is drawn last so it sits on top
+  const ordered = [...visible].sort((a, b) => (a.role === 'sot' ? 1 : 0) - (b.role === 'sot' ? 1 : 0));
+  for (const t of ordered) {
+    const s = live.series.get(t.id);
+    ctx.strokeStyle = seriesColor(t.color);
+    ctx.lineWidth = t.role === 'sot' ? 2.5 : 2;
+    ctx.lineJoin = 'round';
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    let started = false;
+    for (let i = 0; i < s.t.length; i++) {
+      if (s.t[i] < -view.hrWindowS) continue;
+      const x = X(s.t[i]), y = Y(s.y[i]);
+      // A gap longer than a few beats is missing data, not a straight line through it.
+      if (started && s.t[i] - s.t[i - 1] > 6) { ctx.moveTo(x, y); }
+      else if (!started) { ctx.moveTo(x, y); started = true; }
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  // ---- direct labels at the live end (identity is never colour alone)
+  if (ordered.length <= 5) {
+    ctx.save();
+    ctx.font = '600 11px var(--sans), sans-serif';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    const placed = [];
+    for (const t of ordered) {
+      const s = live.series.get(t.id);
+      if (!s.y.length) continue;
+      let y = Y(s.y[s.y.length - 1]);
+      while (placed.some((p) => Math.abs(p - y) < 13)) y += 13;   // de-collide
+      placed.push(y);
+      ctx.fillStyle = seriesColor(t.color);
+      ctx.fillText(shortName(t.name), plot.x + plot.w + 8, Math.max(8, Math.min(h - 8, y)));
+    }
+    ctx.restore();
+  }
+
+  // ---- crosshair
+  if (hover && hover.x >= plot.x && hover.x <= plot.x + plot.w) {
+    ctx.save();
+    ctx.strokeStyle = cssVar('--text-3');
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(hover.x, plot.y); ctx.lineTo(hover.x, plot.y + plot.h);
+    ctx.stroke();
+    ctx.restore();
+    showTip(hover, plot, ordered, X);
+  } else {
+    $('#hr-tip').hidden = true;
+  }
+}
+
+function showTip(pos, plot, tracks, X) {
+  const tRel = ((pos.x - plot.x) / plot.w - 1) * view.hrWindowS;
+  const tip = $('#hr-tip');
+  tip.innerHTML = '';
+  tip.appendChild(el('div', 'tip-time', tRel > -1 ? 'now' : `-${fmtDuration(-tRel)}`));
+  let any = false;
+  for (const t of tracks) {
+    const s = live.series.get(t.id);
+    const value = sampleAt(s, tRel);
+    if (value == null) continue;
+    any = true;
+    const row = el('div', 'tip-row');
+    const swatch = el('span', 'legend-swatch');
+    swatch.style.background = seriesColor(t.color);
+    swatch.style.height = '3px';
+    row.append(swatch, el('span', null, shortName(t.name)), el('b', null, `${value.toFixed(1)}`));
+    tip.appendChild(row);
+  }
+  tip.hidden = !any;
+  if (any) {
+    const box = tip.getBoundingClientRect();
+    const wrap = tip.parentElement.getBoundingClientRect();
+    tip.style.left = `${Math.min(pos.x + 12, wrap.width - box.width - 6)}px`;
+    tip.style.top = `${Math.min(pos.y + 10, wrap.height - box.height - 6)}px`;
+  }
+}
+
+function sampleAt(series, tRel) {
+  const { t, y } = series;
+  if (!t.length) return null;
+  let best = -1, bestDist = Infinity;
+  for (let i = 0; i < t.length; i++) {
+    const d = Math.abs(t[i] - tRel);
+    if (d < bestDist) { bestDist = d; best = i; }
+  }
+  // Beyond a few seconds from any real point there is nothing to report.
+  return bestDist <= Math.max(3, view.hrWindowS / 60) ? y[best] : null;
+}
+
+// ---------------------------------------------------------------------------
+// Scopes
+// ---------------------------------------------------------------------------
+function drawScopes() {
+  for (const canvas of document.querySelectorAll('.scope-row canvas')) {
+    const id = canvas.dataset.ch;
+    const { ctx, w, h } = fitCanvas(canvas);
+    ctx.clearRect(0, 0, w, h);
+    const wave = live.waves.get(id);
+    const stale = canvas.parentElement.querySelector('.scope-stale');
+    if (!wave || !wave.lo.length) {
+      if (stale) {
+        // "Not streaming" is only true when no device is providing the channel. A
+        // live channel with no frame yet is waiting, which is a different problem
+        // with a different fix.
+        stale.textContent = liveChannels().has(id) ? 'waiting for data…' : 'not streaming';
+        stale.hidden = false;
+      }
+      continue;
+    }
+    if (stale) stale.hidden = true;
+
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i < wave.lo.length; i++) {
+      const a = wave.lo[i], b = wave.hi[i];
+      if (a < lo) lo = a;
+      if (b > hi) hi = b;
+    }
+    if (!isFinite(lo) || !isFinite(hi)) { if (stale) stale.hidden = false; continue; }
+
+    // Scale to the data's own [min, max], not symmetrically around zero: PPG rides a
+    // large DC offset (raw photodiode counts around 1e6), and a zero-centred scale
+    // crushed the actual pulse into a sliver at the edge of the plot.
+    const pad = Math.max((hi - lo) * 0.12, Math.abs(hi || 1) * 1e-6, 1e-12);
+    const scale = ease(yScales.get(id), { lo: lo - pad, hi: hi + pad }, 0.1);
+    yScales.set(id, scale);
+    const span = Math.max(1e-12, scale.hi - scale.lo);
+    const Y = (v) => h - ((v - scale.lo) / span) * h;
+    const X = (tRel) => w * (1 + tRel / view.windowS);
+
+    if (scale.lo < 0 && scale.hi > 0) {          // zero line, only when zero is in view
+      ctx.strokeStyle = cssVar('--line-soft');
+      ctx.beginPath();
+      const y0 = Math.round(Y(0)) + 0.5;
+      ctx.moveTo(0, y0);
+      ctx.lineTo(w, y0);
+      ctx.stroke();
+    }
+
+    const color = seriesColor(scopeColor(id));
+    const n = wave.lo.length;
+
+    // The min/max band carries dense signals (a 5 kHz fiber packs ~16 samples into
+    // every display bucket)…
+    ctx.fillStyle = color;
+    ctx.globalAlpha = 0.85;
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) ctx.lineTo(X(wave.t0 + i * wave.dt), Y(wave.hi[i]));
+    for (let i = n - 1; i >= 0; i--) ctx.lineTo(X(wave.t0 + i * wave.dt), Y(wave.lo[i]));
+    ctx.closePath();
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    // …and the centreline carries sparse ones: below the display bucket rate each
+    // bucket holds at most one sample, so min == max everywhere and the band has zero
+    // area — which is why a 55 Hz PPG drew nothing at all. The line skips empty
+    // buckets and joins the samples on either side.
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.4;
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    let started = false;
+    for (let i = 0; i < n; i++) {
+      const mid = (wave.lo[i] + wave.hi[i]) / 2;
+      if (!Number.isFinite(mid)) continue;
+      const x = X(wave.t0 + i * wave.dt), ym = Y(mid);
+      if (started) ctx.lineTo(x, ym); else { ctx.moveTo(x, ym); started = true; }
+    }
+    ctx.stroke();
+  }
+}
+
+const liveChannels = () =>
+  new Set(((state.status && state.status.channels) || []).map((c) => c.id));
+
+/* Scope colour groups by device, so it is obvious at a glance which fibers share a
+ * PicoScope — the same grouping the old app used, kept because it is genuinely useful
+ * when one box drops out. */
+function scopeColor(id) {
+  if (id === 'MIC') return '#2a78d6';
+  if (id.startsWith('PPG') || id === 'AMB') return '#4a3aa7';
+  if (id.startsWith('1')) return '#eb6834';
+  return '#1baf7a';
+}
+
+// ---------------------------------------------------------------------------
+// Render loop
+// ---------------------------------------------------------------------------
+function frame() {
+  if (dirty) { dirty = false; drawHR(); drawScopes(); renderCards(); }
+  requestAnimationFrame(frame);
+}
+
+// ---------------------------------------------------------------------------
+// Cards + legend + table
+// ---------------------------------------------------------------------------
+function renderCards() {
+  const rail = $('#track-cards');
+  const wanted = state.tracks.map((t) => t.id).join('|');
+  if (rail.dataset.key !== wanted) { rail.innerHTML = ''; rail.dataset.key = wanted; }
+
+  state.tracks.forEach((t, i) => {
+    let card = rail.children[i];
+    if (!card) { card = el('div', 'card'); rail.appendChild(card); }
+    const problems = t.problems || [];
+    card.className = `card${t.enabled ? '' : ' off'}${(problems.length || t.error) ? ' bad' : ''}`;
+    card.style.setProperty('--slot', seriesColor(t.color));
+
+    const cfg = (state.setup.tracks || []).find((x) => x.id === t.id) || {};
+    const bits = [cfg.processor, cfg.model, (cfg.inputs || []).join('+')].filter(Boolean);
+    const agree = t.agreement;
+
+    card.innerHTML = '';
+    const top = el('div', 'card-top');
+    top.append(el('span', 'card-name', t.name));
+    if (t.role === 'sot') {
+      // Name the band on the badge: two SOTs coexist, so a bare "SOT" is ambiguous.
+      const tag = el('span', 'tag sot', t.band === 'maternal' ? 'SOT · MAT' : 'SOT · FET');
+      tag.title = `Source of truth for ${t.band} heart rate`;
+      top.append(tag);
+    } else if (t.error) top.append(el('span', 'tag err', 'error'));
+    else if (t.slow) {
+      const tag = el('span', 'tag slow', 'lagging');
+      tag.title = `A pass takes ${(t.last_ms / 1000).toFixed(1)}s but runs every ${cfg.period_s}s — `
+        + 'this trace is behind real time. Raise "Every", lower "Chunk", or set RTMON_DEVICE.';
+      top.append(tag);
+    }
+    card.append(top);
+
+    const valueRow = el('div', 'card-value');
+    valueRow.append(el('span', 'card-bpm', t.bpm == null ? '—' : String(Math.round(t.bpm))));
+    valueRow.append(el('span', 'card-unit', 'bpm'));
+    card.append(valueRow);
+    card.append(el('div', 'card-sub', bits.join(' · ')));
+
+    const spark = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    spark.setAttribute('class', 'spark');
+    spark.setAttribute('preserveAspectRatio', 'none');
+    spark.setAttribute('viewBox', '0 0 100 26');
+    const path = sparkPath(live.series.get(t.id));
+    if (path) {
+      const line = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      line.setAttribute('d', path);
+      line.setAttribute('fill', 'none');
+      line.setAttribute('stroke', seriesColor(t.color));
+      line.setAttribute('stroke-width', '1.5');
+      spark.appendChild(line);
+      card.append(spark);
+    }
+
+    const stats = el('div', 'card-stats');
+    if (agree) {
+      const vs = t.agreement_vs ? ` vs ${t.agreement_vs}` : '';
+      stats.title = `Compared against the ${t.band} source of truth${vs}`;
+      stats.append(el('span', null, `Δ ${agree.mae} bpm`));
+      if (agree.r != null) stats.append(el('span', null, `r ${agree.r}`));
+      stats.append(el('span', null, `${agree.within5}% ≤5`));
+    } else if (t.runs) {
+      stats.append(el('span', null, `${t.runs} runs`));
+      stats.append(el('span', null, `${t.last_ms} ms`));
+      if (t.skipped) stats.append(el('span', null, `${t.skipped} skipped`));
+    }
+    if (stats.children.length) card.append(stats);
+
+    if (problems.length) card.append(el('div', 'card-problem', problems.join(' · ')));
+    else if (t.error) card.append(el('div', 'card-problem', t.error));
+    else if (t.warming) card.append(el('div', 'card-note', `waiting for ${t.warming}…`));
+    else if (t.note && t.bpm == null) card.append(el('div', 'card-note', t.note));
+  });
+  while (rail.children.length > state.tracks.length) rail.lastChild.remove();
+
+  renderLegend();
+}
+
+function sparkPath(series) {
+  if (!series || series.y.length < 2) return null;
+  const span = 120;
+  const pts = [];
+  for (let i = 0; i < series.t.length; i++) if (series.t[i] >= -span) pts.push([series.t[i], series.y[i]]);
+  if (pts.length < 2) return null;
+  let lo = Infinity, hi = -Infinity;
+  for (const [, v] of pts) { if (v < lo) lo = v; if (v > hi) hi = v; }
+  const range = Math.max(4, hi - lo);
+  return pts.map(([t, v], i) => {
+    const x = 100 * (1 + t / span);
+    const y = 24 - ((v - lo) / range) * 22;
+    return `${i ? 'L' : 'M'}${x.toFixed(1)} ${y.toFixed(1)}`;
+  }).join(' ');
+}
+
+function renderLegend() {
+  const legend = $('#hr-legend');
+  legend.innerHTML = '';
+  for (const t of state.tracks) {
+    if (!t.enabled) continue;
+    const item = el('span', `legend-item${t.role === 'sot' ? ' sot' : ''}`);
+    const swatch = el('span', 'legend-swatch');
+    swatch.style.background = seriesColor(t.color);
+    item.append(swatch, el('span', null, shortName(t.name)));
+    item.append(el('span', 'legend-val', t.bpm == null ? '—' : `${Math.round(t.bpm)}`));
+    legend.appendChild(item);
+  }
+}
+
+function renderTable() {
+  const wrap = $('#hr-table');
+  if (wrap.hidden) return;
+  const rows = state.tracks.filter((t) => t.enabled);
+  const table = el('table');
+  const head = el('tr');
+  ['Track', 'Now', 'Median', 'Beats', 'Δ vs SOT', 'r', '≤5 bpm', 'Cycle', 'Runs'].forEach((h) => {
+    head.appendChild(el('th', null, h));
+  });
+  table.appendChild(head);
+  for (const t of rows) {
+    const a = t.agreement || {};
+    const tr = el('tr');
+    [shortName(t.name),
+     t.bpm == null ? '—' : t.bpm.toFixed(1),
+     t.median_bpm == null ? '—' : t.median_bpm.toFixed(1),
+     t.beats, a.mae ?? '—', a.r ?? '—', a.within5 == null ? '—' : `${a.within5}%`,
+     `${t.last_ms} ms`, t.runs,
+    ].forEach((v, i) => {
+      const cell = el('td', null, String(v));
+      if (i === 0) cell.style.color = seriesColor(t.color);
+      tr.appendChild(cell);
+    });
+    table.appendChild(tr);
+  }
+  wrap.innerHTML = '';
+  wrap.appendChild(table);
+}
+
+// ---------------------------------------------------------------------------
+// Status (recording chip, scope rows)
+// ---------------------------------------------------------------------------
+function renderStatus() {
+  const rec = (state.status && state.status.recording) || {};
+  const button = $('#rec-btn');
+  const meta = $('#rec-meta');
+  const armed = Object.values((state.status && state.status.sources) || {}).some((s) => s.running);
+
+  button.disabled = !armed && !rec.active;
+  button.classList.toggle('on', !!rec.active);
+  $('#rec-label').textContent = rec.active ? 'Stop' : 'Record';
+  meta.classList.toggle('on', !!rec.active);
+  if (rec.active) {
+    // Tick off the session's own start time rather than the elapsed figure in the last
+    // status block, so the clock advances every second instead of every status frame.
+    const elapsed = rec.started_at ? (Date.now() / 1000 - rec.started_at) : (rec.elapsed || 0);
+    meta.textContent = `${rec.name} · ${fmtClock(elapsed)}`;
+  } else if (rec.name) {
+    meta.textContent = `saved ${rec.name} · ${fmtClock(rec.elapsed || 0)}`;
+  } else {
+    meta.textContent = armed ? 'ready' : 'no device armed';
+  }
+  if (rec.error) meta.textContent += ` · ${rec.error}`;
+
+  renderScopeRows();
+  renderTable();
+
+  // An alignment run changes phase every few hundred ms; refresh the device panel so
+  // the operator sees "tap now" when it happens. Only while a run is live, only when
+  // the panel is on screen, and never while something in it has focus (that would
+  // yank the mic picker out from under a click).
+  const align = (state.status && state.status.align) || {};
+  const running = ['waiting_quiet', 'armed', 'measuring'].includes(align.phase);
+  const drawerOpen = !$('#drawer').hidden;
+  const devices = $('#devices');
+  if (drawerOpen && (running || align.phase !== lastAlignPhase)
+      && !devices.contains(document.activeElement)) {
+    renderDevices();
+  }
+  lastAlignPhase = align.phase;
+}
+let lastAlignPhase = 'idle';
+
+function renderScopeRows() {
+  const host = $('#scopes');
+  const channels = (state.setup && state.setup.channels) || [];
+  const rates = new Map(((state.status && state.status.channels) || []).map((c) => [c.id, c.hz]));
+  const key = channels.join('|');
+  if (host.dataset.key !== key) {
+    host.dataset.key = key;
+    host.innerHTML = '';
+    for (const id of channels) {
+      const row = el('div', 'scope-row');
+      const label = el('div', 'scope-label');
+      const meta = ((state.catalog && state.catalog.all_channels) || []).find((c) => c.id === id);
+      label.title = meta ? channelTitle({...meta, live: true}) : id;
+      label.append(el('b', null, id), el('span', null, ''));
+      const wrap = el('div', 'scope-canvas-wrap');
+      const canvas = el('canvas');
+      canvas.dataset.ch = id;
+      const stale = el('div', 'scope-stale', 'not streaming');
+      wrap.append(canvas, stale);
+      row.append(label, wrap);
+      host.appendChild(row);
+    }
+  }
+  const info = new Map(((state.status && state.status.channels) || []).map((c) => [c.id, c]));
+  for (const row of host.children) {
+    const id = row.querySelector('canvas').dataset.ch;
+    const channel = info.get(id);
+    const note = row.querySelector('.scope-label span');
+    if (channel && channel.silent) {
+      // A silent channel is streaming perfectly and recording nothing, which is the
+      // failure that costs a whole session. Say it where the trace would be.
+      note.textContent = 'SILENT';
+      note.className = 'silent';
+      note.title = 'Streaming, but every sample is zero — check the mic permission '
+        + 'or that the fiber is connected.';
+    } else {
+      note.textContent = rates.get(id) ? `${Math.round(rates.get(id))} Hz` : '—';
+      note.className = '';
+      note.title = '';
+    }
+  }
+  $('#scope-meta').textContent = channels.length
+    ? `${channels.length} channel${channels.length > 1 ? 's' : ''} · ${view.windowS}s window`
+    : 'none selected';
+}
+
+// ---------------------------------------------------------------------------
+// Setup drawer
+// ---------------------------------------------------------------------------
+function renderAll() {
+  renderDevices();
+  renderMatrix();
+  renderChannelPicker();
+  renderPresets();
+  renderStatus();
+  dirty = true;
+}
+
+function renderDevices() {
+  const host = $('#devices');
+  host.innerHTML = '';
+  for (const source of state.hub.sources) {
+    const probe = source.probe || {};
+    const simulated = source.id.startsWith('sim-');
+    const card = el('div', `device${simulated ? ' sim' : ''}`);
+
+    const top = el('div', 'device-top');
+    top.append(el('b', null, source.label));
+    const cls = source.running ? 'live' : source.error ? 'err' : probe.ok ? 'ready' : 'gone';
+    top.append(el('span', `status ${cls}`,
+      source.running ? 'streaming' : source.error ? 'failed' : probe.ok ? 'available' : 'unavailable'));
+
+    const button = el('button', 'btn', source.running ? 'Stop' : 'Arm');
+    button.disabled = !source.running && !probe.ok;
+    button.onclick = guard(async () => {
+      const arming = !source.running;
+      button.disabled = true;
+      button.textContent = arming ? 'Arming…' : 'Stopping…';   // a pico open takes seconds
+      try {
+        const payload = { id: source.id };
+        if (arming && source.id === 'mic' && state.setup.mic_device) {
+          payload.device = state.setup.mic_device;
+        }
+        applyState(await api(arming ? '/api/source/start' : '/api/source/stop', payload));
+        if (arming) {
+          // Arming must have a visible result. The strap streamed perfectly while
+          // the shown-channels list — saved before it existed — hid every PPG row;
+          // put a newly armed source's channels on screen automatically.
+          const missing = source.channels.map((c) => c.id)
+            .filter((id) => !state.setup.channels.includes(id));
+          if (missing.length) {
+            state.setup.channels.push(...missing);
+            renderScopeRows();
+            pushSetup(true);
+          }
+        }
+      } finally {
+        renderDevices();   // a failed arm re-enables the button; no reload needed
+      }
+    });
+    if (source.running) button.classList.add('btn-danger');
+    top.append(button);
+    card.append(top);
+
+    if (source.error) card.append(el('div', 'device-detail', source.error));
+    else if (probe.detail) card.append(el('div', 'device-detail', probe.detail));
+    if (!probe.ok && probe.hint) card.append(el('div', 'device-hint', probe.hint));
+
+    // Input picker for the microphone: "the system default" is wrong exactly when it
+    // matters (AirPods steal the default while the NST mic sits on another input).
+    if (source.id === 'mic' && Array.isArray(source.devices) && source.devices.length) {
+      const row = el('label', 'device-detail mic-pick');
+      row.append(el('span', null, 'Input: '));
+      const sel = el('select');
+      const dflt = el('option', null,
+        `System default${source.default_device ? ` (${source.default_device})` : ''}`);
+      dflt.value = '';
+      sel.append(dflt);
+      for (const d of source.devices) {
+        const opt = el('option', null, d.name);
+        opt.value = d.name;
+        sel.append(opt);
+      }
+      sel.value = state.setup.mic_device || '';
+      if (sel.value !== (state.setup.mic_device || '')) sel.value = '';  // device gone
+      sel.disabled = source.running;   // takes effect on the next arm
+      sel.title = source.running ? 'Stop the mic to change its input device' : '';
+      sel.onchange = () => { state.setup.mic_device = sel.value || null; pushSetup(true); };
+      row.append(sel);
+      card.append(row);
+    }
+
+    if (source.id === 'pvs') card.append(alignPanel(source));
+
+    const chans = el('div', 'device-chans');
+    for (const c of source.channels) {
+      const pill = el('span', 'pill', c.id);
+      pill.title = c.note ? `${c.label} — ${c.note}` : c.label;
+      if (c.note) pill.classList.add('has-note');
+      chans.append(pill);
+    }
+    if (source.nominal_hz) chans.append(el('span', 'pill', `${Math.round(source.nominal_hz)} Hz`));
+    if (source.battery != null) chans.append(el('span', 'pill', `${source.battery}%`));
+    card.append(chans);
+    host.append(card);
+  }
+}
+
+/* Tap alignment. Deliberately collapsed to one line until asked for: the strap's
+ * latency only needs measuring once per rig, and a calibration wizard permanently
+ * occupying the device panel would be in the way every other time. */
+function alignPanel(source) {
+  const st = (state.status && state.status.align) || { phase: 'idle' };
+  const latency = state.status ? state.status.ppg_latency_s : null;
+  const measured = state.status && state.status.ppg_latency_measured;
+  const busy = ['waiting_quiet', 'armed', 'measuring'].includes(st.phase);
+
+  const wrap = el('div', 'align');
+  const head = el('div', 'align-head');
+  const label = el('span', 'muted',
+    latency == null ? 'timing offset —'
+      : `timing offset ${(latency * 1000).toFixed(0)} ms${measured ? '' : ' (default)'}`);
+  label.title = measured
+    ? 'Measured on this rig with a tap. Applied to every PPG sample.'
+    : 'Inherited default — tap-align to measure it on this rig.';
+  head.append(label);
+
+  const go = el('button', 'btn', busy ? 'Cancel' : (measured ? 'Re-align' : 'Tap-align…'));
+  go.onclick = guard(async () => {
+    if (busy) { applyState(await api('/api/align/cancel', {})); renderDevices(); return; }
+    const ref = alignFiber();
+    if (!ref) { toast('Arm a PicoScope first — the strap is aligned against a fiber.', true); return; }
+    applyState(await api('/api/align/start', { reference: ref }));
+    renderDevices();
+  });
+  go.disabled = !source.running && !busy;
+  go.title = source.running ? 'Measure the strap’s timing against a fiber'
+                            : 'Arm the strap first';
+  head.append(go);
+  wrap.append(head);
+
+  // Which fiber to tap alongside the strap. Should be whichever is physically nearest
+  // it, so one knock reaches both — hence a choice rather than a guess.
+  const fibers = availableFibers();
+  if (!busy) {
+    const row = el('label', 'device-detail align-pick');
+    row.append(el('span', null, 'against'));
+    const sel = el('select');
+    if (!fibers.length) {
+      const none = el('option', null, 'no fiber streaming');
+      none.value = '';
+      sel.append(none);
+      sel.disabled = true;
+    } else {
+      for (const f of fibers) {
+        const opt = el('option', null, `${f.id}${f.live ? '' : ' (not streaming)'}`);
+        opt.value = f.id;
+        opt.disabled = !f.live;
+        sel.append(opt);
+      }
+      sel.value = alignFiber() || '';
+    }
+    sel.title = 'Tap this fiber and the strap together — pick the one closest to it';
+    sel.onchange = () => { state.setup.align_fiber = sel.value || null; pushSetup(true); };
+    row.append(sel);
+    wrap.append(row);
+  }
+
+  if (busy || st.phase === 'done' || st.phase === 'failed') {
+    const body = el('div', `align-body ${st.phase}`);
+    if (st.phase === 'armed') {
+      body.append(el('div', 'align-cue', `TAP ${st.reference} + STRAP NOW`));
+    }
+    body.append(el('div', 'align-msg', st.message || ''));
+    if (st.phase === 'waiting_quiet' && st.quiet) {
+      const row = el('div', 'align-quiet');
+      for (const [ch, ok] of Object.entries(st.quiet)) {
+        row.append(el('span', `pill ${ok ? 'quiet-ok' : 'quiet-no'}`, `${ch} ${ok ? 'settled' : 'noisy'}`));
+      }
+      body.append(row);
+    }
+    if (st.phase === 'done' && !st.applied) {
+      const actions = el('div', 'align-actions');
+      const apply = el('button', 'btn btn-primary', 'Apply');
+      apply.onclick = guard(async () => {
+        const res = await api('/api/align/apply', {});
+        applyState(res);
+        // Show the arithmetic. The measured lag is a RESIDUAL added to the correction
+        // already in force, so the saved number legitimately differs from the one just
+        // reported — without seeing both, that looks like the app changing its mind.
+        const ms = (v) => `${(v * 1000).toFixed(0)} ms`;
+        toast(`Correction ${ms(res.previous_latency_s)} ${ms(res.measured_lag_s)} `
+              + `= ${ms(res.ppg_latency_s)}. Re-run the alignment; it should now read ~0.`);
+        renderDevices();
+      });
+      const discard = el('button', 'btn', 'Discard');
+      discard.onclick = guard(async () => { applyState(await api('/api/align/cancel', {})); renderDevices(); });
+      actions.append(apply, discard);
+      body.append(actions);
+    }
+    wrap.append(body);
+  }
+
+  if (measured && !busy) {
+    const reset = el('button', 'btn btn-ghost align-reset', 'reset to default');
+    reset.onclick = guard(async () => { applyState(await api('/api/align/reset', {})); renderDevices(); });
+    wrap.append(reset);
+  }
+  return wrap;
+}
+
+/* Every fiber the rig knows about, flagged with whether it is streaming right now. */
+function availableFibers() {
+  const live = liveChannels();
+  return ((state.catalog && state.catalog.all_channels) || [])
+    .filter((c) => c.kind === 'fiber')
+    .map((c) => ({ id: c.id, live: live.has(c.id) }));
+}
+
+/* The fiber the strap is tap-aligned against: the saved choice if it is streaming,
+ * otherwise whichever fiber is. Never the microphone — see rtmon.align. */
+function alignFiber() {
+  const fibers = availableFibers().filter((f) => f.live).map((f) => f.id);
+  const chosen = state.setup && state.setup.align_fiber;
+  if (chosen && fibers.includes(chosen)) return chosen;
+  return fibers[0] || null;
+}
+
+let saveTimer = null;
+function pushSetup(immediate) {
+  clearTimeout(saveTimer);
+  const send = guard(async () => {
+    applyState(await api('/api/setup', state.setup));
+  });
+  if (immediate) send(); else saveTimer = setTimeout(send, 350);
+}
+
+function renderMatrix() {
+  const body = $('#matrix-body');
+  // Never rebuild the row the user is typing in: every keystroke debounce-saves the
+  // setup, the server echoes it back, and a naive re-render would replace the focused
+  // input mid-word (losing focus and the caret). Mark it stale; re-render on blur.
+  if (body.contains(document.activeElement)) {
+    body.dataset.stale = '1';
+    return;
+  }
+  delete body.dataset.stale;
+  body.innerHTML = '';
+  const catalog = state.catalog;
+  const byId = new Map(state.tracks.map((t) => [t.id, t]));
+
+  state.setup.tracks.forEach((track, index) => {
+    const def = catalog.processors.find((p) => p.id === track.processor) || catalog.processors[0];
+    const status = byId.get(track.id) || {};
+    const problems = status.problems || [];
+    const row = el('tr', `${problems.length ? 'invalid ' : ''}${track.enabled ? '' : 'disabled'}`);
+
+    row.append(cell(checkbox(track.enabled, (v) => { track.enabled = v; pushSetup(true); }), 'c-on'));
+
+    const nameCell = el('div', 'name-cell');
+    const swatch = el('button', 'swatch-btn');
+    swatch.style.background = seriesColor(track.color);
+    swatch.title = 'Next colour';
+    swatch.onclick = () => {
+      const colors = catalog.colors;
+      track.color = colors[(colors.indexOf(track.color) + 1) % colors.length];
+      pushSetup(true);
+    };
+    const name = el('input');
+    name.type = 'text';
+    name.value = track.name;
+    name.oninput = () => { track.name = name.value; pushSetup(); };
+    nameCell.append(swatch, name);
+    row.append(cell(nameCell, 'c-name'));
+
+    row.append(cell(select(
+      catalog.processors.map((p) => [p.id, p.label]), track.processor,
+      (v) => {
+        track.processor = v;
+        const next = catalog.processors.find((p) => p.id === v);
+        track.model = next.family ? (defaultModel(next.family, track.inputs.length) || null) : null;
+        track.chunk_s = next.default_chunk;
+        pushSetup(true);
+      }, def.description)));
+
+    row.append(cell(def.family
+      ? select(modelOptions(def.family), track.model || '', (v) => { track.model = v; pushSetup(true); })
+      : el('span', 'muted', '—')));
+
+    row.append(cell(inputChips(track, def), 'c-inputs'));
+
+    row.append(cell(def.detector
+      ? select(catalog.detectors.map((d) => [d.id, d.label]), track.detector,
+               (v) => { track.detector = v; pushSetup(true); })
+      : el('span', 'muted', '—')));
+
+    row.append(cell(select(catalog.bands.map((b) => [b.id, `${b.label} ${b.bpm[0]}–${b.bpm[1]}`]),
+                           track.band, (v) => { track.band = v; pushSetup(true); })));
+
+    row.append(cell(number(track.chunk_s, 1, 60, 1, (v) => { track.chunk_s = v; pushSetup(); }), 'c-num'));
+    row.append(cell(number(track.period_s, 0.5, 120, 0.5, (v) => { track.period_s = v; pushSetup(); }), 'c-num'));
+    row.append(cell(number(track.smooth, 0, 40, 1, (v) => { track.smooth = v; pushSetup(); }), 'c-num'));
+
+    // One radio GROUP per band: the mic is the fetal reference and the strap the
+    // maternal one, so picking a maternal SOT must not clear the fetal one.
+    const sot = el('input');
+    sot.type = 'radio';
+    sot.name = `sot-role-${track.band}`;
+    sot.checked = track.role === 'sot';
+    const bandLabel = (catalog.bands.find((b) => b.id === track.band) || {}).label || track.band;
+    sot.title = `Use this trace as the ${bandLabel.toLowerCase()} source of truth`;
+    sot.onchange = () => {
+      state.setup.tracks.forEach((t) => {
+        if (t.band === track.band) t.role = 'estimate';
+      });
+      track.role = 'sot';
+      pushSetup(true);
+    };
+    row.append(cell(sot, 'c-sot'));
+
+    row.append(cell(checkbox(track.show_activity, (v) => { track.show_activity = v; pushSetup(true); }), 'c-act'));
+
+    const actions = el('td', 'row-actions');
+    const clear = el('button', 'btn btn-ghost', 'Clear');
+    clear.title = 'Discard this trace’s accumulated beats';
+    clear.onclick = guard(async () => { await api('/api/tracks/clear', { id: track.id }); });
+    const dup = el('button', 'btn btn-ghost', 'Copy');
+    dup.title = 'Duplicate — the quickest way to compare two model versions';
+    dup.onclick = () => {
+      const copy = JSON.parse(JSON.stringify(track));
+      copy.id = `${track.id}-${Math.random().toString(36).slice(2, 6)}`;
+      copy.role = 'estimate';
+      copy.color = '';
+      state.setup.tracks.splice(index + 1, 0, copy);
+      pushSetup(true);
+    };
+    const remove = el('button', 'btn btn-ghost btn-danger', '✕');
+    remove.title = 'Remove track';
+    remove.onclick = () => { state.setup.tracks.splice(index, 1); pushSetup(true); };
+    actions.append(clear, dup, remove);
+    row.append(actions);
+
+    body.append(row);
+  });
+
+  const notes = $('#matrix-notes');
+  notes.innerHTML = '';
+  let bad = 0;
+  for (const t of state.tracks) {
+    for (const p of t.problems || []) { notes.append(el('div', null, `${t.name}: ${p}`)); bad++; }
+  }
+  for (const t of state.tracks) {
+    if (!t.enabled || t.slow !== true) continue;
+    const cfg = state.setup.tracks.find((x) => x.id === t.id) || {};
+    notes.append(el('div', 'warn',
+      `${t.name}: a pass takes ${(t.last_ms / 1000).toFixed(1)}s but runs every ${cfg.period_s}s — `
+      + `${t.skipped} passes skipped, so this trace lags real time. `
+      + 'Raise "Every", lower "Chunk", or run it on an accelerator (RTMON_DEVICE).'));
+    bad++;
+  }
+  if (!bad) notes.append(el('div', 'ok', 'All tracks runnable, all keeping up.'));
+}
+
+function cell(node, cls) {
+  const td = el('td', cls);
+  td.append(node);
+  return td;
+}
+
+function checkbox(value, onChange) {
+  const node = el('input');
+  node.type = 'checkbox';
+  node.checked = !!value;
+  node.onchange = () => onChange(node.checked);
+  return node;
+}
+
+function number(value, min, max, step, onChange) {
+  const node = el('input');
+  node.type = 'number';
+  node.value = value;
+  node.min = min; node.max = max; node.step = step;
+  node.onchange = () => onChange(Math.min(max, Math.max(min, Number(node.value) || min)));
+  return node;
+}
+
+function select(options, value, onChange, title) {
+  const node = el('select');
+  if (title) node.title = title;
+  for (const [id, label] of options) {
+    const option = el('option', null, label);
+    option.value = id;
+    node.appendChild(option);
+  }
+  node.value = value;
+  node.onchange = () => onChange(node.value);
+  return node;
+}
+
+function modelOptions(family) {
+  return (state.catalog.models[family] || []).map((m) => [
+    m.version, `${m.version} · ${m.channels}ch${m.note ? ` · ${m.note}` : ''}`,
+  ]);
+}
+
+function defaultModel(family, wantChannels) {
+  const list = state.catalog.models[family] || [];
+  const fit = list.filter((m) => m.channels === wantChannels);
+  return (fit.length ? fit : list).slice(-1)[0]?.version;
+}
+
+/* Input selection is ordered, not a set: the models concatenate per-fiber embeddings,
+ * so slot 0 is whichever fiber was first during training. The ordinal on each chip is
+ * the channel's position in the stack. */
+function inputChips(track, def) {
+  const host = el('div', 'chip-row');
+  // Only the channels this processor can actually take. Listing the rest struck
+  // through was noise: an acoustic detector will never be handed a PPG trace, so
+  // offering it and then refusing it wastes a row of width on every track.
+  for (const channel of state.catalog.all_channels) {
+    if (!def.kinds.includes(channel.kind)) continue;
+    const position = track.inputs.indexOf(channel.id);
+    const chip = el('button', `chip${position >= 0 ? ' on' : ''}${channel.live ? '' : ' cold'}`);
+    chip.append(document.createTextNode(channel.id));
+    if (position >= 0 && def.arity !== 'one') {
+      chip.append(el('sup', 'ord', String(position + 1)));
+    }
+    chip.title = channelTitle(channel);
+    chip.onclick = () => {
+      if (position >= 0) track.inputs.splice(position, 1);
+      else if (def.arity === 'one') track.inputs = [channel.id];
+      else track.inputs.push(channel.id);
+      pushSetup(true);
+    };
+    host.append(chip);
+  }
+  return host;
+}
+
+function channelTitle(channel) {
+  const where = channel.live
+    ? `streaming from ${channel.source}`
+    : `not streaming; provided by ${(channel.sources || []).join(' or ')}`;
+  return [`${channel.id} — ${channel.label}`, channel.note, where].filter(Boolean).join('\n');
+}
+
+function renderChannelPicker() {
+  const host = $('#channel-picker');
+  host.innerHTML = '';
+  for (const channel of state.catalog.all_channels) {
+    const on = state.setup.channels.includes(channel.id);
+    const chip = el('button', `chip${on ? ' on' : ''}${channel.live ? '' : ' cold'}`, channel.id);
+    chip.title = channelTitle(channel);
+    chip.onclick = () => {
+      const at = state.setup.channels.indexOf(channel.id);
+      if (at >= 0) state.setup.channels.splice(at, 1);
+      else state.setup.channels.push(channel.id);
+      pushSetup(true);
+    };
+    host.append(chip);
+  }
+}
+
+function renderPresets() {
+  const node = $('#preset-select');
+  node.innerHTML = '';
+  node.append(el('option', null, 'Presets…'));
+  for (const preset of state.presets) {
+    const option = el('option', null, `${preset.name} (${preset.tracks} tracks)`);
+    option.value = preset.name;
+    node.append(option);
+  }
+  node.value = '';
+}
+
+// ---------------------------------------------------------------------------
+// Formatting
+// ---------------------------------------------------------------------------
+const shortName = (s) => (s.length > 22 ? `${s.slice(0, 21)}…` : s);
+
+function fmtDuration(seconds) {
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const m = Math.floor(seconds / 60), s = Math.round(seconds % 60);
+  return s ? `${m}m${s}` : `${m}m`;
+}
+
+function fmtClock(seconds) {
+  const total = Math.max(0, Math.floor(seconds));
+  const h = Math.floor(total / 3600), m = Math.floor((total % 3600) / 60), s = total % 60;
+  const pad = (n) => String(n).padStart(2, '0');
+  return h ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+}
+
+// ---------------------------------------------------------------------------
+// Wiring
+// ---------------------------------------------------------------------------
+function init() {
+  const saved = localStorage.getItem('rtmon-theme');
+  if (saved) document.documentElement.dataset.theme = saved;
+  else if (window.matchMedia('(prefers-color-scheme: light)').matches) {
+    document.documentElement.dataset.theme = 'light';
+  }
+
+  $('#theme-btn').onclick = () => {
+    const next = isDark() ? 'light' : 'dark';
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem('rtmon-theme', next);
+    dirty = true;
+    renderAll();
+  };
+
+  $('#setup-btn').onclick = () => {
+    $('#drawer').hidden = false;
+    renderAll();
+    // The startup probe now runs in the background after the server binds, so the
+    // state fetched at page load may predate its results; refresh when the panel
+    // that displays them opens.
+    api('/api/state').then(applyState).catch(() => {});
+  };
+
+  // Re-render the matrix once the user leaves the field they were editing, if a
+  // save-echo arrived while they were typing (see renderMatrix's focus guard).
+  $('#matrix-body').addEventListener('focusout', () => {
+    setTimeout(() => {
+      const body = $('#matrix-body');
+      if (body.dataset.stale && !body.contains(document.activeElement)) renderMatrix();
+    }, 0);
+  });
+  document.querySelectorAll('[data-close]').forEach((node) => {
+    node.onclick = () => { $('#drawer').hidden = true; };
+  });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') $('#drawer').hidden = true;
+  });
+
+  $('#hr-window').onchange = (e) => { view.hrWindowS = Number(e.target.value); sendView(); dirty = true; };
+  $('#scope-window').onchange = (e) => {
+    view.windowS = Number(e.target.value);
+    state.setup.window_s = view.windowS;
+    sendView();
+    pushSetup();
+    renderScopeRows();
+    dirty = true;
+  };
+
+  $('#table-btn').onclick = () => {
+    const wrap = $('#hr-table');
+    wrap.hidden = !wrap.hidden;
+    $('#table-btn').classList.toggle('btn-primary', !wrap.hidden);
+    renderTable();
+  };
+
+  $('#rescan-btn').onclick = guard(async () => {
+    // Not `function(){ this.… }`: under strict mode an unbound call has no `this`,
+    // so the old handler threw before the probe request was even sent.
+    const btn = $('#rescan-btn');
+    btn.disabled = true;
+    btn.textContent = 'Scanning…';
+    try { applyState(await api('/api/probe', { deep: true })); }
+    finally { btn.disabled = false; btn.textContent = 'Rescan'; }
+  });
+
+  $('#add-track').onclick = () => {
+    state.setup.tracks.push({
+      id: `t${Math.random().toString(36).slice(2, 8)}`,
+      name: 'New track', enabled: true, processor: 'acoustic', inputs: [],
+      model: null, detector: (state.catalog.detectors.slice(-1)[0] || {}).id || '',
+      band: 'fetal', chunk_s: 10, period_s: 5, role: 'estimate', color: '',
+      smooth: 0, show_activity: false,
+    });
+    pushSetup(true);
+  };
+
+  $('#rec-btn').onclick = guard(async () => {
+    const active = state.status && state.status.recording && state.status.recording.active;
+    const button = $('#rec-btn');
+    button.disabled = true;                 // no double-click into a second session
+    try {
+      const result = await api(active ? '/api/record/stop' : '/api/record/start', {});
+      applyState(result);                   // flip the button now, not at the next frame
+      if (active && result.session) toast(`Saved ${result.session.directory}`);
+      else if (result.session) toast(`Recording to ${result.session.name}`);
+    } finally {
+      renderStatus();
+    }
+  });
+
+  $('#preset-save').onclick = guard(async () => {
+    const name = prompt('Save this setup as:');
+    if (!name) return;
+    const result = await api('/api/presets/save', { name });
+    state.presets = result.presets;
+    renderPresets();
+    toast(`Saved preset “${result.saved}”`);
+  });
+
+  $('#preset-select').onchange = guard(async (e) => {
+    const name = e.target.value;
+    if (!name) return;
+    applyState(await api('/api/presets/load', { name }));
+    toast(`Loaded “${name}”`);
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    sendView();
+    dirty = true;   // rAF resumes on the next visible frame; make it redraw at once
+  });
+
+  const wrap = $('#hr-canvas').parentElement;
+  wrap.addEventListener('mousemove', (e) => {
+    const rect = wrap.getBoundingClientRect();
+    hover = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    dirty = true;
+  });
+  wrap.addEventListener('mouseleave', () => { hover = null; dirty = true; });
+
+  new ResizeObserver(() => {
+    view.buckets = Math.min(4000, Math.max(200, Math.round(
+      ($('#hr-canvas').getBoundingClientRect().width || 900) * (window.devicePixelRatio || 1))));
+    sendView();
+    dirty = true;
+  }).observe(document.body);
+
+  // Retry the initial state fetch: right after launch the server may be a beat away
+  // from listening, and a page that gives up on its first try is a page that has to
+  // be reloaded by hand. The WebSocket reconnects on its own; this makes the HTTP
+  // side match.
+  (async () => {
+    for (let attempt = 0; attempt < 10; attempt++) {
+      try { applyState(await api('/api/state')); return; }
+      catch (err) { await new Promise((r) => setTimeout(r, 700)); }
+    }
+    toast('Cannot reach the rtmon server — is it running?', true);
+  })();
+  connect();
+  requestAnimationFrame(frame);
+  setInterval(() => { if (state.status) renderStatus(); }, 1000);
+}
+
+init();

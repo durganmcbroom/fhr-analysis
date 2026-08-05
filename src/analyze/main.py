@@ -27,12 +27,13 @@ from analyze.constants import PROJECT_DIR, FETAL_ACOUSTIC_BAND_HZ, BROADBAND_FIL
 
 # PATIENT = "fiber-vertical"
 # PATIENT = "fiber-horizontal"
-PATIENT = "PT12_2"
+# PATIENT = "PT12_2"
 # PATIENT = "Patient 7"
-# PATIENT = "patient8-session1"
+PATIENT = "patient8-session1"
 # PATIENT = "session-02"
 # PATIENT = "band_durgan_1"
 WINDOW = 0, 340
+WINDOW = 0, 30*60
 # WINDOW = 0, 30
 # WINDOW = 10, 1810
 # WINDOW = 220, 340
@@ -241,11 +242,11 @@ def main():
         WINDOW,
         DATA_DIR,
     )
-    run_tslnet_pipeline(
-        PATIENT,
-        WINDOW,
-        DATA_DIR,
-    )
+    # run_tslnet_pipeline(
+    #     PATIENT,
+    #     WINDOW,
+    #     DATA_DIR,
+    # )
     # run_raw_bandpass()
     # run_funet_pipeline(
     #     PATIENT,

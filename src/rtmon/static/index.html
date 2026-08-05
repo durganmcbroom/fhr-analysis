@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>rtmon — live fetal HR</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text y='26' font-size='26'>🫀</text></svg>">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="dot" id="link-dot" title="disconnected"></span>
+    <strong>rtmon</strong>
+    <span class="muted">live fetal HR</span>
+  </div>
+
+  <div class="rec-block">
+    <button class="btn btn-rec" id="rec-btn" disabled>
+      <span class="rec-icon"></span><span id="rec-label">Record</span>
+    </button>
+    <span class="rec-meta" id="rec-meta">idle</span>
+  </div>
+
+  <div class="topbar-right">
+    <label class="field compact">
+      <span>HR window</span>
+      <select id="hr-window">
+        <option value="60">1 min</option>
+        <option value="180">3 min</option>
+        <option value="300" selected>5 min</option>
+        <option value="600">10 min</option>
+        <option value="900">15 min</option>
+      </select>
+    </label>
+    <label class="field compact">
+      <span>Scope</span>
+      <select id="scope-window">
+        <option value="2">2 s</option>
+        <option value="5">5 s</option>
+        <option value="10" selected>10 s</option>
+        <option value="30">30 s</option>
+        <option value="60">60 s</option>
+      </select>
+    </label>
+    <button class="btn" id="theme-btn" title="Toggle light / dark">◑</button>
+    <button class="btn btn-primary" id="setup-btn">Setup</button>
+  </div>
+</header>
+
+<main class="layout">
+  <aside class="rail" id="track-cards"></aside>
+
+  <section class="stage">
+    <figure class="panel chart-panel">
+      <figcaption class="panel-head">
+        <h2>Instantaneous heart rate</h2>
+        <div class="legend" id="hr-legend"></div>
+        <button class="btn btn-ghost" id="table-btn" title="Show the values as a table">Table</button>
+      </figcaption>
+      <div class="canvas-wrap">
+        <canvas id="hr-canvas"></canvas>
+        <div class="tooltip" id="hr-tip" hidden></div>
+        <div class="empty" id="hr-empty">No traces yet — arm a device in <b>Setup</b>.</div>
+      </div>
+      <div class="table-view" id="hr-table" hidden></div>
+    </figure>
+
+    <figure class="panel scope-panel">
+      <figcaption class="panel-head">
+        <h2>Signals</h2>
+        <span class="muted" id="scope-meta"></span>
+      </figcaption>
+      <div class="scopes" id="scopes"></div>
+    </figure>
+  </section>
+</main>
+
+<!-- ------------------------------------------------------------------ setup -->
+<div class="drawer" id="drawer" hidden>
+  <div class="drawer-scrim" data-close></div>
+  <div class="drawer-body">
+    <header class="drawer-head">
+      <h2>Setup</h2>
+      <div class="drawer-head-actions">
+        <select id="preset-select" class="preset-select"><option value="">Presets…</option></select>
+        <button class="btn" id="preset-save">Save as…</button>
+        <button class="btn" data-close>Done</button>
+      </div>
+    </header>
+
+    <div class="drawer-scroll">
+      <section class="block">
+        <div class="block-head">
+          <h3>Devices</h3>
+          <p>Every input the rig can have is listed. Availability is probed on this
+             machine — nothing needs commenting out. A simulated device can stand in
+             for a missing one and provides the same channels.</p>
+          <button class="btn" id="rescan-btn">Rescan</button>
+        </div>
+        <div class="device-grid" id="devices"></div>
+      </section>
+
+      <section class="block">
+        <div class="block-head">
+          <h3>Processing matrix</h3>
+          <p>One row per trace. Choose what computes it, which model version, which
+             fibers feed it, and how much history each pass sees. Exactly one row can
+             be the source of truth; everything else is scored against it.</p>
+          <button class="btn btn-primary" id="add-track">Add track</button>
+        </div>
+        <div class="matrix-wrap">
+          <table class="matrix" id="matrix">
+            <thead>
+              <tr>
+                <th class="c-on" title="Enable this trace">On</th>
+                <th class="c-name">Name</th>
+                <th>Processor</th>
+                <th>Model</th>
+                <th class="c-inputs">Inputs</th>
+                <th>Detector</th>
+                <th>Band</th>
+                <th class="c-num" title="Seconds of history analysed each pass">Chunk</th>
+                <th class="c-num" title="Seconds between passes">Every</th>
+                <th class="c-num" title="Moving average over beats; 0 is off">Smooth</th>
+                <th class="c-sot" title="Source of truth">SOT</th>
+                <th class="c-act" title="Show the model's beat-activity trace">Act</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="matrix-body"></tbody>
+          </table>
+        </div>
+        <div class="matrix-notes" id="matrix-notes"></div>
+      </section>
+
+      <section class="block">
+        <div class="block-head">
+          <h3>Signals shown</h3>
+          <p>Which channels get a scope. Purely a view setting — a channel is still
+             recorded and still feeds the matrix when it is hidden here.</p>
+        </div>
+        <div class="chip-row" id="channel-picker"></div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
