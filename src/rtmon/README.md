@@ -77,6 +77,42 @@ check LD_LIBRARY_PATH"* — naming a variable macOS strips from child processes 
 actually use, so nothing has to be exported before launching. `RTMON_PICOSDK_DIR`
 overrides it for a non-standard install.
 
+### The legacy ps4000 on Apple silicon
+
+Pico's arm64 macOS SDK carries `ps4000a` and **no classic `ps4000`**, so a legacy
+4000-series unit cannot be driven from an arm64 process at all. Running the whole
+server under Rosetta to work around that is a bad trade for two channels: torch loses
+its MPS backend, the arm64 ps3000a driver becomes unloadable in the same process, and
+startup slows down.
+
+So the boundary is drawn around the driver alone. `sources/ps4000_helper.py` runs
+x86_64 and does nothing but stream raw ADC counts down a pipe; `sources/ps4000_bridge.py`
+is the parent side; everything else stays native. Counts become volts and get stamped by
+the same `SampleClock` as the in-process path, so nothing downstream — the ring, the
+matrix, the recorder, `ps4000.npy` — can tell which side of the process boundary the
+samples came from. Where the native driver *does* exist (Linux, Windows, an Intel Mac)
+it is used directly and the bridge never starts.
+
+Both halves are found rather than configured:
+
+- **An Intel-capable Python.** Any will do — the helper imports nothing outside the
+  standard library, which is why it binds the eight driver entry points through `ctypes`
+  by hand instead of using the `picosdk` wrapper (that wrapper imports numpy at module
+  scope, and requiring an x86_64 numpy turns "have any Intel Python" into "maintain a
+  second scientific stack under Rosetta"). `/usr/bin/python3` is deliberately skipped
+  despite being universal: SIP strips `DYLD_*` from Apple-signed binaries, and without
+  it the driver cannot find the `libpicoipp` and `libiomp5` it dlopens by bare name.
+  When a universal interpreter is used, the loader path is passed through `arch -e` for
+  the same reason.
+- **An x86_64 `libps4000.dylib`.** Each candidate's Mach-O header is read and non-Intel
+  ones are skipped, so an arm64 PicoSDK does not shadow a usable Intel driver. PicoScope
+  6 and 7 both ship one inside the app bundle, next to its dependencies, which is
+  usually what ends up being used.
+
+`RTMON_PS4000_PYTHON` and `RTMON_PS4000_LIB_DIR` override either search. The device card
+reports which route it will take, and distinguishes "no Intel driver anywhere" from
+"driver fine, unit not plugged in".
+
 **A channel that streams silence is called out.** macOS hands an app digital silence
 rather than an error when microphone permission has not been granted, and a
 disconnected fiber reads as a flat line at the correct sample rate — both look like a
@@ -140,38 +176,59 @@ Five steps, shown in their own wizard panel so the Setup drawer stays uncluttere
 
 | step | what happens |
 | --- | --- |
-| **Settle** | a plain 3-second wait. Each channel's **floor** is the median of its amplitude over that window |
-| **First tap** | you knock all three sensors. Recognised as **1.35× the largest excursion seen during Settle** — a bar the channel can always clear — and its **height** is recorded per channel |
-| **Settle again** | wait for every channel to fall back within 1.8× its floor |
-| **Second tap** | knock again. Now recognised at `floor + 80% × (height − floor)`, calibrated from *your* tap on *this* rig |
+| **Settle** | a plain 3-second wait. Each channel's **floor** is the median of its amplitude over that window, and its **settle level** the 75th percentile |
+| **First tap** | you knock all three sensors. Recognised at `max(1.5 × floor, 1.35 × settle level)`, and its **height** is recorded per channel |
+| **Settle again** | wait for every channel to fall back within 2× its floor |
+| **Second tap** | knock again. Now recognised at `floor + 50% × (height − floor)`, calibrated from *your* tap on *this* rig |
 | **Measure** | locate the impulse in each channel and report each target against the fiber |
 
-Amplitude throughout is **peak deviation** — `max|x − median(x)|` in a 1 s window, the
-largest excursion the channel is currently making.
+Amplitude throughout is the peak of the channel's **transient envelope**: smooth
+`|x − median|`, subtract anything slower than 0.15 s, take the largest thing left. The
+same pipeline the estimator runs on the tap it finally measures, so the gates and the
+measurement are looking at one quantity.
 
-The first tap is judged against the settle-phase **maximum**, not a multiple of the
-median, and that distinction is load-bearing. A fiber's peak amplitude is often barely
-2× its own median level, so "4× the median" is a threshold the channel physically
-cannot reach — measured on a real capture it was unreachable on *all four* fibers, and
-a strike never registered no matter how hard it was struck. "Bigger than anything seen
-while you held still" is always reachable by definition. The margin can be small
-because a false trigger needs **every** channel to spike in the same 200 ms poll, and
-fiber noise is not synchronised with an acoustic burst and a photodiode deflection —
-simultaneity does the rejecting, this only has to notice. Verified both ways on real
-fiber noise: taps down to 0.04 V register, and 18 s with no tap at all never
-self-triggers.
+That statistic replaces plain peak deviation (`max|x − median|`), which was measuring
+the wrong thing on all three inputs. On the strap it *is* the wearer's pulse, so a tap
+had to out-swing a heartbeat to be noticed. On a fiber it is the noise tail — the
+largest single-sample excursion in five thousand — so the bar sat at an extreme of the
+noise distribution rather than above the signal. Measured on 24 s of real fiber, the
+separation between quiet stretches and genuine knocks goes from 15× to 33×.
 
-Asking for two taps removes the guesswork. There is no tuned constant trying to fit a
-millivolt fiber and a photodiode counting in the millions: the threshold comes from a
-knock you actually gave. It also replaces a "wait until everything is steady" gate that,
-measured on session-01, all three channels satisfied on **1% of polls** — these signals
-are quasi-periodic and never settle in the sense that gate wanted, which is why it felt
-so finicky. A fixed three-second wait is something you can actually satisfy.
+**How hard you have to tap**, measured against the previous gate on real fiber noise,
+a microphone and a 55 Hz strap: the fiber and the strap need **roughly half** the force
+(0.066 V vs 0.142 V, and 301 counts vs 665); the mic is about the same. Three changes
+get there, and each fixes a distinct way the old gate was unreachable:
+
+- **The settle level is a quantile, not the maximum.** You have just clicked a button
+  and your hands are still on the rig, so the settle window routinely catches one real
+  bump — and on a live fiber a bump is 15× the quiet floor. As a maximum that sets a bar
+  nothing can clear afterwards.
+- **The channels no longer have to cross in the same 200 ms poll**, only within 1.2 s of
+  each other. Requiring one poll to see all three was at odds with the entire point of
+  the exercise: they are misaligned, by up to the several hundred milliseconds of BLE
+  batching, which is the quantity being measured. It made you hit harder and harder
+  until the slowest channel's response happened to overlap the fastest one's — a test of
+  force, not of simultaneity.
+- **The second tap is judged at half the first, not four fifths.** You have to reproduce
+  your own calibration knock by feel, on three sensors at once.
+
+The thresholds can be this low precisely *because* of the coincidence requirement: on
+77 s of a real quiet rig, a 1.5× bar fires on some polls of a single channel and on
+**none** across all three. Simultaneity does the rejecting; the levels only have to
+notice.
+
+Asking for two taps removes the remaining guesswork. There is no tuned constant trying
+to fit a millivolt fiber and a photodiode counting in the millions: the second
+threshold comes from a knock you actually gave. It also replaces a "wait until
+everything is steady" gate that, measured on session-01, all three channels satisfied on
+**1% of polls** — these signals are quasi-periodic and never settle in the sense that
+gate wanted. A fixed three-second wait is something you can actually satisfy.
 
 Only the **second** tap is analysed, in a window anchored to the moment it fired
-(1.0 s before to 1.6 s after). A wider window reaches back to the calibration tap, and
-the estimator will happily lock onto it — measured, it reported −2499 ms, the gap
-between the two knocks.
+(1.4 s before to 1.6 s after — the earlier bound covers the lag between the knock and a
+poll noticing it). A wider window reaches back to the calibration tap, and the estimator
+will happily lock onto it: measured, it reported −2499 ms, the gap between the two
+knocks.
 
 #### How the impulse is located
 
@@ -330,6 +387,8 @@ At most the last 0.5 s is lost.
 | `sources/` | one module per device, plus the simulators |
 | `align.py` | tap alignment: the PPG timing measurement (see above) |
 | `sources/picosdk_loader.py` | driver-library discovery (see above) |
+| `sources/ps4000_bridge.py` | parent side of the x86_64 ps4000 subprocess (see above) |
+| `sources/ps4000_helper.py` | that subprocess: stdlib-only, direct ctypes into the driver |
 | `sources/polar_worker.py` | the BLE subprocess (see above) |
 | `setups.py` | saved matrices |
 | `wire.py`, `wsproto.py` | binary frame format, stdlib WebSocket |

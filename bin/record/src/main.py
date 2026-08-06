@@ -19,7 +19,6 @@ from picosdk.functions import assert_pico_ok
 import sounddevice as sd
 from scipy.io.wavfile import read as wav_read
 
-
 DISPLAY_TIME = 10
 SAVE_TIME = 300
 

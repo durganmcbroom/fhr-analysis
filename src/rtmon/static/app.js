@@ -34,7 +34,8 @@ const state = {
   status: null, tracks: [],
 };
 const live = {
-  now: 0,
+  now: 0,                // server time carried by the last frame
+  stamp: 0,              // performance.now() when that frame was decoded
   waves: new Map(),      // channel id -> {t0, dt, lo, hi, stamp}
   series: new Map(),     // track id   -> {t, y}
   activity: new Map(),   // track id   -> {t, y}
@@ -43,6 +44,49 @@ const view = { windowS: 10, hrWindowS: 300, buckets: 1200 };
 const yScales = new Map();   // channel id -> {lo, hi} smoothed
 let hrDomain = null;         // {lo, hi} smoothed
 let socket = null, dirty = true, hover = null;
+
+// ---------------------------------------------------------------------------
+// Render clock
+//
+// Every sample the server sends is timestamped relative to the "now" of the frame that
+// carried it, so drawing only when a frame lands pins the traces in place between
+// frames and then jumps them left by a whole interval at once — visible, and ugly, at
+// any frame rate an instrument can afford to send.
+//
+// Instead the page runs its own clock and keeps it disciplined toward the server's.
+// `age(base)` is how far that clock has moved past the frame a payload came from, and
+// every time axis subtracts it. Between frames the data does not change but the window
+// slides, so the traces glide. Two guards:
+//
+//   * extrapolation is capped, so a stalled stream freezes rather than scrolling off
+//     into empty space and pretending the last second was flat;
+//   * arrivals are eased in rather than snapped to, so ordinary jitter in the frame
+//     timing does not show up as a stutter.
+// ---------------------------------------------------------------------------
+const MAX_EXTRAPOLATE_S = 1.0;
+const RESYNC_S = 1.5;
+let renderClock = null;      // the page's estimate of server time, in server units
+
+function tickClock() {
+  if (!live.stamp) return;
+  // Where the server's clock has got to by now. Continuous across an arrival: the
+  // frame carries a `now` one interval later exactly as the elapsed term resets, so
+  // this does not sawtooth — which is why the extrapolation is anchored to the
+  // server's absolute time rather than measured as a gap since the last frame.
+  const target = live.now + Math.min(MAX_EXTRAPOLATE_S,
+                                     (performance.now() - live.stamp) / 1000);
+  if (renderClock === null || Math.abs(target - renderClock) > RESYNC_S) renderClock = target;
+  else renderClock += (target - renderClock) * 0.25;   // ease out arrival jitter
+}
+
+/* How stale a payload is: seconds between the frame it was stamped against and the
+ * moment being drawn. Floored at zero so a late-arriving frame can never push data
+ * right of the present — a trace running into the future is the one artefact worse
+ * than a stationary one — and bounded well above the 1 s HR refresh, which is itself a
+ * perfectly legitimate age for a series payload to have. */
+const MAX_AGE_S = 3.0;
+const age = (base) => Math.min(MAX_AGE_S,
+                               Math.max(0, (renderClock === null ? base : renderClock) - base));
 
 const $ = (sel) => document.querySelector(sel);
 const el = (tag, cls, text) => {
@@ -69,10 +113,14 @@ async function api(path, body) {
 function applyState(s) {
   if (!s) return;
   state.hub = s.hub;
-  state.setup = s.setup;
+  // The page owns the setup while it is being edited. Taking the server's copy here
+  // while a newer local edit is still travelling would undo that edit — the operator
+  // unticks two boxes quickly and the first save's echo puts the second one back.
+  if (!editsInFlight()) state.setup = s.setup;
   state.catalog = s.catalog;
   state.presets = s.presets || [];
   if (s.tracks) state.tracks = s.tracks;
+  reconcileTracks();
   // Fold the HTTP answer into the same block the stream delivers. Without this the
   // chrome (Record button, elapsed timer, channel rates) keeps rendering from the
   // last status frame, so arming a device left Record disabled for up to a second —
@@ -153,24 +201,36 @@ function readFrame(buffer) {
   const dv = new DataView(buffer);
   const headLen = dv.getUint32(0, true);
   const head = JSON.parse(new TextDecoder().decode(new Uint8Array(buffer, 4, headLen)));
-  const base = 4 + headLen;
-  const grab = (ref) => new Float32Array(buffer, base + ref.off, ref.n);
+  const at = 4 + headLen;
+  const grab = (ref) => new Float32Array(buffer, at + ref.off, ref.n);
 
   live.now = head.now;
+  live.stamp = performance.now();
+  // Every payload records the server clock it was stamped against. It cannot be
+  // assumed to be the newest one: waveforms go out at WAVE_FPS and the HR series only
+  // once a second, so a trace drawn against the latest frame's "now" would sit up to a
+  // full second into the future and slide back each time it refreshed.
+  const base = head.now;
   for (const w of head.waves || []) {
-    live.waves.set(w.ch, { t0: w.t0, dt: w.dt, lo: grab(w.lo), hi: grab(w.hi) });
+    live.waves.set(w.ch, { t0: w.t0, dt: w.dt, lo: grab(w.lo), hi: grab(w.hi), base });
   }
   if (head.tracks) {
     live.series.clear();
     live.activity.clear();
     for (const t of head.tracks) {
-      live.series.set(t.id, { t: grab(t.t), y: grab(t.y) });
-      if (t.activity) live.activity.set(t.id, { t: grab(t.activity.t), y: grab(t.activity.y) });
+      live.series.set(t.id, { t: grab(t.t), y: grab(t.y), base });
+      if (t.activity) {
+        live.activity.set(t.id, { t: grab(t.activity.t), y: grab(t.activity.y), base });
+      }
     }
   }
   if (head.status) {
     state.status = head.status;
     state.tracks = head.status.tracks || state.tracks;
+    // Status frames arrive once a second and carry the server's track list, which
+    // lags a local edit by however long the save takes. Filter it through the setup
+    // the page is holding, or a track removed a moment ago flickers back.
+    reconcileTracks();
     renderStatus();
   }
   dirty = true;
@@ -179,15 +239,27 @@ function readFrame(buffer) {
 // ---------------------------------------------------------------------------
 // Canvas helpers
 // ---------------------------------------------------------------------------
+/* Canvas sizes are cached and only re-measured when something can have changed.
+ * getBoundingClientRect() forces a layout, and now that every canvas is redrawn on
+ * every animation frame, measuring ten of them per frame would put a synchronous
+ * reflow in the way of the very smoothness this is for. The ResizeObserver and each
+ * newly created canvas are the only things that can invalidate a size. */
+let sizeDirty = true;
+const canvasBox = new WeakMap();
+
 function fitCanvas(canvas) {
-  const dpr = window.devicePixelRatio || 1;
-  const rect = canvas.getBoundingClientRect();
-  const w = Math.max(1, Math.round(rect.width * dpr));
-  const h = Math.max(1, Math.round(rect.height * dpr));
-  if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  let box = canvasBox.get(canvas);
+  if (sizeDirty || !box) {
+    const rect = canvas.getBoundingClientRect();
+    box = { w: rect.width, h: rect.height, dpr: window.devicePixelRatio || 1 };
+    canvasBox.set(canvas, box);
+    const w = Math.max(1, Math.round(box.w * box.dpr));
+    const h = Math.max(1, Math.round(box.h * box.dpr));
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
+  }
   const ctx = canvas.getContext('2d');
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  return { ctx, w: rect.width, h: rect.height };
+  ctx.setTransform(box.dpr, 0, 0, box.dpr, 0, 0);
+  return { ctx, w: box.w, h: box.h };
 }
 
 /* Ease a domain toward its target instead of snapping. An axis that rescales on every
@@ -243,7 +315,11 @@ function drawHR() {
   const dom = hrDomain;
 
   const plot = { x: PAD.l, y: PAD.t, w: w - PAD.l - PAD.r, h: h - PAD.t - PAD.b };
-  const X = (tRel) => plot.x + plot.w * (1 + tRel / view.hrWindowS);
+  // Xd places display time: the right edge is always the present, so the grid and the
+  // "now" label are drawn with it. Sample times are relative to the frame that carried
+  // them, so each series is drawn through Xd shifted by its own age — which is what
+  // slides the data left between arrivals instead of parking it until the next one.
+  const Xd = (tRel) => plot.x + plot.w * (1 + tRel / view.hrWindowS);
   const Y = (bpm) => plot.y + plot.h * (1 - (bpm - dom.lo) / (dom.hi - dom.lo));
 
   // ---- grid: recessive, behind everything
@@ -266,7 +342,7 @@ function drawHR() {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
   for (let s = 0; s <= view.hrWindowS + 1e-6; s += tStep) {
-    const x = Math.round(X(-s)) + 0.5;
+    const x = Math.round(Xd(-s)) + 0.5;
     if (x < plot.x - 1) continue;
     ctx.beginPath(); ctx.moveTo(x, plot.y); ctx.lineTo(x, plot.y + plot.h); ctx.stroke();
     ctx.fillText(s === 0 ? 'now' : `-${fmtDuration(s)}`, x, plot.y + plot.h + 5);
@@ -284,6 +360,7 @@ function drawHR() {
     let peak = 0;
     for (let i = 0; i < act.y.length; i++) if (act.y[i] > peak) peak = act.y[i];
     if (peak <= 0) continue;
+    const X = (tRel) => Xd(tRel - age(act.base));
     ctx.globalAlpha = 0.16;
     ctx.fillStyle = seriesColor(t.color);
     ctx.beginPath();
@@ -301,6 +378,7 @@ function drawHR() {
   const ordered = [...visible].sort((a, b) => (a.role === 'sot' ? 1 : 0) - (b.role === 'sot' ? 1 : 0));
   for (const t of ordered) {
     const s = live.series.get(t.id);
+    const shift = age(s.base);
     ctx.strokeStyle = seriesColor(t.color);
     ctx.lineWidth = t.role === 'sot' ? 2.5 : 2;
     ctx.lineJoin = 'round';
@@ -309,7 +387,7 @@ function drawHR() {
     let started = false;
     for (let i = 0; i < s.t.length; i++) {
       if (s.t[i] < -view.hrWindowS) continue;
-      const x = X(s.t[i]), y = Y(s.y[i]);
+      const x = Xd(s.t[i] - shift), y = Y(s.y[i]);
       // A gap longer than a few beats is missing data, not a straight line through it.
       if (started && s.t[i] - s.t[i - 1] > 6) { ctx.moveTo(x, y); }
       else if (!started) { ctx.moveTo(x, y); started = true; }
@@ -347,13 +425,16 @@ function drawHR() {
     ctx.moveTo(hover.x, plot.y); ctx.lineTo(hover.x, plot.y + plot.h);
     ctx.stroke();
     ctx.restore();
-    showTip(hover, plot, ordered, X);
+    showTip(hover, plot, ordered);
   } else {
     $('#hr-tip').hidden = true;
   }
 }
 
-function showTip(pos, plot, tracks, X) {
+function showTip(pos, plot, tracks) {
+  // The cursor picks a point on the display clock; the samples are stamped on the
+  // frame's. Adding the drift converts one to the other, so the tooltip reports the
+  // value actually under the crosshair rather than one a fraction of a second off.
   const tRel = ((pos.x - plot.x) / plot.w - 1) * view.hrWindowS;
   const tip = $('#hr-tip');
   tip.innerHTML = '';
@@ -361,7 +442,7 @@ function showTip(pos, plot, tracks, X) {
   let any = false;
   for (const t of tracks) {
     const s = live.series.get(t.id);
-    const value = sampleAt(s, tRel);
+    const value = sampleAt(s, tRel + age(s.base));
     if (value == null) continue;
     any = true;
     const row = el('div', 'tip-row');
@@ -430,7 +511,11 @@ function drawScopes() {
     yScales.set(id, scale);
     const span = Math.max(1e-12, scale.hi - scale.lo);
     const Y = (v) => h - ((v - scale.lo) / span) * h;
-    const X = (tRel) => w * (1 + tRel / view.windowS);
+    // Same correction as the HR chart: the bucket times came stamped against the frame
+    // that carried them, and the window has moved on since. At a 10 s scope width one
+    // frame's worth is several pixels, which is exactly the judder being removed.
+    const shift = age(wave.base);
+    const X = (tRel) => w * (1 + (tRel - shift) / view.windowS);
 
     if (scale.lo < 0 && scale.hi > 0) {          // zero line, only when zero is in view
       ctx.strokeStyle = cssVar('--line-soft');
@@ -491,7 +576,18 @@ function scopeColor(id) {
 // Render loop
 // ---------------------------------------------------------------------------
 function frame() {
-  if (dirty) { dirty = false; drawHR(); drawScopes(); renderCards(); }
+  // Latched, not cleared blind: a ResizeObserver that fires mid-frame must leave the
+  // flag set for the next one rather than have it wiped by this one.
+  const measuring = sizeDirty;
+  tickClock();
+  // The canvases redraw every frame, because the window they show is sliding even when
+  // no new samples have arrived; that is what makes the traces scroll rather than hop.
+  // The cards are DOM and rebuild their contents, so they stay on the dirty flag —
+  // there is nothing in a bpm readout that benefits from 60 Hz.
+  drawHR();
+  drawScopes();
+  if (dirty) { dirty = false; renderCards(); }
+  if (measuring) sizeDirty = false;
   requestAnimationFrame(frame);
 }
 
@@ -1055,21 +1151,86 @@ function alignTargets() {
   return ['MIC', 'PPG0'].filter((c) => live.has(c));
 }
 
+/* Editing the matrix must never feel like a network operation.
+ *
+ * Every control here used to await POST /api/setup and repaint from the reply, so a
+ * checkbox, a dropdown or the ✕ on a row all cost a round trip before anything moved
+ * on screen — and the round trip is not free while three torch passes are running.
+ * The page already holds the whole setup, so it can answer every one of those clicks
+ * itself: mutate, repaint, and send the save behind the paint.
+ *
+ * `saveSeq` counts local edits, `sentSeq` the last one the server has confirmed. While
+ * they differ the local copy wins over anything arriving from the server (see
+ * applyState), which is what makes a burst of quick clicks land in order.
+ */
 let saveTimer = null;
+let saveSeq = 0;
+let sentSeq = 0;
+const editsInFlight = () => saveSeq !== sentSeq;
+
 function pushSetup(immediate) {
+  const seq = ++saveSeq;
+  reconcileTracks();
+  renderMatrix();
+  renderChannelPicker();
+  renderAlignPanel();
+  renderScopeRows();
+  sendView();                // the socket learns the new channel list now, not on echo
+  dirty = true;              // cards, legend and the chart follow on the next frame
+
   clearTimeout(saveTimer);
-  const send = guard(async () => {
-    applyState(await api('/api/setup', state.setup));
+  const send = async () => {
+    try {
+      const answer = await api('/api/setup', state.setup);
+      // Only the newest edit clears the flag; an older reply landing late must not
+      // declare the page in sync while a further edit is still queued.
+      if (seq === saveSeq) sentSeq = seq;
+      applyState(answer);
+    } catch (err) {
+      sentSeq = saveSeq;     // give up ownership, so the next server state is taken
+      toast(err.message, true);
+    }
+  };
+  // Even "immediate" defers by a tick: the click has already been drawn, and going
+  // through the timer coalesces a double-click into one save.
+  saveTimer = setTimeout(send, immediate ? 0 : 300);
+}
+
+/* Mirror onto the track list the parts of a track the page can settle by itself.
+ *
+ * The server owns everything a track *measures* — its beats, its timing, its problems
+ * — but not whether it exists, what it is called or what colour it is. Those come from
+ * the setup, so a removed row can take its card, its legend entry and its trace with
+ * it now instead of at the next round trip. Removals only: a track added locally has
+ * nothing to show until the server has run it. */
+function reconcileTracks() {
+  if (!state.setup) return;
+  const cfg = new Map((state.setup.tracks || []).map((t) => [t.id, t]));
+  for (const id of [...live.series.keys()]) if (!cfg.has(id)) live.series.delete(id);
+  for (const id of [...live.activity.keys()]) if (!cfg.has(id)) live.activity.delete(id);
+  const merge = (list) => (list || []).filter((t) => cfg.has(t.id)).map((t) => {
+    const c = cfg.get(t.id);
+    return { ...t, name: c.name, color: c.color || t.color, enabled: c.enabled,
+             role: c.role, band: c.band };
   });
-  if (immediate) send(); else saveTimer = setTimeout(send, 350);
+  state.tracks = merge(state.tracks);
+  if (state.status) state.status.tracks = merge(state.status.tracks);
 }
 
 function renderMatrix() {
   const body = $('#matrix-body');
-  // Never rebuild the row the user is typing in: every keystroke debounce-saves the
+  // Never rebuild the field the user is TYPING in: every keystroke debounce-saves the
   // setup, the server echoes it back, and a naive re-render would replace the focused
   // input mid-word (losing focus and the caret). Mark it stale; re-render on blur.
-  if (body.contains(document.activeElement)) {
+  //
+  // Only a caret counts. Guarding on "focus is anywhere in the table" also covered
+  // buttons — and Chrome focuses a button when you click it, so pressing ✕ marked the
+  // table stale and returned without removing the row. The row then sat there until
+  // the operator happened to click somewhere else, which read as "delete is broken".
+  const focused = document.activeElement;
+  const typing = focused && body.contains(focused) && focused.tagName === 'INPUT'
+    && (focused.type === 'text' || focused.type === 'number');
+  if (typing) {
     body.dataset.stale = '1';
     return;
   }
@@ -1152,7 +1313,12 @@ function renderMatrix() {
     const actions = el('td', 'row-actions');
     const clear = el('button', 'btn btn-ghost', 'Clear');
     clear.title = 'Discard this trace’s accumulated beats';
-    clear.onclick = guard(async () => { await api('/api/tracks/clear', { id: track.id }); });
+    clear.onclick = guard(async () => {
+      live.series.delete(track.id);      // the trace goes now; the server confirms after
+      live.activity.delete(track.id);
+      dirty = true;
+      await api('/api/tracks/clear', { id: track.id });
+    });
     const dup = el('button', 'btn btn-ghost', 'Copy');
     dup.title = 'Duplicate — the quickest way to compare two model versions';
     dup.onclick = () => {
@@ -1381,6 +1547,7 @@ function init() {
     const wrap = $('#hr-table');
     wrap.hidden = !wrap.hidden;
     $('#table-btn').classList.toggle('btn-primary', !wrap.hidden);
+    sizeDirty = true;    // the table takes height from the chart it sits under
     renderTable();
   };
 
@@ -1452,6 +1619,7 @@ function init() {
     view.buckets = Math.min(4000, Math.max(200, Math.round(
       ($('#hr-canvas').getBoundingClientRect().width || 900) * (window.devicePixelRatio || 1))));
     sendView();
+    sizeDirty = true;   // the cached canvas boxes are the only thing this invalidates
     dirty = true;
   }).observe(document.body);
 

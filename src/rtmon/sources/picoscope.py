@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from rtmon.sources import picosdk_loader
+from rtmon.sources import picosdk_loader, ps4000_bridge
 from rtmon.sources.base import KIND_FIBER, Channel, Probe, SampleClock, Sink, Source
 
 # Index into the driver's range table; 8 == +/-5 V, which is what the rig has always used.
@@ -63,6 +63,8 @@ class PicoSource(Source):
         self._cfunc = None
         self._clock: SampleClock | None = None
         self._sink = None
+        self._bridged = False
+        self._start_error: Exception | None = None
 
     # ----------------------------------------------------------------- driver
     def _import(self):
@@ -291,12 +293,121 @@ class PS3000ASource(PicoSource):
 
 @dataclass
 class PS4000Source(PicoSource):
+    """The legacy 4000-series unit, in-process where possible and bridged where not.
+
+    Pico's arm64 macOS SDK has no classic ps4000 driver, so on Apple silicon the
+    in-process route is not merely unconfigured -- it cannot exist. Rather than make
+    that the operator's problem, the source falls back to running the Intel driver in a
+    subprocess (:mod:`rtmon.sources.ps4000_bridge`) and carries on presenting the same
+    two channels. The device card says which route is in use; nothing else in the
+    server can tell the difference.
+    """
+
     id: str = "ps4000"
     label: str = "PicoScope 4000 (chest)"
     driver_module: str = "ps4000"
     history_seconds: float = 90.0
     _fiber_names: tuple[str, ...] = ("1A", "1B")
 
+    # ------------------------------------------------------------- routing
+    def _native_error(self) -> str | None:
+        """Why the driver cannot be used in-process, or None if it can."""
+        try:
+            self._import()
+        except Exception as exc:  # noqa: BLE001 - the text is the whole point
+            return f"{type(exc).__name__}: {exc}"
+        return None
+
+    def probe(self, deep: bool = True) -> Probe:
+        native = self._native_error()
+        if native is None:
+            return super().probe(deep)
+
+        # No in-process driver. Say so once, then report on the bridge instead -- the
+        # native failure is the *reason* for the bridge, not a competing diagnosis.
+        blocked = ps4000_bridge.describe()
+        if blocked:
+            return Probe(False, native, blocked)
+        if not deep:
+            return Probe(True, f"Intel driver at {ps4000_bridge.find_library()} "
+                               f"(the arm64 SDK has no ps4000; running it in a "
+                               f"subprocess)")
+        helper = ps4000_bridge.Helper(SAMPLE_INTERVAL_US, OVERVIEW_BUFFER, CHANNEL_RANGE)
+        try:
+            answer = helper.open(probe=True)
+        except Exception as exc:  # noqa: BLE001
+            # The Intel side is working -- it got far enough to run the driver and be
+            # told no. Say that, so a missing cable is not mistaken for a broken setup.
+            found = "PICO_NOT_FOUND" in str(exc)
+            return Probe(False, f"{type(exc).__name__}: {exc}",
+                         "Plug the unit in and rescan." if found else
+                         "The Intel driver loaded but the unit did not open. Check it "
+                         "is not held open by PicoScope.")
+        finally:
+            helper.close()
+        return Probe(True, f"{answer.get('info') or 'unit opened'} · via Intel subprocess")
+
+    def start(self, sink: Sink) -> None:
+        self._bridged = self._native_error() is not None
+        if not self._bridged:
+            super().start(sink)
+            return
+
+        self._sink = sink
+        self._stop.clear()
+        self._error = None
+        ready = threading.Event()
+        self._start_error = None
+        self._thread = threading.Thread(target=self._run_bridged, args=(ready,),
+                                        name=f"rtmon-{self.id}", daemon=True)
+        self._thread.start()
+        ready.wait(timeout=40.0)          # a cold Rosetta start is not instant
+        if self._start_error is not None:
+            raise self._start_error
+        if not self.running:
+            raise RuntimeError(f"{self.label} did not start within 40 s")
+
+    def _run_bridged(self, ready: threading.Event) -> None:
+        """Same contract as PicoSource._run: stamp blocks into the sink until stopped.
+
+        The conversion is the same one the in-process path does -- counts to volts,
+        one vectorised multiply into a float32 block -- so downstream nothing knows
+        which side of the process boundary the samples came from.
+        """
+        helper = ps4000_bridge.Helper(SAMPLE_INTERVAL_US, OVERVIEW_BUFFER, CHANNEL_RANGE)
+        try:
+            helper.open()
+            actual_us = helper.release()
+            self.nominal_hz = 1e6 / actual_us
+            clock = SampleClock(self.nominal_hz)
+            scale = np.float32(VOLT_RANGES[CHANNEL_RANGE] / helper.max_adc)
+
+            self._running.set()
+            ready.set()
+
+            stopping = self._stop.is_set
+            while not self._stop.is_set():
+                payload = helper.block(stopping)
+                if payload is None:
+                    break                       # helper finished or is being stopped
+                if not payload:
+                    continue
+                counts = np.frombuffer(payload, dtype="<i2")
+                n = counts.size // 2
+                block = np.empty((n, 2), dtype=np.float32)
+                block[:, 0] = counts[:n]
+                block[:, 1] = counts[n:]
+                block *= scale
+                self._sink(clock.stamp(n), block)
+        except Exception as exc:  # noqa: BLE001 - surfaced through .error and the UI
+            self._error = f"{type(exc).__name__}: {exc}"
+            self._start_error = exc
+        finally:
+            helper.close()
+            self._running.clear()
+            ready.set()
+
+    # --------------------------------------------------- in-process driver
     def _open_unit(self, ps, handle) -> int:
         return ps.ps4000OpenUnit(ctypes.byref(handle))
 

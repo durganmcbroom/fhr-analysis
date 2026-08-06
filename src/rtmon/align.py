@@ -31,8 +31,8 @@ functions):
   microphone and a slow pressure deflection to a photodiode; correlating those shapes
   measures the difference in sensor response time along with the clock offset. Shape
   correlation still runs, as a cross-check that both channels caught the same event.
-* **One quantity for both gates** -- the peak deviation inside a window -- so
-  "settled" and "tapped" are the same measurement read two ways.
+* **One quantity throughout** -- the peak of the *transient* envelope -- so the gates
+  that recognise a tap and the estimator that times it are looking at the same thing.
 """
 
 from __future__ import annotations
@@ -61,6 +61,12 @@ ONSET_AGREE_S = 0.30
 # Envelope variation slower than this is background (the wearer's pulse, breathing,
 # drift), not a tap.
 TREND_WINDOW_S = 0.40
+# The gates use a shorter one. They judge a single second of history, so a 0.4 s trend
+# eats half the window; and unlike the estimator, which wants the tap's whole shape, a
+# gate only has to notice that something fast happened. Measured across a real fiber, a
+# microphone and a strap, shortening it to 0.15 s roughly halves the force a tap needs
+# without producing a single false trigger in 77 s of quiet.
+GATE_TREND_S = 0.15
 # Each channel's transient envelope must stand this far above its own floor to count as
 # containing a tap at all. Measured separation on simulated traces: a tapped PPG scores
 # ~8 and an untapped one (wearer's pulse only) ~2.5; the microphone is ~900 vs ~11. The
@@ -68,8 +74,8 @@ TREND_WINDOW_S = 0.40
 IMPULSE_PROMINENCE_MIN = 4.0
 
 # --- the two-tap calibration ----------------------------------------------------
-# Amplitude is measured as peak deviation from the median inside a window -- the largest
-# excursion the channel is currently making (see `activity`).
+# Amplitude is measured as the peak of the channel's *transient* envelope inside a
+# window -- the largest fast excursion it is currently making (see `activity`).
 #
 # Rather than guess what counts as a tap, the run asks for TWO. The first is a
 # calibration knock: it establishes how big a real tap is on THIS rig, on each channel.
@@ -81,22 +87,38 @@ IMPULSE_PROMINENCE_MIN = 4.0
 # quasi-periodic and never settle in the sense that gate wanted.
 SETTLE_S = 3.0              # a plain wait; the floor is whatever the channel does in it
 FLOOR_WINDOW_S = 1.0        # window the floor and the live level are measured over
-# The FIRST tap is recognised against the LARGEST excursion seen while you were holding
-# still, not a multiple of the median. That distinction is the whole ballgame: a fiber's
-# peak amplitude is often barely 2x its own median level, so "4x the median" is a
-# threshold the channel physically cannot reach -- measured on a real capture it was
-# unreachable on all four fibers, which is why a strike never registered no matter how
-# hard it was struck. Exceeding everything seen during the settle, by a margin, is
-# always reachable by definition.
+# The first tap has to beat both the channel's quiet level and whatever the channel was
+# doing during the settle. Two thresholds, because each covers the other's failure:
+# a multiple of the floor is meaningless on a channel whose floor is near zero, and a
+# multiple of the settle level is meaningless on one that was disturbed while settling.
 #
-# The margin can be modest because a false trigger needs EVERY channel to spike in the
-# same 200 ms poll, and a fiber's own noise is not synchronised with an acoustic burst
-# and a photodiode deflection. Simultaneity does the rejecting; this only has to notice.
-FIRST_TAP_MARGIN = 1.35
-# The second tap is judged against the first: floor + 80% of the way to that height.
-# A knock of similar force clears it; the wearer's pulse and handling noise do not.
-TAP_FRACTION = 0.80
-RECOVER_RATIO = 1.8         # back within this multiple of the floor counts as recovered
+# Both are modest, and can afford to be: a false trigger needs EVERY channel to spike
+# within COINCIDENCE_S, and a fiber's own noise is not synchronised with an acoustic
+# burst and a photodiode deflection. Measured on 77 s of the operator's quiet rig, a
+# 1.5x bar fires on some polls of a single channel and on none across all three.
+# Simultaneity does the rejecting; these only have to notice.
+FIRST_TAP_RATIO = 1.5       # x the quiet floor
+FIRST_TAP_MARGIN = 1.35     # x the settle level (see SETTLE_QUANTILE)
+# The settle level is a QUANTILE of what was seen, not the maximum. The operator has
+# just clicked a button and still has their hands on the rig, so the settle window
+# routinely catches one real bump -- and on a live fiber a bump is 15x the quiet floor,
+# which as a maximum sets a bar nothing can clear afterwards. Three quarters of the
+# polls being below it is enough of a "this is what quiet looks like" without letting
+# the loudest quarter define it.
+SETTLE_QUANTILE = 0.75
+# The second tap is judged against the first: floor + this much of the way to that
+# height. Half, not the 80% first tried -- the operator has to reproduce their own
+# calibration knock by feel, on three sensors at once, and demanding four fifths of it
+# on every one of them is what turned "tap again" into "hit it harder, and again".
+TAP_FRACTION = 0.50
+# The channels do not have to cross in the same poll, only within this of each other.
+# Requiring one 200 ms poll to see all three over threshold is at odds with the entire
+# purpose of the exercise: they are misaligned, by up to the several hundred
+# milliseconds of BLE batching, which is the quantity being measured. It made the
+# operator hit harder and harder until the slowest channel's response happened to
+# overlap the fastest one's -- a test of force, not of simultaneity.
+COINCIDENCE_S = 1.2
+RECOVER_RATIO = 2.0         # back within this multiple of the floor counts as recovered
 RECOVER_HOLD_S = 0.6
 TAP_WINDOW_S = 1.0
 SETTLE_AFTER_TAP_S = 0.8    # let the tail of the tap arrive before measuring
@@ -105,7 +127,11 @@ SETTLE_AFTER_TAP_S = 0.8    # let the tail of the tap arrive before measuring
 # then happily locks onto it (measured: leading edges reported -2499 ms, the gap
 # between the two taps, rather than the offset). The window is anchored to the moment
 # the second tap fired instead.
-PRE_TAP_S = 1.0             # context kept before the tap, for the baseline
+#
+# PRE_TAP_S covers the lag between the knock and a poll noticing it: the level is read
+# over a FLOOR_WINDOW_S window, so a tap can be most of a second old by the time the
+# crossing is seen. Still far short of the gap between the two taps.
+PRE_TAP_S = 1.4             # context kept before the tap, for the baseline
 POST_TAP_S = 1.6            # ...and after it, for the decay
 MIN_CONFIDENCE = 0.35
 
@@ -120,19 +146,54 @@ SETTLE_TIMEOUT_S = 45.0
 POLL_S = 0.2
 
 
-def activity(x: np.ndarray) -> float:
-    """Largest excursion in ``x`` from its own median -- the peak deviation.
+def activity(t: np.ndarray, x: np.ndarray) -> float:
+    """Peak of the channel's *transient* envelope inside the window.
 
-    The single quantity both gates are built on. Settling watches it for steadiness;
-    the tap gate watches it for a jump. It is an absolute level in the channel's own
-    units, so the thresholds around it are always *ratios* against that channel's own
-    baseline -- never one number shared across a millivolt fiber and a
+    The single quantity every gate is built on, and deliberately the same pipeline the
+    estimator uses on the tap it finally measures: smooth the deviation, subtract what
+    is slower than a tap, take the peak of what is left. It is an absolute level in the
+    channel's own units, so the thresholds around it are always *ratios* against that
+    channel's own baseline -- never one number shared across a millivolt fiber and a
     photodiode counting in the millions.
+
+    It replaces the plain peak deviation ``max|x - median|``, which was measuring the
+    wrong thing on every input. On a PPG strap that number is the wearer's own pulse,
+    so a tap had to out-swing a heartbeat to be noticed. On a fiber it is the noise
+    tail -- the largest single-sample excursion in five thousand -- so the bar sat near
+    an extreme of the noise distribution rather than above the signal. Measured on the
+    operator's own live fiber over 24 s, separation between quiet stretches and real
+    knocks went from 15x under the old statistic to 33x under this one, which is the
+    same tap recognised at less than half the force.
     """
+    t = np.asarray(t, dtype=float)
     x = np.asarray(x, dtype=float)
-    if x.size < 4:
+    if x.size < 8:
         return 0.0
-    return float(np.max(np.abs(x - np.median(x))))
+    hz = x.size / max(float(t[-1] - t[0]), 1e-9)
+
+    dev = np.abs(x - np.median(x))
+    width = max(1, int(round(ENVELOPE_SMOOTH_S * hz)))
+    if width > 1:
+        dev = np.convolve(dev, np.ones(width) / width, mode="same")
+
+    trend_width = max(1, int(round(GATE_TREND_S * hz)))
+    # Two trend widths, not more: the PPG runs at 55 Hz, so a one-second window holds
+    # only 55 samples. Demanding more headroom than that silently skipped the trend
+    # removal on exactly the channel that needs it most -- the one where the untreated
+    # statistic is the wearer's own pulse.
+    if trend_width > 1 and dev.size > 2 * trend_width:
+        trend = np.convolve(dev, np.ones(trend_width) / trend_width, mode="same")
+        dev = np.maximum(dev - trend, 0.0)
+        # A 'same' convolution divides a partial sum by the full width at each end, so
+        # the trend is understated there and the residual correspondingly inflated.
+        # Trim both ends rather than let an edge artefact masquerade as a tap; the poll
+        # interval is short enough that a genuine tap lands inside the kept region
+        # within one further poll.
+        edge = trend_width // 2
+        dev = dev[edge:dev.size - edge]
+        if dev.size == 0:
+            return 0.0
+    return float(np.max(dev))
 
 
 def envelope(t: np.ndarray, x: np.ndarray, grid: np.ndarray) -> np.ndarray:
@@ -432,8 +493,22 @@ class TapAligner:
         out = {}
         for channel in channels:
             tail = self._tail(channel, FLOOR_WINDOW_S)
-            out[channel] = activity(tail[1]) if tail is not None else 0.0
+            out[channel] = activity(*tail) if tail is not None else 0.0
         return out
+
+    @staticmethod
+    def _coincident(crossed: dict, channels, now: float):
+        """When all of ``channels`` crossed, if they did so close enough together.
+
+        Returns the earliest crossing time, or None. Crossings older than
+        COINCIDENCE_S are forgotten in place, so one channel that fired a while ago
+        cannot pair with an unrelated knock on another.
+        """
+        for channel in [c for c, at in crossed.items() if now - at > COINCIDENCE_S]:
+            del crossed[channel]
+        if len(crossed) < len(channels):
+            return None
+        return min(crossed.values())
 
     # ------------------------------------------------------------------- run
     def _run(self, reference: str, targets: list[str]) -> None:
@@ -496,9 +571,9 @@ class TapAligner:
                           hint="Check it is streaming, then retry.")
                 return None
             floor[channel] = float(np.median(usable))
-            # The largest thing the channel did while holding still. The first tap has
-            # to beat this, which is a bar it can always clear.
-            ceiling[channel] = float(np.max(usable))
+            # What the channel was doing while holding still, robustly -- see
+            # SETTLE_QUANTILE for why this is not the maximum.
+            ceiling[channel] = float(np.quantile(usable, SETTLE_QUANTILE))
         self._set(floor=floor, seconds_left=0.0)
         return floor, ceiling
 
@@ -507,23 +582,28 @@ class TapAligner:
         """Wait for a calibration tap and return its height on each channel."""
         self._set(phase="tap1", message="Tap all sensors together — once, firmly.",
                   hint="This one just calibrates; the next one is measured.")
-        thresholds = {c: max(ceiling[c] * FIRST_TAP_MARGIN, floor[c] * 1.15)
+        thresholds = {c: max(ceiling[c] * FIRST_TAP_MARGIN, floor[c] * FIRST_TAP_RATIO)
                       for c in channels}
+        self._set(threshold=thresholds)
         peaks = {c: 0.0 for c in channels}
         deadline = time.time() + ARM_TIMEOUT_S
+        crossed: dict[str, float] = {}
         seen_at = None
         while not self._cancel.is_set():
             if time.time() > deadline:
                 self._set(phase="failed", message="No tap detected.",
                           hint="Strike the sensors together firmly and retry.")
                 return None
+            now = time.time()
             levels = self._levels(channels)
             for c, v in levels.items():
                 peaks[c] = max(peaks[c], v)
+                if v >= thresholds[c]:
+                    crossed[c] = now
             self._set(level={c: min(1.0, levels[c] / thresholds[c]) if thresholds[c] > 0 else 0.0
                              for c in channels})
-            if seen_at is None and all(levels[c] >= thresholds[c] for c in channels):
-                seen_at = time.time()
+            if seen_at is None and self._coincident(crossed, channels, now) is not None:
+                seen_at = now
             # Once seen, keep watching for a moment so the recorded height is the tap's
             # true peak rather than whatever the first crossing caught -- but time that
             # out UNCONDITIONALLY. Nesting it inside the threshold test deadlocked: a
@@ -565,17 +645,25 @@ class TapAligner:
         self._set(phase="tap2", message="Now tap again — this one is measured.",
                   hint="Same force, all sensors struck by one motion.")
         deadline = time.time() + ARM_TIMEOUT_S
+        crossed: dict[str, float] = {}
         while not self._cancel.is_set():
             if time.time() > deadline:
                 self._set(phase="failed", message="No second tap detected.",
                           hint="Retry, striking about as hard as the first time.")
                 return None
+            now = time.time()
             levels = self._levels(channels)
+            for c, v in levels.items():
+                if v >= threshold[c]:
+                    crossed[c] = now
             self._set(level={c: min(1.0, levels[c] / threshold[c]) if threshold[c] > 0 else 0.0
                              for c in channels})
-            # Every channel must see it: one alone is a sensor being bumped.
-            if all(levels[c] >= threshold[c] for c in channels):
-                return time.time()
+            # Every channel must see it, within COINCIDENCE_S of the others: one alone
+            # is a sensor being bumped. The earliest crossing anchors the analysis
+            # window, since that is the channel that noticed the knock first.
+            tap_at = self._coincident(crossed, channels, now)
+            if tap_at is not None:
+                return tap_at
             self._cancel.wait(POLL_S)
         return None
 
