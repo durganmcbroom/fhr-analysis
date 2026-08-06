@@ -41,9 +41,6 @@ from rtmon.sources import KIND_AUDIO, KIND_FIBER, KIND_PPG
 
 # Bandpass filtfilt needs several periods of the lowest band edge before it settles.
 MIN_CHUNK_SECONDS = 1.0
-# How many points of the beat-activity trace get shipped to the browser. Enough to see
-# the peak structure the detector is working from; small enough to be free.
-ACTIVITY_POINTS = 720
 
 BANDS = {
     "fetal": {"bpm": FETAL_BPM_RANGE, "acoustic": FETAL_ACOUSTIC_BAND_HZ,
@@ -88,7 +85,6 @@ class Context:
 class Result:
     beats: np.ndarray                                # absolute seconds
     window: tuple[float, float] | None = None        # the span these beats replace
-    activity: tuple[np.ndarray, np.ndarray] | None = None   # (t_abs, y) for display
     note: str = ""
 
 
@@ -102,22 +98,6 @@ def _hz(t: np.ndarray, fallback: float = 5000.0) -> float:
 
 def _usable(t: np.ndarray, hz: float) -> bool:
     return t.size >= 2 and (t[-1] - t[0]) >= MIN_CHUNK_SECONDS and t.size > int(hz)
-
-
-def _decimate(t: np.ndarray, y: np.ndarray, points: int = ACTIVITY_POINTS):
-    """Thin an activity trace for the wire, keeping each bucket's maximum.
-
-    Max rather than mean: the whole point of the trace is where its peaks are, and
-    averaging is exactly the operation that removes them.
-    """
-    n = t.size
-    if n <= points:
-        return t.astype(np.float64), y.astype(np.float32)
-    edges = np.linspace(0, n, points + 1).astype(int)
-    starts = edges[:-1]
-    keep = starts < edges[1:]
-    starts = starts[keep]
-    return t[starts].astype(np.float64), np.maximum.reduceat(y, starts).astype(np.float32)
 
 
 def align(series: Sequence[tuple[np.ndarray, np.ndarray]], hz: float | None = None):
@@ -235,9 +215,7 @@ def run_ssnet(ctx: Context) -> Result:
 
     separated = bp_filter(Audio(fiber.time, hz, heart), narrow[0], narrow[1], filter_type="butter")
     beats = detectors.run_detector(ctx.detector, separated, ctx.bpm)
-    at, ay = _decimate(fiber.time + t0, np.abs(separated.data).astype(np.float32))
-    return Result(np.asarray(beats, dtype=float) + t0, window=(t0, float(t[-1])),
-                  activity=(at, ay))
+    return Result(np.asarray(beats, dtype=float) + t0, window=(t0, float(t[-1])))
 
 
 # ---------------------------------------------------------------------------
@@ -287,8 +265,7 @@ def _run_activity_model(ctx: Context, family: str) -> Result:
     n = min(activity.size, grid.size)
     activity, grid = activity[:n], grid[:n]
     beats = activity_beats(activity, grid, ctx.bpm)
-    at, ay = _decimate(grid, activity.astype(np.float32))
-    return Result(beats, window=(float(grid[0]), float(grid[-1])), activity=(at, ay))
+    return Result(beats, window=(float(grid[0]), float(grid[-1])))
 
 
 def run_funet(ctx: Context) -> Result:

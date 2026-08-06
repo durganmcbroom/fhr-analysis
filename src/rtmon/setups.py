@@ -98,7 +98,7 @@ def default_setup() -> Setup:
         tracks.append(Track(
             id="funet", name=f"FUNet — {funet.version}", processor="funet",
             inputs=list(ABDOMEN_FIBER_NAMES), model=funet.version, band="fetal",
-            chunk_s=10.0, period_s=5.0, color=TRACK_COLORS[1], show_activity=True))
+            chunk_s=10.0, period_s=5.0, color=TRACK_COLORS[1]))
     if ssnet is not None:
         tracks.append(Track(
             id="ssnet", name=f"NeoSSNet — 1B", processor="ssnet", inputs=["1B"],

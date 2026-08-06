@@ -54,6 +54,8 @@ import yaml
 from scipy.io import wavfile
 from scipy.signal import detrend, resample_poly
 
+from analyze.hr.detect_v9 import v9_beat_detector
+
 matplotlib.use("Agg")
 from matplotlib import pyplot as plt
 from matplotlib.transforms import blended_transform_factory
@@ -61,7 +63,7 @@ from matplotlib.transforms import blended_transform_factory
 from analyze.anc import nlms_filter  # noqa: E402
 from analyze.data import Audio, load_fibers  # noqa: E402
 from analyze.filters import bp_filter  # noqa: E402
-from analyze.hr.detect_v7 import v7_beat_detector  # noqa: E402
+# from analyze.hr.detect_v7 import v7_beat_detector  # noqa: E402
 from analyze.sot import _moving_avg, _robust_clip  # noqa: E402
 from analyze.util import normalize_path  # noqa: E402
 from analyze.constants import (  # noqa: E402
@@ -306,9 +308,9 @@ def fetal_detector(plot_dir, idx):
     def detect(sot: Audio):
         prepared = Audio(sot.time, sot.hz, _robust_clip(detrend(sot.data)))
         if plot_dir is None:
-            return v7_beat_detector(prepared, FETAL_BPM_RANGE)
+            return v9_beat_detector(prepared, FETAL_BPM_RANGE)
         with PLOT_LOCK:  # v7's debug plot uses pyplot
-            return v7_beat_detector(prepared, FETAL_BPM_RANGE, plot_dir, tag=f"{idx}_detections")
+            return v9_beat_detector(prepared, FETAL_BPM_RANGE, plot_dir, tag=f"{idx}_detections")
     return detect
 
 

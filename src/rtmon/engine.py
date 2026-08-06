@@ -60,12 +60,11 @@ class Track:
     role: str = "estimate"          # "sot" marks the reference; at most one track has it
     color: str = TRACK_COLORS[0]
     smooth: int = 0                 # moving-average window in beats; 0 disables
-    show_activity: bool = False
 
     def to_json(self) -> dict:
         return {k: getattr(self, k) for k in (
             "id", "name", "enabled", "processor", "inputs", "model", "detector",
-            "band", "chunk_s", "period_s", "role", "color", "smooth", "show_activity")}
+            "band", "chunk_s", "period_s", "role", "color", "smooth")}
 
     @staticmethod
     def from_json(raw: dict) -> "Track":
@@ -82,7 +81,6 @@ class TrackState:
     """Live results for one track. Owned by the engine, read under its lock."""
 
     beats: np.ndarray = field(default_factory=lambda: np.empty(0))
-    activity: tuple[np.ndarray, np.ndarray] | None = None
     busy: bool = False
     due_at: float = 0.0
     last_run: float = 0.0
@@ -236,8 +234,6 @@ class Engine:
                 state.note = result.note
                 state.beats = _merge_beats(state.beats, result.beats, result.window)
                 state.beats = _trim(state.beats, HISTORY_SECONDS)
-                if result.activity is not None:
-                    state.activity = result.activity
             # A run that took longer than its period would otherwise be permanently
             # due; push the next deadline out so the pool is not saturated by one track.
             state.due_at = max(state.due_at, time.monotonic() + max(0.5, track.period_s * 0.25))
@@ -374,10 +370,6 @@ class Engine:
                 "t": t.tolist(),
                 "y": [round(float(v), 2) for v in y],
             }
-            if track.show_activity and state.activity is not None:
-                at, ay = state.activity
-                item["activity"] = {"t": at.tolist(),
-                                    "y": [round(float(v), 4) for v in ay]}
             # Scored against the reference for its OWN band, and never across bands.
             sot_id = sot_by_band.get(track.band)
             sot = series.get(sot_id) if sot_id else None
@@ -440,7 +432,7 @@ def _agreement(sot_t, sot_y, t, y) -> dict | None:
 
 
 # Fields that change what a track *computes*. Editing any of them invalidates the
-# accumulated beats; name, colour, smoothing and activity display do not.
+# accumulated beats; name, colour and smoothing do not.
 _COMPUTATION_FIELDS = ("processor", "inputs", "model", "detector", "band", "chunk_s")
 
 

@@ -316,7 +316,6 @@ recording:
 | Band | fetal 90–280 or maternal 45–140 — sets the bandpass *and* the plausible-BPM gate |
 | Chunk / Every | seconds analysed per pass, and seconds between passes. `Every < Chunk` gives overlapping windows |
 | SOT | which row is the reference **for its band** (see below) |
-| Act | overlay the model's beat-activity envelope under the trace |
 
 **Copy** duplicates a row — the fastest way to put FUNet v21 and v35 on the same
 chart against the same SOT, on the same fibers, live. Each row reports Δ (median

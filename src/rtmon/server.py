@@ -347,13 +347,7 @@ class App:
         if t.size:
             keep = t >= now - hr_window_s
             t, y = t[keep], y[keep]
-        entry = {"id": item["id"], **wire.series_entry(builder, t, y, now)}
-        activity = item.get("activity")
-        if activity:
-            at = np.asarray(activity["t"], dtype=np.float64)
-            ay = np.asarray(activity["y"], dtype=np.float32)
-            entry["activity"] = wire.series_entry(builder, at, ay, now)
-        return entry
+        return {"id": item["id"], **wire.series_entry(builder, t, y, now)}
 
     def _status(self, snapshot: dict | None) -> dict:
         """The block the page renders its chrome from.
@@ -372,9 +366,8 @@ class App:
             "channels": [{"id": cid, "hz": round(self.hub.rate_of(cid), 1),
                           "silent": self.hub.is_silent(cid, SILENCE_WINDOW_S)}
                          for cid in sorted(self.hub.channel_map())],
-            "tracks": [{k: v for k, v in item.items() if k not in ("t", "y", "activity")}
+            "tracks": [{k: v for k, v in item.items() if k not in ("t", "y")}
                        for item in tracks],
-            "align": self.aligner.state().to_json(),
         }
 
 

@@ -1,4 +1,4 @@
 BASEDIR=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$BASEDIR/../.." && pwd)
 
-poetry -P "$ROOT" run fhr-snippets "$BASEDIR/training_clips.yaml" --out-dir="$BASEDIR/training/stereo_v12/" --no-plots
+poetry -P "$ROOT" run fhr-snippets "$BASEDIR/training_clips.yaml" --out-dir="$BASEDIR/training/stereo_v13/" --no-plots

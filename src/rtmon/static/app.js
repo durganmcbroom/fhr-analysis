@@ -38,7 +38,6 @@ const live = {
   stamp: 0,              // performance.now() when that frame was decoded
   waves: new Map(),      // channel id -> {t0, dt, lo, hi, stamp}
   series: new Map(),     // track id   -> {t, y}
-  activity: new Map(),   // track id   -> {t, y}
 };
 const view = { windowS: 10, hrWindowS: 300, buckets: 1200 };
 const yScales = new Map();   // channel id -> {lo, hi} smoothed
@@ -216,12 +215,8 @@ function readFrame(buffer) {
   }
   if (head.tracks) {
     live.series.clear();
-    live.activity.clear();
     for (const t of head.tracks) {
       live.series.set(t.id, { t: grab(t.t), y: grab(t.y), base });
-      if (t.activity) {
-        live.activity.set(t.id, { t: grab(t.activity.t), y: grab(t.activity.y), base });
-      }
     }
   }
   if (head.status) {
@@ -349,32 +344,11 @@ function drawHR() {
   }
   ctx.restore();
 
-  // ---- beat-activity underlays, drawn first so they never obscure a trace
+  // ---- traces; the source of truth is drawn last so it sits on top
   ctx.save();
   ctx.beginPath();
   ctx.rect(plot.x, plot.y, plot.w, plot.h);
   ctx.clip();
-  for (const t of visible) {
-    const act = live.activity.get(t.id);
-    if (!act || act.t.length < 2) continue;
-    let peak = 0;
-    for (let i = 0; i < act.y.length; i++) if (act.y[i] > peak) peak = act.y[i];
-    if (peak <= 0) continue;
-    const X = (tRel) => Xd(tRel - age(act.base));
-    ctx.globalAlpha = 0.16;
-    ctx.fillStyle = seriesColor(t.color);
-    ctx.beginPath();
-    ctx.moveTo(X(act.t[0]), plot.y + plot.h);
-    for (let i = 0; i < act.t.length; i++) {
-      ctx.lineTo(X(act.t[i]), plot.y + plot.h - (act.y[i] / peak) * plot.h * 0.22);
-    }
-    ctx.lineTo(X(act.t[act.t.length - 1]), plot.y + plot.h);
-    ctx.closePath();
-    ctx.fill();
-  }
-  ctx.globalAlpha = 1;
-
-  // ---- traces; the source of truth is drawn last so it sits on top
   const ordered = [...visible].sort((a, b) => (a.role === 'sot' ? 1 : 0) - (b.role === 'sot' ? 1 : 0));
   for (const t of ordered) {
     const s = live.series.get(t.id);
@@ -1207,7 +1181,6 @@ function reconcileTracks() {
   if (!state.setup) return;
   const cfg = new Map((state.setup.tracks || []).map((t) => [t.id, t]));
   for (const id of [...live.series.keys()]) if (!cfg.has(id)) live.series.delete(id);
-  for (const id of [...live.activity.keys()]) if (!cfg.has(id)) live.activity.delete(id);
   const merge = (list) => (list || []).filter((t) => cfg.has(t.id)).map((t) => {
     const c = cfg.get(t.id);
     return { ...t, name: c.name, color: c.color || t.color, enabled: c.enabled,
@@ -1308,14 +1281,11 @@ function renderMatrix() {
     };
     row.append(cell(sot, 'c-sot'));
 
-    row.append(cell(checkbox(track.show_activity, (v) => { track.show_activity = v; pushSetup(true); }), 'c-act'));
-
     const actions = el('td', 'row-actions');
     const clear = el('button', 'btn btn-ghost', 'Clear');
     clear.title = 'Discard this trace’s accumulated beats';
     clear.onclick = guard(async () => {
       live.series.delete(track.id);      // the trace goes now; the server confirms after
-      live.activity.delete(track.id);
       dirty = true;
       await api('/api/tracks/clear', { id: track.id });
     });
@@ -1567,7 +1537,7 @@ function init() {
       name: 'New track', enabled: true, processor: 'acoustic', inputs: [],
       model: null, detector: (state.catalog.detectors.slice(-1)[0] || {}).id || '',
       band: 'fetal', chunk_s: 10, period_s: 5, role: 'estimate', color: '',
-      smooth: 0, show_activity: false,
+      smooth: 0,
     });
     pushSetup(true);
   };

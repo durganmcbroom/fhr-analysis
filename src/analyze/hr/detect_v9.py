@@ -253,7 +253,7 @@ def v9_beat_detector(
         env_peak_dist_s: float = 0.005,
         envelope_sigma_s: float = 0.020,
         gauss_truncate: float = 4.0,
-        peak_height_pct: float = 65.0,
+        peak_height_pct: float = 20.0,
         floor_window_s: float = DEFAULT_FLOOR_WINDOW_S,
         floor_scale: float = DEFAULT_FLOOR_SCALE,
         half_max_limit_s: float = 0.120,
