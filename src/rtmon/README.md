@@ -99,19 +99,35 @@ Both halves are found rather than configured:
   standard library, which is why it binds the eight driver entry points through `ctypes`
   by hand instead of using the `picosdk` wrapper (that wrapper imports numpy at module
   scope, and requiring an x86_64 numpy turns "have any Intel Python" into "maintain a
-  second scientific stack under Rosetta"). `/usr/bin/python3` is deliberately skipped
-  despite being universal: SIP strips `DYLD_*` from Apple-signed binaries, and without
-  it the driver cannot find the `libpicoipp` and `libiomp5` it dlopens by bare name.
-  When a universal interpreter is used, the loader path is passed through `arch -e` for
-  the same reason.
+  second scientific stack under Rosetta"). **Each candidate is run, not inspected**: it
+  has to report `x86_64` *and* still see a `DYLD_LIBRARY_PATH` we set, because macOS
+  strips `DYLD_*` from Apple-signed binaries and without it the driver cannot find the
+  `libpicoipp` and `libiomp5` it dlopens by bare name. Both a direct invocation and
+  `arch -x86_64` are tried; when `arch` is involved the loader path goes through
+  `arch -e`, the only place it survives.
+
+  Judging this from the file instead was a real bug. The first version skipped every
+  Apple-signed interpreter to dodge the SIP problem — which also skipped
+  `/Library/Developer/CommandLineTools/usr/bin/python3`: universal, *not* restricted, on
+  every Mac with the command line tools, and on a machine with no python.org install the
+  only candidate that works. `/usr/bin/python3` is the one that genuinely cannot, and
+  the run test tells them apart on its own.
 - **An x86_64 `libps4000.dylib`.** Each candidate's Mach-O header is read and non-Intel
   ones are skipped, so an arm64 PicoSDK does not shadow a usable Intel driver. PicoScope
-  6 and 7 both ship one inside the app bundle, next to its dependencies, which is
-  usually what ends up being used.
+  6 and 7 both ship one inside the app bundle, next to its dependencies; the bundle is
+  globbed, since PicoScope 7 is named after its edition (`T&M`, `Automotive`, …).
 
 `RTMON_PS4000_PYTHON` and `RTMON_PS4000_LIB_DIR` override either search. The device card
 reports which route it will take, and distinguishes "no Intel driver anywhere" from
-"driver fine, unit not plugged in".
+"driver fine, unit not plugged in". When it fails on a machine that is not in front of
+you:
+
+```bash
+python -m rtmon.sources.ps4000_bridge
+```
+
+lists every path searched, what architecture each turned out to be, which interpreters
+were run and how they answered, and which of the two halves is missing.
 
 **A channel that streams silence is called out.** macOS hands an app digital silence
 rather than an error when microphone permission has not been granted, and a
