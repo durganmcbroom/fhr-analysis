@@ -1,32 +1,38 @@
-"""Tap alignment: measure the PPG strap's timing offset against the rest of the rig.
+"""Tap alignment: put every input on the fiber's clock.
 
-The fibers and the microphone are all timestamped by a wall-clock-disciplined
-:class:`~rtmon.sources.base.SampleClock`, so they share one time base. The BLE strap
-does not -- its samples arrive already stale, by an amount that depends on the strap,
-the host stack and the connection interval. :data:`~rtmon.sources.polar.PPG_PIPELINE_LATENCY_S`
-carries a default inherited from the Qt app's measurement, which is a reasonable guess
-and nothing more.
+Three devices, three different routes into the machine, three different delays:
 
-This measures it instead. Tap the strap and a *fiber* together: one physical
-event, recorded twice, and the difference between the two recorded times *is* the
-error. A fiber rather than the microphone, for two reasons -- it is the channel the
-strap is actually compared against (a maternal fiber estimate is scored against the PPG
-source of truth), and both are contact sensors struck by the same knock, where a
-microphone would hear it through the air and add an acoustic path delay unrelated to
-the strap. The procedure is deliberately small --
+    fiber  PicoScope over USB  -- the reference
+    mic    sound card, driver + buffer latency
+    strap  Polar over BLE, batched, with a free-running clock
 
-    1. wait until both channels are quiet, so a tap will stand out
-    2. "tap both now"
-    3. cross-correlate the two impulse envelopes and report the lag
+**The fiber is ground truth.** Not because its timestamps are perfect, but because it
+is the shortest, most direct path -- a USB oscilloscope streaming into a
+wall-clock-disciplined :class:`~rtmon.sources.base.SampleClock`, with no radio, no
+audio stack and no device clock of its own to drift. Everything else is corrected
+onto it. That also makes the corrections meaningful in analysis terms: the fibers are
+what the models run on, so aligning the references to the fibers is aligning them to
+the measurement.
 
--- and it is opt-in. Nothing here runs unless asked, and the result is offered for
-confirmation rather than applied behind the operator's back.
+One knock, struck across all three sensors at once, is recorded three times; the
+differences between those three recorded times are the two corrections. The procedure:
 
-Cross-correlation of envelopes, rather than picking each impulse's onset: a tap excites
-a microphone and a photodiode quite differently (a sharp acoustic burst versus a slower
-pressure deflection), so their onsets are not directly comparable, while the position of
-best overlap is. The PPG's 55 Hz sampling puts a floor of roughly +/-20 ms on the
-result, which is ample against an error measured in hundreds of milliseconds.
+    1. wait until every channel is *steady*, and record each one's baseline level
+    2. "tap all three now"
+    3. locate the impulse in each, and measure each target against the fiber
+
+It is opt-in, and the result is offered for confirmation rather than applied behind
+the operator's back.
+
+Two measurement choices, both forced by evidence rather than taste (details at the
+functions):
+
+* **Leading edges, not waveform shapes.** A knock is a sharp acoustic burst to a
+  microphone and a slow pressure deflection to a photodiode; correlating those shapes
+  measures the difference in sensor response time along with the clock offset. Shape
+  correlation still runs, as a cross-check that both channels caught the same event.
+* **One quantity for both gates** -- the peak deviation inside a window -- so
+  "settled" and "tapped" are the same measurement read two ways.
 """
 
 from __future__ import annotations
@@ -61,43 +67,46 @@ TREND_WINDOW_S = 0.40
 # PPG is the limiting case, so the threshold sits between 2.5 and 8.
 IMPULSE_PROMINENCE_MIN = 4.0
 
-QUIET_WINDOW_S = 1.5        # window each channel's activity level is measured over
-# "Settled" means STEADY, not silent. Silence is the wrong requirement: a microphone on
-# a belly is full of heart sounds and measures a crest of ~34, an abdomen fiber ~8.8, so
-# a threshold low enough to call either of those quiet is a threshold alignment can
-# never arm under. What the baseline actually has to be is *representative*, because the
-# tap is recognised relative to it -- and those same signals are remarkably steady
-# (34.2, 33.7, 34.5, 35.4, 34.3, 34.9 over consecutive windows). So the gate is on the
-# spread of recent measurements rather than their magnitude.
-QUIET_STABILITY = 0.35      # (max-min)/median across recent windows
-QUIET_SAMPLES = 6           # consecutive windows that must agree
-QUIET_HOLD_S = 1.2
-# A tap is recognised RELATIVE to each channel's own settled level, not against one
-# absolute number. The sensors differ far too much for a single threshold: a struck
-# microphone measures ~120 while a struck strap measures ~7, and an unstruck microphone
-# measures ~5.4 -- so any fixed value that catches the strap's tap also fires on the
-# mic's silence, and any value above the mic's silence misses the strap entirely. The
-# earlier fixed 9.0 did exactly that: a genuine strap tap scored 7.0 and the run simply
-# timed out. Each channel's quiet crest is captured during the settle phase and the tap
-# must beat it by this ratio (with a floor, so a pathologically flat channel still
-# needs a real impulse).
-TAP_CREST_RATIO = 2.0
-TAP_CREST_FLOOR = 4.0
+# --- the two-tap calibration ----------------------------------------------------
+# Amplitude is measured as peak deviation from the median inside a window -- the largest
+# excursion the channel is currently making (see `activity`).
+#
+# Rather than guess what counts as a tap, the run asks for TWO. The first is a
+# calibration knock: it establishes how big a real tap is on THIS rig, on each channel.
+# The second is the one actually measured, recognised against that. Nothing here is a
+# tuned constant hoping to fit a millivolt fiber and a photodiode counting in millions.
+#
+# It also replaces a "wait until everything is steady" gate that, measured on a real
+# session, was satisfied by all three channels on 1% of polls -- these signals are
+# quasi-periodic and never settle in the sense that gate wanted.
+SETTLE_S = 3.0              # a plain wait; the floor is whatever the channel does in it
+FLOOR_WINDOW_S = 1.0        # window the floor and the live level are measured over
+# The FIRST tap is recognised against the LARGEST excursion seen while you were holding
+# still, not a multiple of the median. That distinction is the whole ballgame: a fiber's
+# peak amplitude is often barely 2x its own median level, so "4x the median" is a
+# threshold the channel physically cannot reach -- measured on a real capture it was
+# unreachable on all four fibers, which is why a strike never registered no matter how
+# hard it was struck. Exceeding everything seen during the settle, by a margin, is
+# always reachable by definition.
+#
+# The margin can be modest because a false trigger needs EVERY channel to spike in the
+# same 200 ms poll, and a fiber's own noise is not synchronised with an acoustic burst
+# and a photodiode deflection. Simultaneity does the rejecting; this only has to notice.
+FIRST_TAP_MARGIN = 1.35
+# The second tap is judged against the first: floor + 80% of the way to that height.
+# A knock of similar force clears it; the wearer's pulse and handling noise do not.
+TAP_FRACTION = 0.80
+RECOVER_RATIO = 1.8         # back within this multiple of the floor counts as recovered
+RECOVER_HOLD_S = 0.6
 TAP_WINDOW_S = 1.0
 SETTLE_AFTER_TAP_S = 0.8    # let the tail of the tap arrive before measuring
-ANALYSIS_WINDOW_S = 4.0
-# Normalised correlation peak below which the two transients clearly are not the same
-# event. Only a coarse sanity check: genuine dual taps measured 0.46-0.80 while a
-# single-sensor tap correlated against the other channel's noise reached 0.46, so the
-# two overlap and tightening this only starts rejecting real measurements (0.50 threw
-# away 12% of them). The guards that actually work are layered instead --
-#
-#   * TapAligner._wait_tap requires BOTH channels to cross TAP_CREST_MIN live, which is
-#     what establishes that both sensors were struck (measured: a struck mic ~140, an
-#     unstruck one ~6; a struck strap ~6.2, an unstruck one ~1.7);
-#   * _prominence rejects an analysis window with no impulse in it;
-#   * MAX_PLAUSIBLE_LAG_S rejects two taps that were not simultaneous;
-#   * the onset/correlation cross-check rejects locking onto different events.
+# Only the SECOND tap may be analysed. The two knocks are seconds apart, so a window
+# wide enough to be generous also contains the calibration tap -- and the estimator
+# then happily locks onto it (measured: leading edges reported -2499 ms, the gap
+# between the two taps, rather than the offset). The window is anchored to the moment
+# the second tap fired instead.
+PRE_TAP_S = 1.0             # context kept before the tap, for the baseline
+POST_TAP_S = 1.6            # ...and after it, for the decay
 MIN_CONFIDENCE = 0.35
 
 # A residual this large is not a transport latency. BLE delivery is a few hundred
@@ -107,25 +116,23 @@ MIN_CONFIDENCE = 0.35
 # than write a wild calibration.
 MAX_PLAUSIBLE_LAG_S = 0.75
 ARM_TIMEOUT_S = 45.0
-QUIET_TIMEOUT_S = 45.0
+SETTLE_TIMEOUT_S = 45.0
 POLL_S = 0.2
 
 
-def _crest(x: np.ndarray) -> float:
-    """Peak-to-median ratio of ``|x - median|`` -- large when a transient is present.
+def activity(x: np.ndarray) -> float:
+    """Largest excursion in ``x`` from its own median -- the peak deviation.
 
-    Deliberately scale-free: the fibers are millivolts, the PPG is raw photodiode
-    counts in the millions, and the same threshold has to mean the same thing on both.
+    The single quantity both gates are built on. Settling watches it for steadiness;
+    the tap gate watches it for a jump. It is an absolute level in the channel's own
+    units, so the thresholds around it are always *ratios* against that channel's own
+    baseline -- never one number shared across a millivolt fiber and a
+    photodiode counting in the millions.
     """
     x = np.asarray(x, dtype=float)
-    if x.size < 8:
+    if x.size < 4:
         return 0.0
-    dev = np.abs(x - np.median(x))
-    typical = np.median(dev)
-    if typical <= 0:
-        # A perfectly flat trace is quiet, not infinitely spiky.
-        return 0.0 if float(np.max(dev)) <= 0 else float("inf")
-    return float(np.max(dev) / typical)
+    return float(np.max(np.abs(x - np.median(x))))
 
 
 def envelope(t: np.ndarray, x: np.ndarray, grid: np.ndarray) -> np.ndarray:
@@ -315,33 +322,40 @@ def _remedy(detail: str) -> str:
     return "Tap both sensors at the same instant, firmly, and try again."
 
 
+
 @dataclass
 class AlignState:
-    """What the UI renders. One tap-alignment run, start to finish."""
+    """What the wizard renders. One calibration run, start to finish."""
 
-    phase: str = "idle"          # idle|waiting_quiet|armed|measuring|done|failed
+    # idle | settling | tap1 | recover | tap2 | measuring | done | failed
+    phase: str = "idle"
     message: str = ""
-    reference: str = ""
-    lag_s: float | None = None
-    confidence: float | None = None
-    detail: str = ""
+    hint: str = ""
+    reference: str = ""                          # the fiber everything is measured against
+    channels: list = field(default_factory=list) # reference first, then the targets
+    seconds_left: float = 0.0                    # settling countdown, for the UI
+    floor: dict = field(default_factory=dict)    # channel -> quiet level
+    tap_height: dict = field(default_factory=dict)   # channel -> first tap's peak
+    threshold: dict = field(default_factory=dict)    # channel -> level the 2nd tap must beat
+    level: dict = field(default_factory=dict)    # channel -> live level, 0..1 of threshold
+    results: dict = field(default_factory=dict)  # channel -> {lag_s, confidence, detail, ok}
     applied: bool = False
-    started_at: float = 0.0
-    quiet: dict = field(default_factory=dict)   # channel -> is it currently settled
 
     def to_json(self) -> dict:
-        return {"phase": self.phase, "message": self.message, "reference": self.reference,
-                "lag_s": None if self.lag_s is None else round(self.lag_s, 4),
-                "confidence": None if self.confidence is None else round(self.confidence, 3),
-                "detail": self.detail, "applied": self.applied, "quiet": self.quiet}
+        r = lambda d: {k: round(float(v), 6) for k, v in d.items()}  # noqa: E731
+        return {"phase": self.phase, "message": self.message, "hint": self.hint,
+                "reference": self.reference, "channels": list(self.channels),
+                "seconds_left": round(self.seconds_left, 1),
+                "floor": r(self.floor), "tap_height": r(self.tap_height),
+                "threshold": r(self.threshold), "level": r(self.level),
+                "results": self.results, "applied": self.applied}
 
 
 class TapAligner:
-    """Drives one alignment run on a background thread. Poll :meth:`state` to render."""
+    """Runs the two-tap calibration on a background thread. Poll :meth:`state`."""
 
-    def __init__(self, hub, ppg_channel: str = "PPG0"):
+    def __init__(self, hub):
         self.hub = hub
-        self.ppg_channel = ppg_channel
         self._state = AlignState()
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
@@ -349,7 +363,7 @@ class TapAligner:
 
     def state(self) -> AlignState:
         with self._lock:
-            return AlignState(**{**self._state.__dict__})
+            return AlignState(**dict(self._state.__dict__))
 
     def _set(self, **fields) -> None:
         with self._lock:
@@ -360,149 +374,239 @@ class TapAligner:
     def running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
-    def start(self, reference: str) -> None:
+    def start(self, reference: str, targets: list[str]) -> None:
         if self.running:
             raise RuntimeError("an alignment is already running")
         live = self.hub.channel_map()
-        for channel in (reference, self.ppg_channel):
-            if channel not in live:
-                raise RuntimeError(f"{channel} is not streaming — arm it first")
-        # The reference must be a FIBER. It is what the strap is actually compared
-        # against (a maternal fiber estimate is scored against the PPG source of
-        # truth), so the fiber's time base is the one that has to line up. It is also
-        # the honest tap: both are contact sensors struck by the same knock, whereas a
-        # microphone hears it through the air and adds a path delay that has nothing to
-        # do with the strap.
+        if reference not in live:
+            raise RuntimeError(f"{reference} is not streaming — arm the PicoScope first")
+        # The reference must be a fiber: the only input arriving over USB, with no radio,
+        # no audio stack and no clock of its own. That is what makes it ground truth.
         kind = live[reference].channel.kind
         if kind != KIND_FIBER:
-            raise RuntimeError(
-                f"{reference} is a {kind} channel — align the PPG against a fiber, "
-                f"which is what it is compared against")
+            raise RuntimeError(f"{reference} is a {kind} channel — the timing reference "
+                               f"must be a fiber (USB, no radio or audio buffering)")
+        targets = [c for c in targets if c != reference and c in live]
+        if not targets:
+            raise RuntimeError("nothing to align — arm the microphone and/or the strap")
+
+        channels = [reference, *targets]
         self._cancel.clear()
         with self._lock:
-            self._state = AlignState(phase="waiting_quiet", reference=reference,
-                                     started_at=time.time(),
-                                     message="Hold still — waiting for both signals to settle…")
-        self._thread = threading.Thread(target=self._run, args=(reference,),
+            self._state = AlignState(
+                phase="settling", reference=reference, channels=channels,
+                seconds_left=SETTLE_S,
+                message="Settling…",
+                hint="Hands off the sensors for a moment.")
+        self._thread = threading.Thread(target=self._run, args=(reference, targets),
                                         name="rtmon-align", daemon=True)
         self._thread.start()
 
     def cancel(self) -> None:
-        """Abandon a run in progress, or discard a finished result.
-
-        Always returns to idle. It used to leave a completed measurement in place, so
-        the UI's Discard button -- which is this same call -- left the result and its
-        Apply button on screen, discarding nothing.
-        """
+        """Abandon a run, or discard a finished result. Always returns to idle."""
         self._cancel.set()
         thread = self._thread
         if thread is not None:
             thread.join(timeout=3)
         self._thread = None
-        self._set(phase="idle", message="", lag_s=None, confidence=None,
-                  applied=False, quiet={})
+        self._set(phase="idle", message="", hint="", results={}, floor={},
+                  tap_height={}, threshold={}, level={}, seconds_left=0.0, applied=False)
 
     def _tail(self, channel: str, seconds: float):
         got = self.hub.snapshot(channel, seconds)
         return got if got is not None and got[0].size >= 8 else None
 
-    def _run(self, reference: str) -> None:
-        channels = (reference, self.ppg_channel)
+    def _around(self, channel: str, tap_at: float):
+        """The slice of ``channel`` bracketing the second tap, and nothing else."""
+        got = self._tail(channel, PRE_TAP_S + POST_TAP_S + SETTLE_AFTER_TAP_S + 1.0)
+        if got is None:
+            return None
+        t, x = got
+        keep = (t >= tap_at - PRE_TAP_S) & (t <= tap_at + POST_TAP_S)
+        if int(keep.sum()) < 8:
+            return None
+        return t[keep], x[keep]
+
+    def _levels(self, channels) -> dict:
+        """Current amplitude on each channel."""
+        out = {}
+        for channel in channels:
+            tail = self._tail(channel, FLOOR_WINDOW_S)
+            out[channel] = activity(tail[1]) if tail is not None else 0.0
+        return out
+
+    # ------------------------------------------------------------------- run
+    def _run(self, reference: str, targets: list[str]) -> None:
+        channels = [reference, *targets]
         try:
-            quiet_crests = self._wait_quiet(channels)
-            if quiet_crests is None:
+            settled = self._settle(channels)
+            if settled is None:
                 return
-            tap_at = self._wait_tap(channels, quiet_crests)
+            floor, ceiling = settled
+
+            heights = self._first_tap(channels, floor, ceiling)
+            if heights is None:
+                return
+
+            # Calibrated from the tap the operator actually gave, per channel.
+            threshold = {c: floor[c] + TAP_FRACTION * max(heights[c] - floor[c], 0.0)
+                         for c in channels}
+            self._set(tap_height=heights, threshold=threshold)
+
+            if not self._recover(channels, floor):
+                return
+            tap_at = self._second_tap(channels, threshold)
             if tap_at is None:
                 return
 
-            self._set(phase="measuring", message="Measuring…")
-            # Let the tail of the tap land in both rings before reading them.
+            self._set(phase="measuring", message="Measuring…", hint="")
             if self._cancel.wait(SETTLE_AFTER_TAP_S):
                 return
-            ref = self._tail(reference, ANALYSIS_WINDOW_S)
-            ppg = self._tail(self.ppg_channel, ANALYSIS_WINDOW_S)
-            if ref is None or ppg is None:
-                self._set(phase="failed", message="Lost one of the signals while measuring.")
-                return
-
-            est = estimate_lag(ref, ppg)
-            if not est.ok:
-                # Report the reason it ACTUALLY rejected for. This used to print
-                # "could not match the two taps (confidence 0.59)", naming the one
-                # quantity that was fine -- 0.59 clears the 0.35 confidence floor
-                # comfortably -- while the real cause sat unused in est.detail.
-                self._set(phase="failed", confidence=est.confidence, detail=est.detail,
-                          message=f"{est.detail.capitalize()}. {_remedy(est.detail)}")
-                return
-            direction = "late" if est.lag_s > 0 else "early"
-            self._set(phase="done", lag_s=est.lag_s, confidence=est.confidence,
-                      detail=est.detail,
-                      message=(f"PPG is {abs(est.lag_s) * 1000:.0f} ms {direction} "
-                               f"relative to {reference} (confidence {est.confidence:.2f}). "
-                               f"Apply adds this to the correction already in force."))
+            self._measure(reference, targets, tap_at)
         except Exception as exc:  # noqa: BLE001 - a calibration must never kill the server
-            self._set(phase="failed", message=f"{type(exc).__name__}: {exc}")
+            self._set(phase="failed", message=f"{type(exc).__name__}: {exc}", hint="")
 
-    def _wait_quiet(self, channels) -> dict | None:
-        """Block until both channels are STEADY (see QUIET_STABILITY).
+    # --------------------------------------------------------------- phase 1
+    def _settle(self, channels):
+        """Wait SETTLE_S doing nothing, then take each channel's quiet level.
 
-        Returns each channel's baseline activity level, which is what the tap then has
-        to beat (see TAP_CREST_RATIO) -- so the point of this phase is to establish a
-        representative baseline, not to wait for silence that may never come.
+        A plain wait, deliberately. Any cleverer test for "has it settled" has to decide
+        what settled means for a signal that is never still, and the previous attempt at
+        that opened on 1% of polls. Three seconds of hands-off is something the operator
+        can actually satisfy, and the floor it yields is all the next phase needs.
         """
-        deadline = time.time() + QUIET_TIMEOUT_S
-        history: dict[str, list[float]] = {c: [] for c in channels}
-        steady_since = None
+        samples: dict[str, list[float]] = {c: [] for c in channels}
+        end = time.time() + SETTLE_S
+        while not self._cancel.is_set():
+            remaining = end - time.time()
+            self._set(seconds_left=max(0.0, remaining))
+            if remaining <= 0:
+                break
+            for channel, level in self._levels(channels).items():
+                samples[channel].append(level)
+            self._cancel.wait(POLL_S)
+        if self._cancel.is_set():
+            return None
+
+        floor, ceiling = {}, {}
+        for channel, values in samples.items():
+            usable = [v for v in values if v > 0]
+            if not usable:
+                self._set(phase="failed", message=f"No signal on {channel}.",
+                          hint="Check it is streaming, then retry.")
+                return None
+            floor[channel] = float(np.median(usable))
+            # The largest thing the channel did while holding still. The first tap has
+            # to beat this, which is a bar it can always clear.
+            ceiling[channel] = float(np.max(usable))
+        self._set(floor=floor, seconds_left=0.0)
+        return floor, ceiling
+
+    # --------------------------------------------------------------- phase 2
+    def _first_tap(self, channels, floor, ceiling) -> dict | None:
+        """Wait for a calibration tap and return its height on each channel."""
+        self._set(phase="tap1", message="Tap all sensors together — once, firmly.",
+                  hint="This one just calibrates; the next one is measured.")
+        thresholds = {c: max(ceiling[c] * FIRST_TAP_MARGIN, floor[c] * 1.15)
+                      for c in channels}
+        peaks = {c: 0.0 for c in channels}
+        deadline = time.time() + ARM_TIMEOUT_S
+        seen_at = None
         while not self._cancel.is_set():
             if time.time() > deadline:
-                self._set(phase="failed",
-                          message="Signals never steadied. Stop moving the sensors and retry.")
+                self._set(phase="failed", message="No tap detected.",
+                          hint="Strike the sensors together firmly and retry.")
                 return None
-
-            baselines, settled = {}, {}
-            for channel in channels:
-                tail = self._tail(channel, QUIET_WINDOW_S)
-                samples = history[channel]
-                samples.append(_crest(tail[1]) if tail is not None else float("inf"))
-                del samples[:-QUIET_SAMPLES]
-                if len(samples) < QUIET_SAMPLES or not all(np.isfinite(samples)):
-                    settled[channel] = False
-                    continue
-                median = float(np.median(samples))
-                spread = (max(samples) - min(samples)) / median if median > 0 else float("inf")
-                settled[channel] = bool(spread <= QUIET_STABILITY)
-                baselines[channel] = median
-            self._set(quiet=settled)
-
-            if all(settled.values()):
-                steady_since = steady_since or time.time()
-                if time.time() - steady_since >= QUIET_HOLD_S:
-                    self._set(phase="armed",
-                              message="Ready — tap both sensors together, once, firmly.")
-                    return baselines
-            else:
-                steady_since = None
+            levels = self._levels(channels)
+            for c, v in levels.items():
+                peaks[c] = max(peaks[c], v)
+            self._set(level={c: min(1.0, levels[c] / thresholds[c]) if thresholds[c] > 0 else 0.0
+                             for c in channels})
+            if seen_at is None and all(levels[c] >= thresholds[c] for c in channels):
+                seen_at = time.time()
+            # Once seen, keep watching for a moment so the recorded height is the tap's
+            # true peak rather than whatever the first crossing caught -- but time that
+            # out UNCONDITIONALLY. Nesting it inside the threshold test deadlocked: a
+            # tap decays out of the 1 s window well within the wait, the condition goes
+            # false again, and the phase never completes.
+            if seen_at is not None and time.time() - seen_at >= TAP_WINDOW_S:
+                self._set(tap_height=peaks)
+                return peaks
             self._cancel.wait(POLL_S)
         return None
 
-    def _wait_tap(self, channels, quiet_crests: dict) -> float | None:
-        thresholds = {c: max(TAP_CREST_FLOOR, quiet_crests.get(c, 0.0) * TAP_CREST_RATIO)
-                      for c in channels}
+    # --------------------------------------------------------------- phase 3
+    def _recover(self, channels, floor) -> bool:
+        """Wait for every channel to fall back near its floor before asking again."""
+        self._set(phase="recover", message="Good — now let it settle again.",
+                  hint="Hands off until it asks for the second tap.")
+        limits = {c: floor[c] * RECOVER_RATIO for c in channels}
+        deadline = time.time() + ARM_TIMEOUT_S
+        quiet_since = None
+        while not self._cancel.is_set():
+            if time.time() > deadline:
+                self._set(phase="failed", message="The signals never came back down.",
+                          hint="Something is still moving; stop touching the sensors and retry.")
+                return False
+            levels = self._levels(channels)
+            self._set(level={c: min(1.0, levels[c] / limits[c]) if limits[c] > 0 else 0.0
+                             for c in channels})
+            if all(levels[c] <= limits[c] for c in channels):
+                quiet_since = quiet_since or time.time()
+                if time.time() - quiet_since >= RECOVER_HOLD_S:
+                    return True
+            else:
+                quiet_since = None
+            self._cancel.wait(POLL_S)
+        return False
+
+    # --------------------------------------------------------------- phase 4
+    def _second_tap(self, channels, threshold) -> float | None:
+        self._set(phase="tap2", message="Now tap again — this one is measured.",
+                  hint="Same force, all sensors struck by one motion.")
         deadline = time.time() + ARM_TIMEOUT_S
         while not self._cancel.is_set():
             if time.time() > deadline:
-                self._set(phase="failed", message="No tap detected. Retry when ready.")
+                self._set(phase="failed", message="No second tap detected.",
+                          hint="Retry, striking about as hard as the first time.")
                 return None
-            hits = 0
-            for channel in channels:
-                tail = self._tail(channel, TAP_WINDOW_S)
-                if tail is not None and _crest(tail[1]) >= thresholds[channel]:
-                    hits += 1
-            # Both must see it. One alone is someone bumping a single sensor, and
-            # correlating that against the other channel's noise is exactly the case
-            # the estimator's own confidence cannot reliably reject.
-            if hits == len(channels):
+            levels = self._levels(channels)
+            self._set(level={c: min(1.0, levels[c] / threshold[c]) if threshold[c] > 0 else 0.0
+                             for c in channels})
+            # Every channel must see it: one alone is a sensor being bumped.
+            if all(levels[c] >= threshold[c] for c in channels):
                 return time.time()
             self._cancel.wait(POLL_S)
         return None
+
+    # --------------------------------------------------------------- measure
+    def _measure(self, reference: str, targets: list[str], tap_at: float) -> None:
+        ref = self._around(reference, tap_at)
+        if ref is None:
+            self._set(phase="failed", message=f"Lost {reference} while measuring.", hint="")
+            return
+        results, good = {}, []
+        for channel in targets:
+            tail = self._around(channel, tap_at)
+            if tail is None:
+                results[channel] = {"ok": False, "detail": "signal lost",
+                                    "lag_s": None, "confidence": None}
+                continue
+            est = estimate_lag(ref, tail)
+            results[channel] = {"ok": est.ok, "lag_s": est.lag_s,
+                                "confidence": est.confidence, "detail": est.detail}
+            if est.ok:
+                good.append(channel)
+        self._set(results=results)
+
+        if not good:
+            detail = " · ".join(f"{c}: {r['detail']}" for c, r in results.items())
+            self._set(phase="failed", message=detail,
+                      hint=_remedy(" ".join(r["detail"] for r in results.values())))
+            return
+        parts = [f"{c} {abs(results[c]['lag_s']) * 1000:.0f} ms "
+                 f"{'late' if results[c]['lag_s'] > 0 else 'early'}"
+                 for c in targets if results[c]["ok"]]
+        self._set(phase="done",
+                  message=f"Relative to {reference}: " + ", ".join(parts),
+                  hint="Apply adds these to the corrections already in force.")

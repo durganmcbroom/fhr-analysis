@@ -66,7 +66,7 @@ N_CHANNELS = 4
 # The clock offset is now measured per strap (see decode_frame); this is the latency.
 #
 # Override with RTMON_PPG_LATENCY_S once you can measure it on your own rig.
-PPG_PIPELINE_LATENCY_S = float(os.environ.get("RTMON_PPG_LATENCY_S", "0.5"))
+PPG_PIPELINE_LATENCY_S = float(os.environ.get("RTMON_PPG_LATENCY_S", "0.0"))
 
 # Bounds on the CORRECTION, which is a different quantity from the raw transport delay
 # and unlike it may be negative.

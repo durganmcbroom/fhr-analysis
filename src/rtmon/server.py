@@ -55,6 +55,10 @@ MAX_WINDOW_S = 120.0
 MAX_HR_WINDOW_S = 900.0
 SILENCE_WINDOW_S = 4.0       # how long a channel must read zero before it is called silent
 
+# The channel each correctable source is aligned through. Only one channel per source
+# needs measuring — they share a clock — so PPG0 stands for the whole strap.
+ALIGN_TARGET_CHANNEL = {"pvs": "PPG0", "mic": "MIC"}
+
 
 class Client:
     """One connected browser tab: its viewport, plus a private outbound queue.
@@ -197,18 +201,30 @@ class App:
         setup_store.save_last(setup)
         return setup
 
-    def _apply_ppg_latency(self) -> None:
-        """Push the setup's measured PPG latency onto the strap source.
+    # Which setup field carries each source's timing correction. Both are corrections
+    # ONTO the fiber, which is the reference (see rtmon.align).
+    LATENCY_FIELDS = {"pvs": "ppg_latency_s", "mic": "mic_latency_s"}
 
-        Takes effect at the next arm -- the value is passed to the BLE worker on its
-        command line, so a strap already streaming keeps the latency it started with
-        rather than having its time base shift underneath a running recording.
+    def latency_of(self, source_id: str) -> float:
+        """The correction in force for a source, falling back to its default."""
+        value = getattr(self.setup, self.LATENCY_FIELDS[source_id], None)
+        if value is not None:
+            return value
+        return polar.PPG_PIPELINE_LATENCY_S if source_id == "pvs" else 0.0
+
+    def _apply_ppg_latency(self) -> None:
+        """Push the setup's measured corrections onto the sources.
+
+        Applied live: both sources subtract their correction at push time, so a new
+        value takes effect on a stream that is already running. That is required, not
+        cosmetic -- tap alignment measures the residual under whatever is currently in
+        force, so if the value did not take effect until the next arm, re-measuring
+        would keep reading the old residual and repeated applies would diverge.
         """
-        source = self.hub.sources.get("pvs")
-        if source is not None and hasattr(source, "latency_s"):
-            source.latency_s = (self.setup.ppg_latency_s
-                                if self.setup.ppg_latency_s is not None
-                                else polar.PPG_PIPELINE_LATENCY_S)
+        for source_id in self.LATENCY_FIELDS:
+            source = self.hub.sources.get(source_id)
+            if source is not None and hasattr(source, "latency_s"):
+                source.latency_s = self.latency_of(source_id)
 
     def state(self) -> dict:
         return {
@@ -226,10 +242,17 @@ class App:
                 "all_channels": self._all_channels(),
             },
             "presets": setup_store.list_presets(),
-            # Included so a control response carries the current alignment phase rather
-            # than leaving the page to wait for the next status frame.
+            # Included so a control response carries the current alignment phase and
+            # corrections rather than leaving the page to wait for the next status frame.
             "align": self.aligner.state().to_json(),
+            "latency": self._latency_block(),
         }
+
+    def _latency_block(self) -> dict:
+        """Per-channel timing correction in force, and whether it was measured."""
+        return {ALIGN_TARGET_CHANNEL[s]: {"s": self.latency_of(s),
+                                          "measured": getattr(self.setup, f) is not None}
+                for s, f in App.LATENCY_FIELDS.items()}
 
     def _all_channels(self) -> list[dict]:
         live = self.hub.channel_map()
@@ -342,9 +365,7 @@ class App:
         tracks = snapshot["tracks"] if snapshot else []
         return {
             "align": self.aligner.state().to_json(),
-            "ppg_latency_s": (self.setup.ppg_latency_s if self.setup.ppg_latency_s is not None
-                              else polar.PPG_PIPELINE_LATENCY_S),
-            "ppg_latency_measured": self.setup.ppg_latency_s is not None,
+            "latency": self._latency_block(),
             "recording": self.hub.recorder.status(),
             "sources": {sid: {"running": s.running, "error": s.error}
                         for sid, s in self.hub.sources.items()},
@@ -410,6 +431,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._static("index.html")
             if route == "/api/state":
                 return self._json(self.app.state())
+            if route == "/api/align":
+                # A dedicated, cheap poll for the calibration wizard. The 1 Hz status
+                # frame is far too slow to drive a "tap NOW" prompt, and relying on it
+                # is why the panel could sit showing a stale phase until the page was
+                # reloaded. The wizard polls this several times a second while open.
+                return self._json({"align": self.app.aligner.state().to_json(),
+                                   "latency": self.app._latency_block()})
+
             if route == "/api/presets":
                 return self._json({"presets": setup_store.list_presets()})
             if route.startswith("/static/"):
@@ -486,7 +515,7 @@ class Handler(BaseHTTPRequestHandler):
             # into its state, so a partial one dereferenced a missing `hub` and threw --
             # which is what made Discard error out.
             if route == "/api/align/start":
-                app.aligner.start(body["reference"])
+                app.aligner.start(body["reference"], body.get("targets") or [])
                 return self._json(app.state())
 
             if route == "/api/align/cancel":
@@ -495,35 +524,43 @@ class Handler(BaseHTTPRequestHandler):
 
             if route == "/api/align/apply":
                 result = app.aligner.state()
-                if result.phase != "done" or result.lag_s is None:
+                if result.phase != "done":
                     return self._json({"error": "no completed measurement to apply"}, status=400)
-                # The tap measures the RESIDUAL error under the latency currently in
-                # force, so it adjusts that value rather than replacing it. Positive lag
-                # means the PPG is stamped late, which needs MORE latency subtracted.
-                current = (app.setup.ppg_latency_s if app.setup.ppg_latency_s is not None
-                           else polar.PPG_PIPELINE_LATENCY_S)
-                proposed = round(current + result.lag_s, 4)
+                # Each tap measures the RESIDUAL under the correction currently in force,
+                # so it ADJUSTS that value rather than replacing it. Positive lag means
+                # the channel is stamped late, which needs more subtracted.
                 low, high = polar.LATENCY_RANGE_S
-                if not (low <= proposed <= high):
-                    return self._json({"error":
-                        f"that would set the PPG timing correction to {proposed * 1000:.0f} ms, "
-                        f"outside the sane range ({low * 1000:.0f}…{high * 1000:.0f} ms). "
-                        f"Re-run the alignment."},
-                        status=400)
-                app.setup.ppg_latency_s = proposed
+                changes, rejected = {}, []
+                for source_id, field in App.LATENCY_FIELDS.items():
+                    channel = ALIGN_TARGET_CHANNEL[source_id]
+                    entry = result.results.get(channel)
+                    if not entry or not entry.get("ok"):
+                        continue
+                    current = app.latency_of(source_id)
+                    proposed = round(current + entry["lag_s"], 4)
+                    if not (low <= proposed <= high):
+                        rejected.append(f"{channel} would need {proposed * 1000:.0f} ms")
+                        continue
+                    setattr(app.setup, field, proposed)
+                    changes[channel] = {"previous_s": round(current, 4),
+                                        "measured_lag_s": round(entry["lag_s"], 4),
+                                        "latency_s": proposed}
+                if not changes:
+                    detail = ("; ".join(rejected) + ", outside the sane range "
+                              f"({low * 1000:.0f}…{high * 1000:.0f} ms)") if rejected \
+                             else "no channel produced a usable measurement"
+                    return self._json({"error": f"nothing applied — {detail}."}, status=400)
                 app.apply_setup(app.setup.to_json())
                 app.aligner._set(applied=True)
-                # The measured lag and the resulting correction are different numbers --
-                # the tap reports a residual, which is then ADDED to the value already in
-                # force. Return all three so the UI can show the arithmetic instead of
-                # appearing to report one figure and then save another.
-                return self._json({**app.state(),
-                                   "ppg_latency_s": app.setup.ppg_latency_s,
-                                   "previous_latency_s": round(current, 4),
-                                   "measured_lag_s": round(result.lag_s, 4)})
+                # Return the arithmetic per channel: the measured lag and the resulting
+                # correction are different numbers, and showing only the second looks
+                # like the app reporting one figure and saving another.
+                return self._json({**app.state(), "changes": changes,
+                                   "rejected": rejected})
 
             if route == "/api/align/reset":
                 app.setup.ppg_latency_s = None
+                app.setup.mic_latency_s = None
                 app.apply_setup(app.setup.to_json())
                 return self._json(app.state())
 

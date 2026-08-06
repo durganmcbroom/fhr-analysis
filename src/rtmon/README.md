@@ -122,53 +122,77 @@ corrections happen, and they used to be conflated in one hardcoded constant:
   if it finds the PPG sitting 30 ms *early* against the fiber, the correction has to be
   able to say so. Values are bounded to ±2 s purely as a corrupt-file check.
 
-### Tap alignment
+### Tap alignment (Setup → Timing alignment)
 
-The 0.5 s default is inherited, not measured on this rig. To measure it: arm the strap
-and a PicoScope, open **Setup**, pick which fiber to use on the Polar card, and press
-**Tap-align…**. It waits for both signals to steady, says **TAP 2A + STRAP NOW**, and
-you strike the two together once. One physical event recorded twice — the difference
-between the two recorded times is the error.
+Three inputs, three routes into the machine, three different delays. **The fiber is the
+timing reference** — USB, no radio, no audio stack, no device clock of its own — and the
+microphone and the strap are each corrected onto it. That also makes the corrections
+mean something in analysis terms: the fibers are what the models run on.
 
-**Against a fiber, not the microphone**, for two reasons: the fiber is the channel the
-strap is actually compared against (a maternal fiber estimate is scored against the PPG
-source of truth), and both are contact sensors struck by the same knock — a microphone
-hears it through the air and adds a path delay that has nothing to do with the strap. A
-non-fiber reference is refused. Choose whichever fiber sits closest to the strap so one
-knock reaches both; the choice is saved with the setup.
+One knock across all three sensors measures both corrections at once. The Setup panel
+shows the corrections currently in force, lets you pick which fiber is the reference,
+and reports each channel separately (a mic result and a strap result, each with its own
+confidence, each applied independently).
 
-The result is offered, not applied: it reports e.g. *"PPG is 120 ms late relative to 2B
-(confidence 0.71)"* and you press **Apply** or **Discard**. Apply *adjusts* the
-correction rather than replacing it — the tap measures the residual under whatever is
-currently in force — saves it with the setup, and **takes effect immediately, on a strap
-that is already streaming**. Re-running the alignment after applying should then read
-close to 0 ms; that is the check that it converged. **reset to default** puts it back.
+#### The two-tap procedure
 
-That the correction applies live is load-bearing, not a nicety. It used to take effect
-only at the next arm, so a re-measurement kept measuring the residual under the *old*
-value while Apply added it to the *new* one, and repeated applies diverged by a fixed
-step each time (0.500 → −0.085 → −0.670 → −1.255 → …) until they hit the range guard.
-The correction is therefore applied in the parent process at push time, not passed to
-the BLE worker on its command line.
+Five steps, shown in their own wizard panel so the Setup drawer stays uncluttered:
 
-Accuracy, measured over 180 simulated taps spanning offsets, strap response times and
-noise levels: **bias +27 ms, spread 12 ms, worst 65 ms** — a 500 ms error is recovered
-to within ~13%. The floor is the strap's 55 Hz sampling; a slower sensor crosses any
-threshold later than a fast one, which no amount of processing removes.
+| step | what happens |
+| --- | --- |
+| **Settle** | a plain 3-second wait. Each channel's **floor** is the median of its amplitude over that window |
+| **First tap** | you knock all three sensors. Recognised as **1.35× the largest excursion seen during Settle** — a bar the channel can always clear — and its **height** is recorded per channel |
+| **Settle again** | wait for every channel to fall back within 1.8× its floor |
+| **Second tap** | knock again. Now recognised at `floor + 80% × (height − floor)`, calibrated from *your* tap on *this* rig |
+| **Measure** | locate the impulse in each channel and report each target against the fiber |
 
-Two design notes worth knowing if you change it:
+Amplitude throughout is **peak deviation** — `max|x − median(x)|` in a 1 s window, the
+largest excursion the channel is currently making.
 
-- **It aligns leading edges, not waveform shapes.** A tap is a sharp acoustic burst to
-  the microphone and a slow pressure deflection to the photodiode, so cross-correlating
-  those shapes measures the difference in *sensor response time* along with the clock
-  offset — +55 ms here, and an amount that depends on the strap's response time, which
-  is unknown. The leading edge is the part of both signals that refers to the same
-  physical instant.
-- **"Steady", not "silent".** A microphone on a belly is full of heart sounds and
-  measures a crest of ~34; an abdomen fiber ~8.8. Requiring quiet would mean the phase
-  could never arm on a real rig. What the baseline has to be is *representative* — the
-  tap is then recognised at twice that level, per channel — and those signals are very
-  steady even while loud. It arms in ~2.4 s on live cardiac signals.
+The first tap is judged against the settle-phase **maximum**, not a multiple of the
+median, and that distinction is load-bearing. A fiber's peak amplitude is often barely
+2× its own median level, so "4× the median" is a threshold the channel physically
+cannot reach — measured on a real capture it was unreachable on *all four* fibers, and
+a strike never registered no matter how hard it was struck. "Bigger than anything seen
+while you held still" is always reachable by definition. The margin can be small
+because a false trigger needs **every** channel to spike in the same 200 ms poll, and
+fiber noise is not synchronised with an acoustic burst and a photodiode deflection —
+simultaneity does the rejecting, this only has to notice. Verified both ways on real
+fiber noise: taps down to 0.04 V register, and 18 s with no tap at all never
+self-triggers.
+
+Asking for two taps removes the guesswork. There is no tuned constant trying to fit a
+millivolt fiber and a photodiode counting in the millions: the threshold comes from a
+knock you actually gave. It also replaces a "wait until everything is steady" gate that,
+measured on session-01, all three channels satisfied on **1% of polls** — these signals
+are quasi-periodic and never settle in the sense that gate wanted, which is why it felt
+so finicky. A fixed three-second wait is something you can actually satisfy.
+
+Only the **second** tap is analysed, in a window anchored to the moment it fired
+(1.0 s before to 1.6 s after). A wider window reaches back to the calibration tap, and
+the estimator will happily lock onto it — measured, it reported −2499 ms, the gap
+between the two knocks.
+
+#### How the impulse is located
+
+Per channel, after the second tap:
+
+1. build an envelope — `|x − median|` smoothed over 20 ms — on a common 200 Hz grid;
+2. subtract a 0.4 s trend and clip at zero, isolating what is fast enough to be a tap
+   (this is what stops the wearer's own pulse from dominating);
+3. require the residual to stand ≥ 4× above its own floor, or there is no impulse there;
+4. take the **onset** — where the envelope first rises through 10% of its peak — and
+   report `onset(target) − onset(fiber)`.
+
+Onset, not the correlation peak, because a knock is a sharp acoustic burst to a
+microphone and a slow pressure deflection to a photodiode; correlating those *shapes*
+measures the difference in sensor response time along with the clock offset (+55 ms
+measured, and dependent on the strap's unknown response time). The leading edge is the
+part of both signals that refers to the same physical instant. Shape correlation still
+runs as a cross-check that both caught the same event.
+
+Measured against known offsets, end to end: the microphone lands within **1 ms**, the
+strap within **~30 ms** (its 55 Hz sampling is the floor).
 
 It refuses rather than guessing, and **says which check refused it** — the reason and a
 matching remedy, e.g. *"883 ms apart — too far to be transport latency; tap both

@@ -33,6 +33,12 @@ class MicrophoneSource(Source):
     # names survive replugging and reboots, indices do not. sounddevice accepts the
     # name directly; the pyaudio path resolves it to an index at start.
     device: int | str | None = None
+    # Timing correction, in seconds, subtracted from every sample's timestamp — the
+    # audio stack's capture latency (device buffer + driver + the block the callback
+    # hands over), which SampleClock cannot see because it only ever observes arrival
+    # times. Measured by tap alignment against a fiber; see rtmon.align. Applied at
+    # push, so changing it takes effect on a stream that is already running.
+    latency_s: float = 0.0
 
     def __post_init__(self):
         super().__post_init__()
@@ -41,6 +47,7 @@ class MicrophoneSource(Source):
         self._stream = None
         self._pa = None
         self._clock: SampleClock | None = None
+        self._last_out: float | None = None
         self._lock = threading.Lock()
 
     # ---------------------------------------------------------------- probe
@@ -104,6 +111,7 @@ class MicrophoneSource(Source):
             return
         self._sink = sink
         self._clock = SampleClock(self.nominal_hz)
+        self._last_out = None
         self._error = None
         try:
             self._start_sounddevice()
@@ -116,8 +124,20 @@ class MicrophoneSource(Source):
 
     def _emit(self, mono: np.ndarray) -> None:
         n = mono.shape[0]
-        if n:
-            self._sink(self._clock.stamp(n), mono.reshape(n, 1))
+        if not n:
+            return
+        t = self._clock.stamp(n) - self.latency_s
+        # Keep emitted time strictly increasing if the correction changes mid-stream:
+        # raising it shifts samples earlier and can overlap what was already sent. The
+        # overlap is dropped once, at most |change| seconds of it.
+        last = self._last_out
+        if last is not None and t[0] <= last:
+            keep = t > last
+            if not keep.any():
+                return
+            t, mono = t[keep], mono[keep]
+        self._last_out = float(t[-1])
+        self._sink(t, mono.reshape(t.size, 1))
 
     def _start_sounddevice(self) -> None:
         import sounddevice as sd

@@ -530,3 +530,71 @@ input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px;
   .rail { flex-direction: row; overflow-x: auto; }
   .rail .card { min-width: 210px; }
 }
+
+/* --- Timing alignment (its own Setup section) --- */
+.align-current { display: flex; flex-direction: column; gap: 3px; margin-bottom: 10px; }
+.align-row { display: flex; align-items: baseline; gap: 10px; font-size: 12px; }
+.align-ch { font: 600 12px var(--mono); min-width: 52px; }
+.align-val { font: 500 12px var(--mono); font-variant-numeric: tabular-nums; min-width: 96px; }
+.align-val.is-default { color: var(--text-3); }
+.align-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.align-controls select { font-family: var(--mono); padding: 4px 8px; font-size: 12px; }
+.align-targets { display: flex; gap: 4px; }
+.align-results { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; }
+
+/* --- Calibration wizard (its own panel) --- */
+.wizard { position: fixed; inset: 0; z-index: 50; }
+.wizard-scrim { position: absolute; inset: 0; background: rgb(0 0 0 / .6); }
+.wizard-body {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  width: min(560px, 94vw);
+  background: var(--surface-1); border: 1px solid var(--line);
+  border-radius: var(--radius); box-shadow: 0 24px 60px rgb(0 0 0 / .5);
+  display: flex; flex-direction: column;
+}
+.wizard-head {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 16px; border-bottom: 1px solid var(--line-soft);
+}
+.wizard-head h2 { margin: 0; font-size: 15px; }
+.wizard-head .btn { margin-left: auto; padding: 2px 8px; }
+.wizard-head .muted { font-size: 11.5px; font-family: var(--mono); }
+
+.wizard-steps {
+  display: flex; gap: 6px; list-style: none; margin: 0;
+  padding: 10px 16px; border-bottom: 1px solid var(--line-soft);
+}
+.wstep {
+  flex: 1 1 0; text-align: center; font-size: 10.5px; letter-spacing: .3px;
+  padding: 4px 2px; border-radius: 4px; color: var(--text-3);
+  background: var(--surface-2); border: 1px solid transparent;
+}
+.wstep.done { color: var(--good); }
+.wstep.now { color: var(--text-1); border-color: var(--accent);
+             background: color-mix(in srgb, var(--accent) 16%, var(--surface-2)); }
+
+.wizard-stage { padding: 18px 16px; display: flex; flex-direction: column; gap: 12px; }
+.wizard-cue {
+  font: 700 22px/1.1 var(--sans); letter-spacing: 1.5px; text-align: center;
+  min-height: 26px; color: var(--text-2);
+}
+.wizard-cue.tap1, .wizard-cue.tap2 { color: var(--good); animation: cue-pulse 1s ease-in-out infinite; }
+.wizard-cue.settling, .wizard-cue.recover { color: var(--warn); }
+.wizard-cue.failed { color: var(--bad); }
+.wizard-cue.done { color: var(--accent); }
+@media (prefers-reduced-motion: reduce) { .wizard-cue { animation: none; } }
+.wizard-hint { font-size: 12.5px; color: var(--text-2); text-align: center; line-height: 1.5; }
+
+.wizard-meters { display: flex; flex-direction: column; gap: 5px; }
+.meter { display: flex; align-items: center; gap: 8px; font-size: 11.5px; }
+.meter-ch { font: 600 11.5px var(--mono); min-width: 46px; }
+.meter-bar { flex: 1 1 auto; height: 7px; border-radius: 4px; background: var(--surface-3); overflow: hidden; }
+.meter-fill { height: 100%; background: var(--accent); transition: width .12s linear; }
+.meter-fill.hit { background: var(--good); }
+.meter .muted { min-width: 74px; text-align: right; font-family: var(--mono); }
+
+.wizard-results { display: flex; flex-direction: column; gap: 4px; }
+.wizard-foot {
+  display: flex; gap: 8px; justify-content: flex-end;
+  padding: 12px 16px; border-top: 1px solid var(--line-soft);
+}

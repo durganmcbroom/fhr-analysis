@@ -80,6 +80,7 @@ function applyState(s) {
   state.status = {
     ...(state.status || {}),
     ...(s.align ? { align: s.align } : {}),
+    ...(s.latency ? { latency: s.latency } : {}),
     recording: s.hub.recording,
     sources: Object.fromEntries(s.hub.sources.map((x) => [x.id, {running: x.running, error: x.error}])),
     channels: s.hub.channels.map((c) => ({id: c.id, hz: c.hz, silent: c.silent})),
@@ -670,9 +671,9 @@ function renderStatus() {
   const running = ['waiting_quiet', 'armed', 'measuring'].includes(align.phase);
   const drawerOpen = !$('#drawer').hidden;
   const devices = $('#devices');
-  if (drawerOpen && (running || align.phase !== lastAlignPhase)
-      && !devices.contains(document.activeElement)) {
-    renderDevices();
+  // Only the compact section refreshes here; the wizard has its own poll.
+  if (drawerOpen && align.phase !== lastAlignPhase && !alignPoll) {
+    renderAlignPanel();
   }
   lastAlignPhase = align.phase;
 }
@@ -729,6 +730,7 @@ function renderScopeRows() {
 // ---------------------------------------------------------------------------
 function renderAll() {
   renderDevices();
+  renderAlignPanel();
   renderMatrix();
   renderChannelPicker();
   renderPresets();
@@ -810,8 +812,6 @@ function renderDevices() {
       card.append(row);
     }
 
-    if (source.id === 'pvs') card.append(alignPanel(source));
-
     const chans = el('div', 'device-chans');
     for (const c of source.channels) {
       const pill = el('span', 'pill', c.id);
@@ -826,107 +826,210 @@ function renderDevices() {
   }
 }
 
-/* Tap alignment. Deliberately collapsed to one line until asked for: the strap's
- * latency only needs measuring once per rig, and a calibration wizard permanently
- * occupying the device panel would be in the way every other time. */
-function alignPanel(source) {
-  const st = (state.status && state.status.align) || { phase: 'idle' };
-  const latency = state.status ? state.status.ppg_latency_s : null;
-  const measured = state.status && state.status.ppg_latency_measured;
-  const busy = ['waiting_quiet', 'armed', 'measuring'].includes(st.phase);
+/* Timing alignment.
+ *
+ * Two pieces on purpose: a compact section in Setup that shows the corrections in force
+ * and picks the reference fiber, and a separate wizard panel for the run itself, so a
+ * multi-step calibration does not clutter the drawer.
+ *
+ * The wizard polls /api/align several times a second while it is open. It deliberately
+ * does NOT ride the 1 Hz status frame: that is far too slow to drive a "tap NOW" prompt,
+ * and depending on it is why the panel could sit on a stale phase until the page was
+ * reloaded. */
 
-  const wrap = el('div', 'align');
-  const head = el('div', 'align-head');
-  const label = el('span', 'muted',
-    latency == null ? 'timing offset —'
-      : `timing offset ${(latency * 1000).toFixed(0)} ms${measured ? '' : ' (default)'}`);
-  label.title = measured
-    ? 'Measured on this rig with a tap. Applied to every PPG sample.'
-    : 'Inherited default — tap-align to measure it on this rig.';
-  head.append(label);
+const ALIGN_STEPS = [
+  ['settling', 'Settle'],
+  ['tap1',     'First tap'],
+  ['recover',  'Settle again'],
+  ['tap2',     'Second tap'],
+  ['measuring','Measure'],
+];
+let alignPoll = null;
 
-  const go = el('button', 'btn', busy ? 'Cancel' : (measured ? 'Re-align' : 'Tap-align…'));
-  go.onclick = guard(async () => {
-    if (busy) { applyState(await api('/api/align/cancel', {})); renderDevices(); return; }
-    const ref = alignFiber();
-    if (!ref) { toast('Arm a PicoScope first — the strap is aligned against a fiber.', true); return; }
-    applyState(await api('/api/align/start', { reference: ref }));
-    renderDevices();
-  });
-  go.disabled = !source.running && !busy;
-  go.title = source.running ? 'Measure the strap’s timing against a fiber'
-                            : 'Arm the strap first';
-  head.append(go);
-  wrap.append(head);
+function renderAlignPanel() {
+  const host = $('#align-panel');
+  if (!host || host.contains(document.activeElement)) return;
+  host.innerHTML = '';
 
-  // Which fiber to tap alongside the strap. Should be whichever is physically nearest
-  // it, so one knock reaches both — hence a choice rather than a guess.
+  const lat = (state.status && state.status.latency) || {};
+  const table = el('div', 'align-current');
+  for (const [ch, info] of Object.entries(lat)) {
+    const row = el('div', 'align-row');
+    row.append(el('span', 'align-ch', ch));
+    const val = el('span', 'align-val', `${(info.s * 1000).toFixed(0)} ms`);
+    if (!info.measured) val.classList.add('is-default');
+    row.append(val, el('span', 'muted', info.measured ? 'measured' : 'default'));
+    table.append(row);
+  }
+  host.append(table);
+
+  const controls = el('div', 'align-controls');
   const fibers = availableFibers();
-  if (!busy) {
-    const row = el('label', 'device-detail align-pick');
-    row.append(el('span', null, 'against'));
-    const sel = el('select');
-    if (!fibers.length) {
-      const none = el('option', null, 'no fiber streaming');
-      none.value = '';
-      sel.append(none);
-      sel.disabled = true;
-    } else {
-      for (const f of fibers) {
-        const opt = el('option', null, `${f.id}${f.live ? '' : ' (not streaming)'}`);
-        opt.value = f.id;
-        opt.disabled = !f.live;
-        sel.append(opt);
-      }
-      sel.value = alignFiber() || '';
+  const sel = el('select');
+  if (!fibers.length) {
+    const none = el('option', null, 'no fiber streaming'); none.value = ''; sel.append(none);
+    sel.disabled = true;
+  } else {
+    for (const f of fibers) {
+      const o = el('option', null, `${f.id}${f.live ? '' : ' (not streaming)'}`);
+      o.value = f.id; o.disabled = !f.live; sel.append(o);
     }
-    sel.title = 'Tap this fiber and the strap together — pick the one closest to it';
-    sel.onchange = () => { state.setup.align_fiber = sel.value || null; pushSetup(true); };
-    row.append(sel);
-    wrap.append(row);
+    sel.value = alignFiber() || '';
+  }
+  sel.title = 'Timing reference — tap this fiber along with the others';
+  sel.onchange = () => { state.setup.align_fiber = sel.value || null; pushSetup(true); };
+  controls.append(el('span', 'muted', 'reference'), sel);
+
+  const live = liveChannels();
+  const chips = el('span', 'align-targets');
+  for (const ch of ['MIC', 'PPG0']) {
+    const on = live.has(ch);
+    chips.append(el('span', `pill ${on ? 'quiet-ok' : 'quiet-no'}`, on ? ch : `${ch} —`));
+  }
+  controls.append(el('span', 'muted', '→ correcting'), chips);
+
+  const go = el('button', 'btn btn-primary', 'Calibrate…');
+  go.disabled = !fibers.some((f) => f.live);
+  go.onclick = guard(async () => {
+    const ref = alignFiber();
+    if (!ref) { toast('Arm a PicoScope — the fiber is the timing reference.', true); return; }
+    if (!alignTargets().length) { toast('Arm the microphone and/or the strap first.', true); return; }
+    await api('/api/align/start', { reference: ref, targets: alignTargets() });
+    openAlignWizard();                      // show immediately; the poll keeps it live
+  });
+  controls.append(go);
+  host.append(controls);
+
+  if (Object.values(lat).some((i) => i.measured)) {
+    const reset = el('button', 'btn btn-ghost align-reset', 'reset both to default');
+    reset.onclick = guard(async () => {
+      applyState(await api('/api/align/reset', {})); renderAlignPanel();
+    });
+    host.append(reset);
+  }
+}
+
+function openAlignWizard() {
+  $('#align-wizard').hidden = false;
+  drawAlignWizard({ phase: 'settling', message: 'Starting…', channels: [] });
+  clearInterval(alignPoll);
+  alignPoll = setInterval(async () => {
+    try {
+      const d = await api('/api/align');
+      if (d.latency) state.status = { ...(state.status || {}), latency: d.latency };
+      drawAlignWizard(d.align || {});
+    } catch (err) { /* transient; the next tick retries */ }
+  }, 250);
+}
+
+function closeAlignWizard(cancel) {
+  clearInterval(alignPoll); alignPoll = null;
+  $('#align-wizard').hidden = true;
+  if (cancel) api('/api/align/cancel', {}).then(applyState).catch(() => {});
+  renderAlignPanel();
+}
+
+function drawAlignWizard(st) {
+  const phase = st.phase || 'idle';
+  $('#align-ref').textContent = st.reference
+    ? `reference ${st.reference} → ${(st.channels || []).filter((c) => c !== st.reference).join(', ')}`
+    : '';
+
+  const steps = $('#align-steps');
+  steps.innerHTML = '';
+  const order = ALIGN_STEPS.map(([id]) => id);
+  const at = order.indexOf(phase);
+  ALIGN_STEPS.forEach(([id, label], i) => {
+    const done = phase === 'done' || (at >= 0 && i < at);
+    const now = id === phase;
+    steps.append(el('li', `wstep${now ? ' now' : ''}${done ? ' done' : ''}`, label));
+  });
+
+  const cue = $('#align-cue');
+  cue.className = `wizard-cue ${phase}`;
+  if (phase === 'settling') {
+    cue.textContent = `HANDS OFF — ${Number(st.seconds_left || 0).toFixed(1)}s`;
+  } else if (phase === 'tap1') {
+    cue.textContent = 'TAP NOW (1 of 2)';
+  } else if (phase === 'tap2') {
+    cue.textContent = 'TAP AGAIN (2 of 2)';
+  } else if (phase === 'recover') {
+    cue.textContent = 'HANDS OFF';
+  } else if (phase === 'measuring') {
+    cue.textContent = 'MEASURING…';
+  } else if (phase === 'done') {
+    cue.textContent = 'DONE';
+  } else if (phase === 'failed') {
+    cue.textContent = 'FAILED';
+  } else {
+    cue.textContent = '';
+  }
+  $('#align-hint').textContent = [st.message, st.hint].filter(Boolean).join(' — ');
+
+  // Live level bars: how close each channel is to the level this phase is waiting for.
+  const meters = $('#align-meters');
+  const levels = st.level || {};
+  const wanted = ['tap1', 'tap2', 'recover'].includes(phase);
+  meters.innerHTML = '';
+  if (wanted) {
+    for (const ch of st.channels || []) {
+      const row = el('div', 'meter');
+      row.append(el('span', 'meter-ch', ch));
+      const bar = el('div', 'meter-bar');
+      const frac = Math.max(0, Math.min(1, levels[ch] || 0));
+      const fill = el('div', `meter-fill${frac >= 1 ? ' hit' : ''}`);
+      fill.style.width = `${(frac * 100).toFixed(0)}%`;
+      bar.append(fill);
+      row.append(bar);
+      row.append(el('span', 'muted', phase === 'recover'
+        ? (frac >= 1 ? 'still moving' : 'settled')
+        : (frac >= 1 ? 'struck' : `${Math.round(frac * 100)}%`)));
+      meters.append(row);
+    }
   }
 
-  if (busy || st.phase === 'done' || st.phase === 'failed') {
-    const body = el('div', `align-body ${st.phase}`);
-    if (st.phase === 'armed') {
-      body.append(el('div', 'align-cue', `TAP ${st.reference} + STRAP NOW`));
+  const results = $('#align-results');
+  results.innerHTML = '';
+  if (phase === 'done' && st.results) {
+    for (const [ch, r] of Object.entries(st.results)) {
+      const row = el('div', 'align-row');
+      row.append(el('span', 'align-ch', ch));
+      row.append(el('span', 'align-val',
+        r.ok ? `${(r.lag_s * 1000).toFixed(0)} ms ${r.lag_s > 0 ? 'late' : 'early'}` : '—'));
+      row.append(el('span', 'muted', r.ok ? `confidence ${r.confidence.toFixed(2)}` : r.detail));
+      results.append(row);
     }
-    body.append(el('div', 'align-msg', st.message || ''));
-    if (st.phase === 'waiting_quiet' && st.quiet) {
-      const row = el('div', 'align-quiet');
-      for (const [ch, ok] of Object.entries(st.quiet)) {
-        row.append(el('span', `pill ${ok ? 'quiet-ok' : 'quiet-no'}`, `${ch} ${ok ? 'settled' : 'noisy'}`));
-      }
-      body.append(row);
-    }
-    if (st.phase === 'done' && !st.applied) {
-      const actions = el('div', 'align-actions');
-      const apply = el('button', 'btn btn-primary', 'Apply');
-      apply.onclick = guard(async () => {
-        const res = await api('/api/align/apply', {});
-        applyState(res);
-        // Show the arithmetic. The measured lag is a RESIDUAL added to the correction
-        // already in force, so the saved number legitimately differs from the one just
-        // reported — without seeing both, that looks like the app changing its mind.
-        const ms = (v) => `${(v * 1000).toFixed(0)} ms`;
-        toast(`Correction ${ms(res.previous_latency_s)} ${ms(res.measured_lag_s)} `
-              + `= ${ms(res.ppg_latency_s)}. Re-run the alignment; it should now read ~0.`);
-        renderDevices();
-      });
-      const discard = el('button', 'btn', 'Discard');
-      discard.onclick = guard(async () => { applyState(await api('/api/align/cancel', {})); renderDevices(); });
-      actions.append(apply, discard);
-      body.append(actions);
-    }
-    wrap.append(body);
   }
 
-  if (measured && !busy) {
-    const reset = el('button', 'btn btn-ghost align-reset', 'reset to default');
-    reset.onclick = guard(async () => { applyState(await api('/api/align/reset', {})); renderDevices(); });
-    wrap.append(reset);
+  const foot = $('#align-foot');
+  foot.innerHTML = '';
+  if (phase === 'done' && !st.applied) {
+    const apply = el('button', 'btn btn-primary', 'Apply');
+    apply.onclick = guard(async () => {
+      const res = await api('/api/align/apply', {});
+      applyState(res);
+      const ms = (v) => `${(v * 1000).toFixed(0)} ms`;
+      toast(Object.entries(res.changes || {}).map(([ch, c]) =>
+        `${ch}: ${ms(c.previous_s)} ${ms(c.measured_lag_s)} = ${ms(c.latency_s)}`).join('  ·  '));
+      closeAlignWizard(true);
+    });
+    const again = el('button', 'btn', 'Discard');
+    again.onclick = () => closeAlignWizard(true);
+    foot.append(apply, again);
+  } else if (phase === 'failed') {
+    const retry = el('button', 'btn btn-primary', 'Try again');
+    retry.onclick = guard(async () => {
+      await api('/api/align/cancel', {});
+      await api('/api/align/start', { reference: alignFiber(), targets: alignTargets() });
+    });
+    foot.append(retry, (() => {
+      const b = el('button', 'btn', 'Close'); b.onclick = () => closeAlignWizard(true); return b;
+    })());
+  } else if (phase !== 'idle') {
+    const cancel = el('button', 'btn', 'Cancel');
+    cancel.onclick = () => closeAlignWizard(true);
+    foot.append(cancel);
   }
-  return wrap;
 }
 
 /* Every fiber the rig knows about, flagged with whether it is streaming right now. */
@@ -937,13 +1040,19 @@ function availableFibers() {
     .map((c) => ({ id: c.id, live: live.has(c.id) }));
 }
 
-/* The fiber the strap is tap-aligned against: the saved choice if it is streaming,
- * otherwise whichever fiber is. Never the microphone — see rtmon.align. */
+/* The fiber used as the timing reference: the saved choice if it is streaming,
+ * otherwise whichever fiber is. Never the mic or the strap — see rtmon.align. */
 function alignFiber() {
   const fibers = availableFibers().filter((f) => f.live).map((f) => f.id);
   const chosen = state.setup && state.setup.align_fiber;
   if (chosen && fibers.includes(chosen)) return chosen;
   return fibers[0] || null;
+}
+
+/* The channels corrected onto it — whichever of the two are actually streaming. */
+function alignTargets() {
+  const live = liveChannels();
+  return ['MIC', 'PPG0'].filter((c) => live.has(c));
 }
 
 let saveTimer = null;
@@ -1249,8 +1358,13 @@ function init() {
   document.querySelectorAll('[data-close]').forEach((node) => {
     node.onclick = () => { $('#drawer').hidden = true; };
   });
+  document.querySelectorAll('[data-align-close]').forEach((node) => {
+    node.onclick = () => closeAlignWizard(true);
+  });
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') $('#drawer').hidden = true;
+    if (e.key !== 'Escape') return;
+    if (!$('#align-wizard').hidden) { closeAlignWizard(true); return; }
+    $('#drawer').hidden = true;
   });
 
   $('#hr-window').onchange = (e) => { view.hrWindowS = Number(e.target.value); sendView(); dirty = true; };

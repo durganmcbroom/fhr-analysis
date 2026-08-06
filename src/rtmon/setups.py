@@ -38,8 +38,11 @@ class Setup:
     # Measured PPG transport latency (rtmon.align). None means "use the default";
     # saved with the setup because it is a property of this strap and this host.
     ppg_latency_s: float | None = None
-    # Which fiber the strap is tap-aligned against. Remembered because it should be the
-    # fiber physically nearest the strap, which is a property of how the rig is laid out.
+    # Same, for the microphone: the audio stack's capture latency. Both are corrections
+    # ONTO the fiber, which is the timing reference (see rtmon.align).
+    mic_latency_s: float | None = None
+    # Which fiber everything is tap-aligned against. Remembered because it should be the
+    # fiber physically nearest the sensors, which is a property of how the rig is laid out.
     align_fiber: str | None = None
     name: str = "unsaved"
 
@@ -47,7 +50,8 @@ class Setup:
         return {"name": self.name, "tracks": [t.to_json() for t in self.tracks],
                 "sources": self.sources, "window_s": self.window_s,
                 "channels": self.channels, "mic_device": self.mic_device,
-                "ppg_latency_s": self.ppg_latency_s, "align_fiber": self.align_fiber}
+                "ppg_latency_s": self.ppg_latency_s, "mic_latency_s": self.mic_latency_s,
+                "align_fiber": self.align_fiber}
 
     @staticmethod
     def from_json(raw: dict) -> "Setup":
@@ -60,6 +64,7 @@ class Setup:
             # Sanitised on the way in: a setup file is editable, may predate a fix, and
             # a nonsense latency here would silently skew every PPG timestamp.
             ppg_latency_s=polar.valid_latency(raw.get("ppg_latency_s")),
+            mic_latency_s=polar.valid_latency(raw.get("mic_latency_s")),
             align_fiber=raw.get("align_fiber") or None,
             name=raw.get("name", "unsaved"),
         )
