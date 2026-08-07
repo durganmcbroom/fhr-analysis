@@ -14,6 +14,6 @@ chmod a+x setup.sh
 ./setup.sh
 
 chmod a+x lib/tune-ssnet/generate_training_snippets.sh
-#lib/tune-ssnet/generate_training_snippets.sh
+lib/tune-ssnet/generate_training_snippets.sh
 
 poetry run ssnet-train lib/tune-ssnet/fetal-tune-config.yaml
