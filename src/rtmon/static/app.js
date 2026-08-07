@@ -267,6 +267,45 @@ function ease(current, target, rate = 0.16) {
            hi: current.hi + (target.hi - current.hi) * rate };
 }
 
+// ---------------------------------------------------------------------------
+// Time axis
+//
+// Every plot counts from the moment the recording started, and shows nothing until
+// then. An idle rig has no origin to count from, and labelling the axis "now / -30s /
+// -1m" answers a question nobody is asking while nothing is being captured — what the
+// operator wants, once a session is running, is "how far into it is this", the same
+// number that will be in the .npy time column afterwards.
+//
+// Ticks therefore land on round *elapsed* values and scroll leftward, rather than
+// sitting at fixed offsets from the right edge with changing labels.
+// ---------------------------------------------------------------------------
+function recordingStart() {
+  const rec = (state.status && state.status.recording) || {};
+  return rec.active && rec.started_at ? rec.started_at : null;
+}
+
+function timeTicks(windowS, targetTicks) {
+  const step = niceStep(windowS, targetTicks);
+  const start = recordingStart();
+  const out = [];
+  if (start === null) {
+    // Unlabelled guides only: structure for reading the trace, no claim about time.
+    for (let s = 0; s <= windowS + 1e-6; s += step) out.push({ at: -s, label: null });
+    return out;
+  }
+  const right = (renderClock === null ? live.now : renderClock) - start;
+  const first = Math.max(0, Math.ceil((right - windowS) / step) * step);
+  for (let e = first; e <= right + 1e-6; e += step) out.push({ at: e - right, elapsed: e });
+  // One format for the whole axis, chosen from its largest value: mixing "45s" with
+  // "1:15" on one ruler reads as two different scales.
+  const longest = out.length ? out[out.length - 1].elapsed : 0;
+  for (const tick of out) {
+    tick.label = longest < 60 ? `${Math.round(tick.elapsed)}s` : fmtClock(tick.elapsed);
+    tick.origin = tick.elapsed < step / 2;      // the instant recording began
+  }
+  return out;
+}
+
 function niceStep(span, targetTicks) {
   const raw = span / Math.max(1, targetTicks);
   const mag = Math.pow(10, Math.floor(Math.log10(raw)));
@@ -334,14 +373,16 @@ function drawHR() {
     ctx.fillText(String(Math.round(v)), plot.x - 8, y);
   }
 
-  const tStep = niceStep(view.hrWindowS, 6);
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
-  for (let s = 0; s <= view.hrWindowS + 1e-6; s += tStep) {
-    const x = Math.round(Xd(-s)) + 0.5;
-    if (x < plot.x - 1) continue;
+  for (const tick of timeTicks(view.hrWindowS, 6)) {
+    const x = Math.round(Xd(tick.at)) + 0.5;
+    if (x < plot.x - 1 || x > plot.x + plot.w + 1) continue;
+    // The instant the session began gets a solid line: it is the one x on this axis
+    // that means something on its own, and it is where the recorded file starts.
+    ctx.strokeStyle = tick.origin ? cssVar('--line') : cssVar('--line-soft');
     ctx.beginPath(); ctx.moveTo(x, plot.y); ctx.lineTo(x, plot.y + plot.h); ctx.stroke();
-    ctx.fillText(s === 0 ? 'now' : `-${fmtDuration(s)}`, x, plot.y + plot.h + 5);
+    if (tick.label) ctx.fillText(tick.label, x, plot.y + plot.h + 5);
   }
   ctx.restore();
 
@@ -413,7 +454,13 @@ function showTip(pos, plot, tracks) {
   const tRel = ((pos.x - plot.x) / plot.w - 1) * view.hrWindowS;
   const tip = $('#hr-tip');
   tip.innerHTML = '';
-  tip.appendChild(el('div', 'tip-time', tRel > -1 ? 'now' : `-${fmtDuration(-tRel)}`));
+  // Same clock as the axis: elapsed into the session, or no time line at all when
+  // nothing is being recorded and there is nothing to be elapsed from.
+  const start = recordingStart();
+  if (start !== null) {
+    const elapsed = (renderClock === null ? live.now : renderClock) + tRel - start;
+    if (elapsed >= 0) tip.appendChild(el('div', 'tip-time', fmtClock(elapsed)));
+  }
   let any = false;
   for (const t of tracks) {
     const s = live.series.get(t.id);
@@ -500,6 +547,28 @@ function drawScopes() {
       ctx.lineTo(w, y0);
       ctx.stroke();
     }
+
+    // ---- time axis, on every scope, behind the trace.
+    // Placed in DISPLAY time (Xd, no payload-age shift): the ruler belongs to the
+    // window, not to whichever frame last delivered this channel's samples, and two
+    // channels arriving at different rates must not end up with two different rulers.
+    const Xd = (tRel) => w * (1 + tRel / view.windowS);
+    ctx.save();
+    ctx.font = '9px var(--mono), monospace';
+    ctx.textBaseline = 'bottom';
+    for (const tick of timeTicks(view.windowS, 5)) {
+      const x = Math.round(Xd(tick.at)) + 0.5;
+      if (x < 0 || x > w) continue;
+      ctx.strokeStyle = tick.origin ? cssVar('--line') : cssVar('--line-soft');
+      ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke();
+      if (!tick.label) continue;
+      // Nudged inward at the ends so the first and last labels stay inside the canvas
+      // instead of being clipped by it.
+      ctx.fillStyle = cssVar('--text-3');
+      ctx.textAlign = x < 18 ? 'left' : x > w - 18 ? 'right' : 'center';
+      ctx.fillText(tick.label, Math.min(w - 1, Math.max(1, x)), h - 1);
+    }
+    ctx.restore();
 
     const color = seriesColor(scopeColor(id));
     const n = wave.lo.length;
@@ -1491,12 +1560,6 @@ function renderPresets() {
 // Formatting
 // ---------------------------------------------------------------------------
 const shortName = (s) => (s.length > 22 ? `${s.slice(0, 21)}…` : s);
-
-function fmtDuration(seconds) {
-  if (seconds < 60) return `${Math.round(seconds)}s`;
-  const m = Math.floor(seconds / 60), s = Math.round(seconds % 60);
-  return s ? `${m}m${s}` : `${m}m`;
-}
 
 function fmtClock(seconds) {
   const total = Math.max(0, Math.floor(seconds));

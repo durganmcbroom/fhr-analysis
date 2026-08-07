@@ -350,6 +350,23 @@ FUNet — funet-v35: funet-v35 takes 5 fiber(s), 3 selected
 Setups (matrix + view) are saved as JSON under `.out/rtmon/`. The last one is
 restored on start; **Save as…** names a preset.
 
+### The time axis
+
+Both plots count in **seconds since the recording started**, and show no time labels at
+all until it does. An idle rig has no origin to count from, and an axis reading
+"now / −30s / −1m" answers a question nobody asks while nothing is being captured. Once
+a session is running, the number on screen is the same number that will be in the
+`.npy` time column afterwards, which is what makes a note like "artefact at 4:12"
+useful the next day.
+
+Ticks land on round *elapsed* values and scroll leftward, rather than sitting at fixed
+offsets from the right edge with changing labels, and the instant the session began
+gets a solid line — it is the one x on the axis that means something on its own, and it
+is where the recorded file starts. Traces to the left of it are real: the engine runs
+whether or not anything is being written, so beats found before Record was pressed stay
+on screen and are visibly outside the session. Every scope carries its own copy of the
+ruler; the HR chart carries one.
+
 ### Raw and bandpassed signals
 
 The Signals panel has a **View** picker: `Raw`, `Fetal band`, `Maternal band`. Raw is

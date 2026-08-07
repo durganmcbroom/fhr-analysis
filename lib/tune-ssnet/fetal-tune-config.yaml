@@ -58,5 +58,5 @@ data:
   # band-limiting the mix asks the separator to reconstruct energy it can no longer see.
   preprocess: []
 
-model_dir: 'models/tuned-model-v13/'
+model_dir: 'models/tuned-model-v14/'
 resume: '../neossnet/models/model_best.pt'

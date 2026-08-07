@@ -10,7 +10,7 @@ DEFAULT_DATA_DIR = PROJECT_DIR + BANNER_TEST_DIR
 
 # Fine-tuned SSNet checkpoints (lib/tune-ssnet)
 # FETAL_MODEL = "tuned-model-v7 (SASDR)"
-FETAL_MODEL = "tuned-model-v12"
+FETAL_MODEL = "tuned-model-v13"
 FETAL_MODEL_PATH = os.path.join(PROJECT_DIR, f"lib/tune-ssnet/models/{FETAL_MODEL}/model_best.pt")
 FETAL_MODEL_CFG = os.path.join(PROJECT_DIR, f"lib/tune-ssnet/models/{FETAL_MODEL}/model.yaml")
 MATERNAL_MODEL_PATH = os.path.join(PROJECT_DIR, "lib/tune-ssnet/models/maternal-tuned-model-v2/model_best.pt")
@@ -22,7 +22,7 @@ NEOSSNET_MODEL_CFG = os.path.join(PROJECT_DIR, "lib/neossnet/models/model.yaml")
 
 # FUNet beat-activity model (lib/funet)
 # FUNET_CONFIG = os.path.join(PROJECT_DIR, "lib/funet/fetal-config.yaml")
-FUNET_MODEL = "funet-v24"
+FUNET_MODEL = "funet-v36"
 FUNET_CONFIG = os.path.join(PROJECT_DIR, f"lib/funet/models/{FUNET_MODEL}/fetal-config.yaml")
 FUNET_MODEL_PATH = os.path.join(PROJECT_DIR, f"lib/funet/models/{FUNET_MODEL}/model_best.pt")
 
@@ -31,7 +31,7 @@ FUNET_MODEL_PATH = os.path.join(PROJECT_DIR, f"lib/funet/models/{FUNET_MODEL}/mo
 # 'config.yaml' rather than funet's 'fetal-config.yaml': that is the name
 # common.phases.train archives next to a checkpoint (train.CONFIG), so a run's output
 # directory works here as-is with nothing to rename.
-TSLNET_MODEL = "tslnet-v6"
+TSLNET_MODEL = "tslnet-v9"
 TSLNET_CONFIG = os.path.join(PROJECT_DIR, f"lib/tslnet/models/{TSLNET_MODEL}/config.yaml")
 TSLNET_MODEL_PATH = os.path.join(PROJECT_DIR, f"lib/tslnet/models/{TSLNET_MODEL}/model_best.pt")
 
