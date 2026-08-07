@@ -480,5 +480,9 @@ def describe() -> dict:
     return {
         "processors": [p.to_json() for p in PROCESSORS.values()],
         "detectors": detectors.list_detectors(),
-        "bands": [{"id": k, "label": v["label"], "bpm": list(v["bpm"])} for k, v in BANDS.items()],
+        # `hz` is the bandpass the Signals panel draws when this band is selected;
+        # `bpm` the plausible-rate gate the detectors enforce. Both are per band, and
+        # naming them on the wire keeps the labels in the UI from drifting from these.
+        "bands": [{"id": k, "label": v["label"], "bpm": list(v["bpm"]),
+                   "hz": list(v["acoustic"])} for k, v in BANDS.items()],
     }

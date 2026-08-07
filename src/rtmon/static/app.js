@@ -188,6 +188,7 @@ function sendView() {
     hr_window_s: view.hrWindowS,
     buckets: view.buckets,
     channels: (state.setup && state.setup.channels) || [],
+    signal_view: (state.setup && state.setup.signal_view) || 'raw',
     // A backgrounded tab stops running requestAnimationFrame, so every waveform frame
     // sent to it is decoded by nobody. Say so, and the server drops to status-only
     // until the tab comes back — which matters here because the operator's other
@@ -773,10 +774,18 @@ function renderScopeRows() {
     }
   }
   const info = new Map(((state.status && state.status.channels) || []).map((c) => [c.id, c]));
+  const meta = new Map(((state.catalog && state.catalog.all_channels) || [])
+    .map((c) => [c.id, c]));
+  const signalView = (state.setup && state.setup.signal_view) || 'raw';
   for (const row of host.children) {
     const id = row.querySelector('canvas').dataset.ch;
     const channel = info.get(id);
     const note = row.querySelector('.scope-label span');
+    const banded = BANDED_KINDS.has((meta.get(id) || {}).kind);
+    // Say which channels the band view does not apply to, rather than leaving the
+    // operator to wonder why the strap looks identical in both views. Nothing in the
+    // pipeline bandpasses a PPG — its pulse *is* the signal.
+    row.classList.toggle('unfiltered', signalView !== 'raw' && !banded);
     if (channel && channel.silent) {
       // A silent channel is streaming perfectly and recording nothing, which is the
       // failure that costs a whole session. Say it where the trace would be.
@@ -784,21 +793,55 @@ function renderScopeRows() {
       note.className = 'silent';
       note.title = 'Streaming, but every sample is zero — check the mic permission '
         + 'or that the fiber is connected.';
+    } else if (signalView !== 'raw' && !banded) {
+      note.textContent = 'raw — no band';
+      note.className = 'unbanded';
+      note.title = 'Nothing in the pipeline bandpasses this channel, so the band view '
+        + 'leaves it alone.';
     } else {
       note.textContent = rates.get(id) ? `${Math.round(rates.get(id))} Hz` : '—';
       note.className = '';
       note.title = '';
     }
   }
+  const band = bandsInCatalog().find((b) => b.id === signalView);
   $('#scope-meta').textContent = channels.length
     ? `${channels.length} channel${channels.length > 1 ? 's' : ''} · ${view.windowS}s window`
+      + (band ? ` · ${band.label} band ${band.hz ? `${band.hz[0]}–${band.hz[1]} Hz` : ''}` : '')
     : 'none selected';
 }
 
 // ---------------------------------------------------------------------------
 // Setup drawer
 // ---------------------------------------------------------------------------
+/* The Signals panel's view picker: raw, or any band the processors define. Built from
+ * the catalog rather than hardcoded, so a new band appears here the moment the server
+ * knows about it. */
+const BANDED_KINDS = new Set(['audio', 'fiber']);
+const bandsInCatalog = () => (state.catalog && state.catalog.bands) || [];
+
+function renderSignalView() {
+  const node = $('#signal-view');
+  const want = (state.setup && state.setup.signal_view) || 'raw';
+  const options = ['raw', ...bandsInCatalog().map((b) => b.id)].join('|');
+  if (node.dataset.key !== options) {
+    node.dataset.key = options;
+    node.innerHTML = '';
+    const raw = el('option', null, 'Raw');
+    raw.value = 'raw';
+    node.append(raw);
+    for (const b of bandsInCatalog()) {
+      const option = el('option', null, `${b.label} band`);
+      option.value = b.id;
+      node.append(option);
+    }
+  }
+  node.value = want;
+  if (node.value !== want) node.value = 'raw';   // a band the server no longer has
+}
+
 function renderAll() {
+  renderSignalView();
   renderDevices();
   renderAlignPanel();
   renderMatrix();
@@ -1257,8 +1300,14 @@ function renderMatrix() {
                (v) => { track.detector = v; pushSetup(true); })
       : el('span', 'muted', '—')));
 
-    row.append(cell(select(catalog.bands.map((b) => [b.id, `${b.label} ${b.bpm[0]}–${b.bpm[1]}`]),
-                           track.band, (v) => { track.band = v; pushSetup(true); })));
+    // What this row is a source OF. It is one choice, not two: the designation picks
+    // the bandpass, the plausible-BPM range, and which source of truth the row is
+    // scored against — all three follow from "is this the mother's heart or the
+    // baby's". The bpm range lives in the tooltip; it is a consequence, not a setting.
+    row.append(cell(select(
+      catalog.bands.map((b) => [b.id, b.label]), track.band,
+      (v) => { track.band = v; pushSetup(true); },
+      catalog.bands.map((b) => `${b.label}: ${b.bpm[0]}–${b.bpm[1]} bpm`).join('\n'))));
 
     row.append(cell(number(track.chunk_s, 1, 60, 1, (v) => { track.chunk_s = v; pushSetup(); }), 'c-num'));
     row.append(cell(number(track.period_s, 0.5, 120, 0.5, (v) => { track.period_s = v; pushSetup(); }), 'c-num'));
@@ -1504,6 +1553,13 @@ function init() {
   });
 
   $('#hr-window').onchange = (e) => { view.hrWindowS = Number(e.target.value); sendView(); dirty = true; };
+  $('#signal-view').onchange = (e) => {
+    state.setup.signal_view = e.target.value;
+    sendView();          // the server filters per client, so tell it before saving
+    renderScopeRows();
+    pushSetup();
+    dirty = true;
+  };
   $('#scope-window').onchange = (e) => {
     view.windowS = Number(e.target.value);
     state.setup.window_s = view.windowS;

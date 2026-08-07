@@ -44,6 +44,10 @@ class Setup:
     # Which fiber everything is tap-aligned against. Remembered because it should be the
     # fiber physically nearest the sensors, which is a property of how the rig is laid out.
     align_fiber: str | None = None
+    # Which view the Signals panel is on: "raw", or a band name whose bandpass is drawn
+    # instead. A view setting like window_s, saved for the same reason -- the operator
+    # who works in the fetal band wants it that way when they come back.
+    signal_view: str = "raw"
     name: str = "unsaved"
 
     def to_json(self) -> dict:
@@ -51,7 +55,7 @@ class Setup:
                 "sources": self.sources, "window_s": self.window_s,
                 "channels": self.channels, "mic_device": self.mic_device,
                 "ppg_latency_s": self.ppg_latency_s, "mic_latency_s": self.mic_latency_s,
-                "align_fiber": self.align_fiber}
+                "align_fiber": self.align_fiber, "signal_view": self.signal_view}
 
     @staticmethod
     def from_json(raw: dict) -> "Setup":
@@ -66,6 +70,7 @@ class Setup:
             ppg_latency_s=polar.valid_latency(raw.get("ppg_latency_s")),
             mic_latency_s=polar.valid_latency(raw.get("mic_latency_s")),
             align_fiber=raw.get("align_fiber") or None,
+            signal_view=str(raw.get("signal_view") or "raw"),
             name=raw.get("name", "unsaved"),
         )
 

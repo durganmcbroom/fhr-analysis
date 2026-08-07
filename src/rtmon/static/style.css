@@ -463,6 +463,9 @@ input[type="checkbox"] { accent-color: var(--accent); width: 15px; height: 15px;
 .matrix tr.invalid td { background: color-mix(in srgb, var(--bad) 6%, transparent); }
 .matrix tr.disabled { opacity: .5; }
 .matrix .c-on, .matrix .c-sot { width: 34px; text-align: center; }
+/* A channel the selected band does not apply to: dimmed, and it says why in its label. */
+.scope-row.unfiltered .scope-canvas-wrap { opacity: 0.62; }
+.scope-label span.unbanded { color: var(--text-3); font-style: italic; }
 .matrix td.c-on, .matrix td.c-sot { text-align: center; }
 .matrix .c-num { width: 72px; }
 .matrix .c-name { min-width: 170px; }

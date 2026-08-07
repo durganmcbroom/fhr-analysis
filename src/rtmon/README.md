@@ -313,7 +313,7 @@ recording:
 | Model | any version under `lib/funet/models`, `lib/tslnet/models`, `lib/tune-ssnet/models` — with the input-channel count it was trained on |
 | Inputs | which channels feed it, **in order** (the ordinal on each chip is the stack position; slot 0 is whichever fiber was first during training) |
 | Detector | any `*_beat_detector` in `analyze.hr` |
-| Band | fetal 90–280 or maternal 45–140 — sets the bandpass *and* the plausible-BPM gate |
+| Source | what the row is a source *of* — fetal or maternal. One choice, three consequences: the bandpass, the plausible-BPM gate, and which source of truth it is scored against. It replaced a "Band" dropdown labelled with hertz, which described the mechanism rather than the question being asked |
 | Chunk / Every | seconds analysed per pass, and seconds between passes. `Every < Chunk` gives overlapping windows |
 | SOT | which row is the reference **for its band** (see below) |
 
@@ -349,6 +349,36 @@ FUNet — funet-v35: funet-v35 takes 5 fiber(s), 3 selected
 
 Setups (matrix + view) are saved as JSON under `.out/rtmon/`. The last one is
 restored on start; **Save as…** names a preset.
+
+### Raw and bandpassed signals
+
+The Signals panel has a **View** picker: `Raw`, `Fetal band`, `Maternal band`. Raw is
+what the device delivered; a band runs the same filter the processors run and shows the
+result on the same min/max envelope, so the two are directly comparable.
+
+Worth having because the numbers are lopsided: the fetal acoustic band is 190–220 Hz
+out of a 5 kHz fiber, so the content the detectors work from is a few percent of the
+amplitude and simply invisible in the raw trace. "Is this fiber producing a signal" and
+"is this fiber producing a signal *in the band this rig measures*" are different
+questions, and the second one is the one being asked while a sensor is repositioned.
+
+**Channels nothing bandpasses stay raw**, and say so: the PPG strap's label reads
+`raw — no band` and its row dims. Nothing in the pipeline filters a PPG — its pulse *is*
+the signal, and a 40–80 Hz bandpass would delete it. Same for any channel whose sample
+rate cannot represent the band.
+
+Two costs are managed in `display.py`, both measured rather than assumed. Filtering runs
+after decimating to ~1 kHz, in two stages — a cheap boxcar for the bulk reduction, then
+a polyphase FIR for the last factor of two. Going straight to 1 kHz with `resample_poly`
+costs 62 ms for a 60 s window of 44.1 kHz audio; staged, it is 2.6 ms. And a filtered
+envelope is cached for 200 ms and shared across clients, so a band view costs a fifth of
+the frame rate the raw view does — the render clock keeps sliding it in between, so it
+still scrolls smoothly.
+
+The stage that is *not* rigorous is the boxcar, whose stopband is around −20 dB, so a
+little broadband hiss folds into the displayed band. That is why this lives in its own
+module and nothing measures from it: it is an aid for judging sensor placement, not a
+signal path.
 
 ## Recordings
 

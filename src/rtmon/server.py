@@ -37,7 +37,7 @@ from analyze.constants import PROJECT_DIR
 from rtmon import models as model_registry
 from rtmon import processors as proc
 from rtmon import setups as setup_store
-from rtmon import wire, wsproto
+from rtmon import display, ring, wire, wsproto
 from rtmon.align import TapAligner
 from rtmon.engine import Engine, Track
 from rtmon.sources import polar
@@ -54,6 +54,11 @@ MAX_BUCKETS = 4000           # per channel per frame; a 4K-wide canvas cannot us
 MAX_WINDOW_S = 120.0
 MAX_HR_WINDOW_S = 900.0
 SILENCE_WINDOW_S = 4.0       # how long a channel must read zero before it is called silent
+# How long a bandpassed display envelope is reused before being recomputed. Filtering is
+# the only part of a frame that is not nearly free (~5 ms per channel for a 60 s window),
+# and a diagnostic view of a filtered band does not need the full WAVE_FPS -- the render
+# clock keeps sliding it in between, so it scrolls smoothly at a fifth of the work.
+FILTER_TTL_S = 0.2
 
 # The channel each correctable source is aligned through. Only one channel per source
 # needs measuring — they share a clock — so PPG0 stands for the whole strap.
@@ -82,6 +87,7 @@ class Client:
         self.buckets = 1200
         self.hr_window_s = 300.0
         self.channels: list[str] = []
+        self.signal_view = "raw"     # "raw", or a band name from proc.BANDS
         self.paused = False
         self.lock = threading.Lock()
         self.dead = False
@@ -150,11 +156,14 @@ class Client:
                 self.hr_window_s = float(min(MAX_HR_WINDOW_S, max(30.0, message["hr_window_s"])))
             if "channels" in message:
                 self.channels = [str(c) for c in message["channels"]][:16]
+            if "signal_view" in message:
+                want = str(message["signal_view"])
+                self.signal_view = want if want in proc.BANDS else "raw"
 
     def view(self):
         with self.lock:
             return (self.window_s, self.buckets, self.hr_window_s,
-                    list(self.channels), self.paused)
+                    list(self.channels), self.paused, self.signal_view)
 
 
 class App:
@@ -169,6 +178,8 @@ class App:
         self._clients_lock = threading.Lock()
         self._stop = threading.Event()
         self._broadcaster: threading.Thread | None = None
+        self._filter_cache: dict[tuple, tuple[float, object]] = {}
+        self._filter_lock = threading.Lock()
 
     # ---------------------------------------------------------------- setup
     def apply_setup(self, raw: dict) -> Setup:
@@ -318,14 +329,14 @@ class App:
         for client in clients:
             if client.dead:
                 continue
-            window_s, buckets, hr_window_s, channels, paused = client.view()
+            window_s, buckets, hr_window_s, channels, paused, signal_view = client.view()
             if paused and snapshot is None:
                 continue     # backgrounded tab, and this is a waveform-only frame
             builder = wire.FrameBuilder(now)
             waves = []
             if not paused:
                 for channel_id in channels:
-                    envelope = self.hub.envelope(channel_id, now, window_s)
+                    envelope = self._envelope(channel_id, now, window_s, signal_view)
                     entry = wire.wave_entry(builder, channel_id, envelope, now, max_buckets=buckets)
                     if entry is not None:
                         waves.append(entry)
@@ -339,6 +350,47 @@ class App:
                 builder.header["status"] = status
 
             client.offer("bin", builder.build())
+
+    def _envelope(self, channel_id: str, now: float, window_s: float, signal_view: str):
+        """The min/max envelope for one channel, raw or bandpassed.
+
+        Falls back to raw whenever there is no band to apply -- the PPG strap, or a
+        channel whose sample rate cannot represent the band. That fallback is the
+        behaviour, not a failure: the panel shows every channel either way, and only
+        the ones the pipeline actually filters change when the view is switched.
+        """
+        if signal_view == "raw":
+            return self.hub.envelope(channel_id, now, window_s)
+
+        # Shared across clients and across frames for FILTER_TTL_S: two tabs on the
+        # same view must not pay twice, and neither must consecutive frames.
+        key = (channel_id, signal_view, round(window_s, 3))
+        with self._filter_lock:
+            hit = self._filter_cache.get(key)
+            if hit is not None and now - hit[0] < FILTER_TTL_S:
+                return hit[1]
+
+        band = proc.BANDS[signal_view]["acoustic"]
+        ref = self.hub.channel_map().get(channel_id)
+        result = None
+        if ref is not None and display.has_band(ref.channel.kind):
+            got = self.hub.snapshot(channel_id, window_s)
+            if got is not None:
+                try:
+                    result = display.band_envelope(got[0], got[1], ref.channel.kind,
+                                                   band, ring.DISPLAY_BUCKET_HZ)
+                except Exception:  # noqa: BLE001 - a display filter must never kill a frame
+                    traceback.print_exc()
+        if result is None:
+            result = self.hub.envelope(channel_id, now, window_s)
+        with self._filter_lock:
+            self._filter_cache[key] = (now, result)
+            # Bounded: window and band both vary, and a page left open for a shift
+            # should not accumulate an entry per combination ever visited.
+            if len(self._filter_cache) > 64:
+                oldest = min(self._filter_cache, key=lambda k: self._filter_cache[k][0])
+                del self._filter_cache[oldest]
+        return result
 
     @staticmethod
     def _track_entry(builder: wire.FrameBuilder, item: dict, now: float, hr_window_s: float) -> dict:

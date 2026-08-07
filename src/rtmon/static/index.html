@@ -71,6 +71,15 @@
       <figcaption class="panel-head">
         <h2>Signals</h2>
         <span class="muted" id="scope-meta"></span>
+        <label class="field compact" id="signal-view-field">
+          <span>View</span>
+          <select id="signal-view" title="Raw shows what the device delivered. A band
+shows the same channel through the bandpass the processors apply — the fetal
+acoustic band is only a few percent of a raw fiber's amplitude. Channels nothing
+bandpasses (the PPG strap) stay raw either way.">
+            <option value="raw" selected>Raw</option>
+          </select>
+        </label>
       </figcaption>
       <div class="scopes" id="scopes"></div>
     </figure>
@@ -131,7 +140,8 @@
                 <th>Model</th>
                 <th class="c-inputs">Inputs</th>
                 <th>Detector</th>
-                <th>Band</th>
+                <th title="What this row is a source of. Sets the bandpass and the
+plausible-BPM range, and decides which source of truth it is scored against.">Source</th>
                 <th class="c-num" title="Seconds of history analysed each pass">Chunk</th>
                 <th class="c-num" title="Seconds between passes">Every</th>
                 <th class="c-num" title="Moving average over beats; 0 is off">Smooth</th>
