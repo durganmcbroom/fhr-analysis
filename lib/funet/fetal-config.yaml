@@ -1,5 +1,5 @@
 model:
-  channels: 5
+  channels: 3
   dilations: [1, 1, 1]
   bottleneck_dilation: 1
   bottleneck_convs: 2
