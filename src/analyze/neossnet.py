@@ -14,13 +14,13 @@ from analyze.hr.detect_v5 import v5_beat_detector
 from analyze.hr.detect_v7 import v7_beat_detector
 from analyze.hr.detect_v8 import v8_beat_detector
 from analyze.pipeline import Pipeline
-from analyze.plot_hr import plot_hr, plot_multi_hr, plot_peaks
+from analyze.plot_hr import plot_hr, plot_hr_corrected, plot_multi_hr, plot_peaks
 from analyze.sot import load_sot, SOTData, SOTResult, load_sot_no_ppg, plot_mic
 from analyze.util import run_neossnet, normalize_path, abdomen_sound
 from analyze.constants import (
     PROJECT_DIR, FETAL_MODEL_PATH, FETAL_MODEL_CFG,
     FIBER_BUNDLE_B, FETAL_ACOUSTIC_BAND_HZ, FETAL_ACOUSTIC_BAND_NARROW_HZ,
-    NEOSSNET_MAX_CHUNK_SECONDS,
+    NEOSSNET_MAX_CHUNK_SECONDS, NST_DRIFT_LOG_FILE,
 )
 
 
@@ -155,6 +155,7 @@ def run_neossnet_pipeline(
         abdomen_bp(*FETAL_ACOUSTIC_BAND_NARROW_HZ, "butter"),  # narrow to the fetal band AFTER the model
         fiber_beats(v7_beat_detector, out_path),
         plot_hr(sot.window(window[0], window[1]), out_path),
+        plot_hr_corrected(sot.window(window[0], window[1]), f"{Path(datadir) / NST_DRIFT_LOG_FILE}", out_path),
         evaluate_v3(sot, out_path, hr_smooth=20),
     ], f"{PROJECT_DIR}/.out/{patient}/neossnet/cache/", play_sound=False)
 

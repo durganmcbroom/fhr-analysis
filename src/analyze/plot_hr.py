@@ -1,3 +1,4 @@
+from dataclasses import replace
 from itertools import combinations
 from pathlib import Path
 from typing import Tuple
@@ -7,6 +8,7 @@ from matplotlib import pyplot as plt
 from matplotlib.colors import to_rgba
 from scipy.ndimage import uniform_filter1d
 
+from analyze.drift import correct_drift
 from analyze.hr import fHROutput, fHRMultiOutput
 from analyze.sot import SOTResult
 from analyze.util import moving_average, moving_average_v2
@@ -135,11 +137,15 @@ def _hr_ylim(traces, band: Tuple[float, float], pad: float = 0.1):
 
 
 def _pairwise_r(named, grid_hz: float = 4.0):
-    """Pearson R between every pair of HR traces, over the span all of them share.
+    """Pearson R and mean absolute error (BPM) between every pair of HR traces,
+    over the span all of them share.
 
     Each trace is sampled at its own beat times, so they have to be resampled onto one
-    common grid before they can be correlated. Returns ``{(name_a, name_b): r}``, omitting
-    pairs with no shared span or a constant trace (where R is undefined).
+    common grid before they can be compared. Returns ``{(name_a, name_b): (r, mae)}``,
+    omitting pairs with no shared span or a constant trace (where R is undefined). R
+    captures whether the traces move together (pattern); MAE captures how far apart the
+    numbers actually are (magnitude) -- two traces offset by a constant amount can still
+    score R close to 1, so the pair is reported together rather than R alone.
     """
     usable = [(n, t, y) for (n, t, y) in named if t is not None and t.size >= 2]
     if len(usable) < 2:
@@ -157,7 +163,9 @@ def _pairwise_r(named, grid_hz: float = 4.0):
     for a, b in combinations(resampled, 2):
         ya, yb = resampled[a], resampled[b]
         if ya.std() > 0 and yb.std() > 0:
-            out[(a, b)] = float(np.corrcoef(ya, yb)[0, 1])
+            r = float(np.corrcoef(ya, yb)[0, 1])
+            mae = float(np.mean(np.abs(ya - yb)))
+            out[(a, b)] = (r, mae)
     return out
 
 
@@ -202,10 +210,11 @@ def _plot_hr_axis(
     # Agreement with the reference, on the same footing as the multi-trace panel.
     if sot_beats is not None and sot_t.size and pred_t.size:
         pair = _pairwise_r([(pred_label, pred_t, pred_y), (sot_label, sot_t, sot_y)])
-        r = next(iter(pair.values()), None)
-        if r is not None:
-            _r_box(ax, [f"R vs {sot_label}  {r:+.3f}"])
-            print(f"[plot_hr] {pred_label} vs {sot_label}: R={r:.3f}")
+        stat = next(iter(pair.values()), None)
+        if stat is not None:
+            r, mae = stat
+            _r_box(ax, [f"R vs {sot_label}  {r:+.3f}", f"MAE          {mae:5.1f} bpm"])
+            print(f"[plot_hr] {pred_label} vs {sot_label}: R={r:.3f}  MAE={mae:.1f} bpm")
 
     ylim_traces = [(pred_t, pred_y)]
     if sot_beats is not None:
@@ -264,30 +273,32 @@ def _plot_hr_axis_multi(
     pair_r = _pairwise_r(usable)
 
     if pair_r:
-        mean_r = float(np.mean(list(pair_r.values())))
+        mean_r = float(np.mean([r for (r, _) in pair_r.values()]))
         # R against the reference is listed in full however many sources there are: it is
         # the comparison being made. The source-vs-source pairs stay on the stdout line,
         # where they don't crowd the axes.
-        ref_r = {(a if b == sot_label else b): r
-                 for (a, b), r in pair_r.items() if sot_label in (a, b)}
+        ref_r = {(a if b == sot_label else b): stat
+                 for (a, b), stat in pair_r.items() if sot_label in (a, b)}
         if ref_r:
             width = max(len(n) for n in ref_r)
-            lines = [f"R vs {sot_label}"]
-            lines += [f"{n:<{width}} {r:+.3f}" for n, r in ref_r.items()]
-            lines.append(f"{'mean':<{width}} {float(np.mean(list(ref_r.values()))):+.3f}")
+            lines = [f"{'':<{width}} {'R':>7} {'MAE':>7}"]
+            lines += [f"{n:<{width}} {r:+.3f} {mae:6.1f}" for n, (r, mae) in ref_r.items()]
+            mean_ref_r = float(np.mean([r for (r, _) in ref_r.values()]))
+            mean_ref_mae = float(np.mean([mae for (_, mae) in ref_r.values()]))
+            lines.append(f"{'mean':<{width}} {mean_ref_r:+.3f} {mean_ref_mae:6.1f}")
         else:
             lines = [f"R (mean) = {mean_r:.2f}"]
             if len(pair_r) <= 3:  # list each pair when there are few; else just the mean
-                lines += [f"{a}-{b}: {r:.2f}" for (a, b), r in pair_r.items()]
+                lines += [f"{a}-{b}: R={r:.2f} MAE={mae:.1f}" for (a, b), (r, mae) in pair_r.items()]
 
         _r_box(ax, lines)
         print("[plot_hr_multi] pairwise HR corr coef: "
-              + ", ".join(f"{a}-{b}={r:.3f}" for (a, b), r in pair_r.items())
-              + f" (mean {mean_r:.3f})")
+              + ", ".join(f"{a}-{b}={r:.3f} (MAE {mae:.1f})" for (a, b), (r, mae) in pair_r.items())
+              + f" (mean R {mean_r:.3f})")
         if ref_r:
             print(f"[plot_hr_multi] HR corr coef vs {sot_label}: "
-                  + ", ".join(f"{n}={r:.3f}" for n, r in ref_r.items())
-                  + f" (mean {float(np.mean(list(ref_r.values()))):.3f})")
+                  + ", ".join(f"{n}={r:.3f} (MAE {mae:.1f})" for n, (r, mae) in ref_r.items())
+                  + f" (mean R {float(np.mean([r for (r, _) in ref_r.values()])):.3f})")
 
     ylim_traces = [(t, y) for (_, t, y) in traces]
     if sot_beats is not None:
@@ -460,6 +471,24 @@ def plot_hr(sot: SOTResult, out: Path):
 
     run_plot_hr.__name__ = "plot_hr"
     return run_plot_hr
+
+
+def plot_hr_corrected(sot: SOTResult, drift_log_path, out: Path, filename: str = "hr_comparison_corrected.png"):
+    """Pipeline stage: like ``plot_hr``, but first corrects ``sot.mic_beats``
+    for NST clock drift (dropped-sample gaps, see ``analyze.drift``) and
+    writes to a separate file so the corrected plot can be compared against
+    the uncorrected ``hr_comparison.png`` rather than replacing it. A no-op
+    correction (original beats, unchanged) if ``drift_log_path`` doesn't exist.
+    """
+
+    def run_plot_hr_corrected(result):
+        fetal_result = getattr(result, "fetal_result", result)
+        corrected_sot = replace(sot, mic_beats=correct_drift(sot.mic_beats, drift_log_path))
+        plot_hr_comparison(fetal_result, corrected_sot, out, filename=filename)
+        return result
+
+    run_plot_hr_corrected.__name__ = "plot_hr_corrected"
+    return run_plot_hr_corrected
 
 
 def plot_multi_hr(sot: SOTResult | None, out: Path):

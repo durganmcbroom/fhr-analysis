@@ -21,7 +21,7 @@ import torch
 from matplotlib import pyplot as plt
 from scipy.signal import find_peaks
 
-from analyze.constants import PROJECT_DIR, FUNET_CONFIG, FUNET_MODEL_PATH, FETAL_BPM_RANGE
+from analyze.constants import PROJECT_DIR, FUNET_CONFIG, FUNET_MODEL_PATH, FETAL_BPM_RANGE, NST_DRIFT_LOG_FILE
 from analyze.data import Audio, FiberData, load_data, windowed, FiberPair, load_no_chest_data_FULL, load_no_chest_data
 from analyze.evaluate_v3 import evaluate_v3
 from analyze.filters import bp, normalize
@@ -29,7 +29,7 @@ from analyze.hr import sot_beats, fiber_beats, fHRMultiOutput
 from analyze.hr.detect_v2 import v2_beat_detector
 from analyze.hr.detect_v7 import v7_beat_detector
 from analyze.pipeline import Pipeline
-from analyze.plot_hr import plot_hr, plot_hr_multi_comparison
+from analyze.plot_hr import plot_hr, plot_hr_corrected, plot_hr_multi_comparison
 from analyze.sot import load_sot, load_sot_no_ppg, plot_mic, SOTResult
 from funet.config import load_config
 from funet.inference import load_funet, run_funet
@@ -169,6 +169,7 @@ def run_funet_pipeline(patient, window, datadir, fibers=["1B", "2A", "2B"]):
         use_funet(out_path, fibers),
         fiber_beats(v2_beat_detector, out_path),
         plot_hr(sot, out_path),
+        plot_hr_corrected(sot, f"{Path(datadir) / NST_DRIFT_LOG_FILE}", out_path),
         evaluate_v3(sot, out_path, hr_smooth=20)
     ], f"{PROJECT_DIR}/.out/{patient}/funet/cache/", play_sound=False)
 
