@@ -24,14 +24,14 @@ from pathlib import Path
 import numpy as np
 from matplotlib import pyplot as plt
 
-from analyze.constants import PROJECT_DIR, TSLNET_CONFIG, TSLNET_MODEL_PATH
+from analyze.constants import PROJECT_DIR, TSLNET_CONFIG, TSLNET_MODEL_PATH, NST_DRIFT_LOG_FILE
 from analyze.data import Audio, FiberData, FiberPair, load_data, windowed
 from analyze.evaluate_v3 import evaluate_v3
 from analyze.hr import fiber_beats, sot_beats
 from analyze.hr.detect_v2 import v2_beat_detector
 from analyze.hr.detect_v7 import v7_beat_detector
 from analyze.pipeline import Pipeline
-from analyze.plot_hr import plot_hr
+from analyze.plot_hr import plot_hr, plot_hr_corrected
 from analyze.sot import load_sot
 from common.device import pick_device
 from tslnet.config import load_config
@@ -117,6 +117,7 @@ def run_tslnet_pipeline(patient, window, datadir, fibers=["1B", "2A", "2B"]):
         use_tslnet(out_path, fibers),
         fiber_beats(v7_beat_detector, out_path),
         plot_hr(sot, out_path),
+        plot_hr_corrected(sot, f"{Path(datadir) / NST_DRIFT_LOG_FILE}", out_path),
         evaluate_v3(sot, out_path, hr_smooth=20)
     ], f"{PROJECT_DIR}/.out/{patient}/tslnet/cache/", play_sound=False)
 
