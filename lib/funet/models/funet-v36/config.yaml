@@ -11,7 +11,7 @@ model:
   dropout: 0.0
   n_fft: 1024
   hop_length: 256
-  interpolation: pchip
+  interpolation: linear
   freq_crop_hz:
   - 80
   - 350
