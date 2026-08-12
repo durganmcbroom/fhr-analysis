@@ -10,6 +10,11 @@ model:
   # loadable alongside these.
   n_fft: 1024
   hop_length: 256
+  # How frame-rate activity is filled back onto the sample grid at readout (inference, the HR
+  # metric and the diagnostic all follow this): 'linear' = straight lines between frames, a
+  # corner every hop; 'pchip' = shape-preserving cubic, smooth and still non-negative.
+  # Omit for 'linear', which is what every model under models/ was measured with.
+  interpolation: 'pchip'   # 'linear' | 'pchip'
   # Keep only the rows spanning this band; null = full height (what v34 and earlier trained
   # on). data.preprocess bandpasses to 100-300 Hz and log1p(0) == 0, so at n_fft 1024 only
   # ~53 of 513 rows carry anything -- the other ~87% is a constant-zero field every

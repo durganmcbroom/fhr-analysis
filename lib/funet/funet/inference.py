@@ -97,4 +97,5 @@ def run_funet(
 
     activity = run_windowed(model, S, window, device=device, postprocess=postprocess)
 
-    return frames_to_native(activity, hop, SAMPLE_RATE, n_native, src_hz)
+    return frames_to_native(activity, hop, SAMPLE_RATE, n_native, src_hz,
+                            interpolation=config.model.interpolation)

@@ -44,7 +44,10 @@ class FUNetTask(Task):
     # see. Both are inherited from the base config verbatim; common.phases.optimize enforces
     # it per trial (see Task.frozen_fields).
     #
-    frozen_fields = ("model.freq_crop_hz", "model.disable_freq_crop")
+    # interpolation joins these for the same reason: it is a readout decision, and letting a
+    # search vary it would let a trial win by picking the readout that localises beats best
+    # rather than the model that does.
+    frozen_fields = ("model.freq_crop_hz", "model.disable_freq_crop", "model.interpolation")
 
     # n_fft/hop_length are searched, but they change what the loss *means*, not just the model:
     # data.__getitem__ builds the target comb on the spectrogram's own frame grid, so halving
@@ -145,6 +148,7 @@ class FUNetTask(Task):
             sample_rate=SAMPLE_RATE,
             postprocess=postprocess,
             reference_beats=reference_beats,
+            interpolation=config.model.interpolation,
         )
 
     # ------------------------------------------------------- optimize phase only

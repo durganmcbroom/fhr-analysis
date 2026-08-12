@@ -153,18 +153,52 @@ def run_windowed(
     return out[:total]
 
 
+#: How ``frames_to_native`` fills the gap between frames. Neither adds information -- one
+#: frame every ``hop_length`` samples is all there is -- they differ in what they assume lies
+#: between: straight lines, or a smooth shape-preserving curve.
+INTERPOLATIONS = ("linear", "pchip")
+
+
 def frames_to_native(
         activity: np.ndarray,
         hop_length: int,
         model_hz: int,
         n_native: int,
         src_hz: int,
+        interpolation: str = "linear",
 ) -> np.ndarray:
     """Map a frame-rate signal onto the input's own sample grid.
 
     Frame ``t`` is centred at sample ``t * hop_length`` of the ``model_hz`` signal; the result
     is ``n_native`` samples at ``src_hz``, so it lines up with the source waveform.
+
+    ``linear`` (the default, and what every model shipped with) joins consecutive frames with
+    straight lines. The result is a polyline: at hop 256 that is one corner every 64 ms, and
+    255 of every 256 samples are redraw.
+
+    ``pchip`` fits a shape-preserving cubic instead, giving a continuous first derivative. It
+    is chosen over a bandlimited (sinc) resample deliberately: sinc rings, and its undershoot
+    would push a beat envelope negative between beats, which breaks the non-negativity every
+    downstream beat detector assumes (see ACTIVITY_POSTPROCESS). PCHIP cannot overshoot the
+    surrounding frame values, so non-negative input stays non-negative.
+
+    Both clamp outside the frame range rather than extrapolating: ``n_native`` covers up to
+    ``hop_length`` samples past the last frame centre, and a cubic let loose there can swing
+    far away from the data.
     """
+    if interpolation not in INTERPOLATIONS:
+        raise ValueError(
+            f"Unknown interpolation: {interpolation!r} (expected one of {list(INTERPOLATIONS)})")
+
     frame_times = np.arange(len(activity)) * hop_length / model_hz
     native_times = np.arange(n_native) / src_hz
-    return np.interp(native_times, frame_times, activity).astype(np.float32)
+
+    # PCHIP needs at least two points to define a curve; with fewer, linear (which degrades to
+    # a constant) is the only sensible reading anyway.
+    if interpolation == "linear" or len(activity) < 2:
+        return np.interp(native_times, frame_times, activity).astype(np.float32)
+
+    from scipy.interpolate import PchipInterpolator
+    curve = PchipInterpolator(frame_times, activity, extrapolate=False)
+    clamped = np.clip(native_times, frame_times[0], frame_times[-1])
+    return curve(clamped).astype(np.float32)

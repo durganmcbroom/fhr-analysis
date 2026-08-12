@@ -135,11 +135,14 @@ class HRCorrelation:
             bpm_range: Tuple[float, float] = FETAL_BPM_RANGE,
             postprocess: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
             reference_beats: Optional[dict] = None,
+            interpolation: str = "linear",
     ):
         self.detect = detect
         self.hop_length = hop_length
         self.sample_rate = sample_rate
         self.bpm_range = bpm_range
+        # Must match what inference uses, or the score describes a readout nobody deploys.
+        self.interpolation = interpolation
         # Maps raw model output to the non-negative envelope the beat detector expects, exactly
         # as inference does (common.phases.inference.activity_postprocess): a log-prob head has
         # to be exp'd before its peaks mean anything.
@@ -163,6 +166,7 @@ class HRCorrelation:
             model_hz=self.sample_rate,
             n_native=frames.size * self.hop_length,
             src_hz=self.sample_rate,
+            interpolation=self.interpolation,
         )
         return self.detect(native, float(self.sample_rate))
 

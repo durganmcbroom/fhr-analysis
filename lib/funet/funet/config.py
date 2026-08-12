@@ -30,6 +30,15 @@ class FUNetModelConfig:
     n_fft: int = 1024
     hop_length: int = 256
 
+    # How the frame-rate activity is filled back onto the sample grid at readout:
+    # 'linear' (piecewise straight lines, a corner every hop) or 'pchip' (shape-preserving
+    # cubic, continuous first derivative, still non-negative). See
+    # common.phases.inference.frames_to_native. Weights are untouched either way -- this is a
+    # readout choice, so a checkpoint stays loadable -- but it moves detected beat times, and
+    # therefore every HR number downstream. Defaults to 'linear', which is what every existing
+    # model under models/ was measured with.
+    interpolation: str = "linear"
+
     # Passband crop: keep only the spectrogram rows spanning [low, high] Hz, discarding the
     # bands `data.preprocess`'s bandpass already emptied (log1p(0) == 0, so an out-of-band row
     # is a constant-zero field every convolution still pays for). None = full height, which is
