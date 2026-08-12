@@ -49,14 +49,14 @@ class TrainConfig:
     # Stop after this many epochs with no validation improvement; None = train all epochs.
     early_stop_patience: Optional[int] = None
 
-    # Measure the HR-trace correlation (common.metrics) on every validation pass, log it and
+    # Measure HR-trace agreement (common.metrics) on every validation pass, log it and
     # draw it on the training curves. Purely diagnostic: it does not affect the weights, the
     # checkpoint, early stopping or the LR schedule, all of which key off validation loss. It
     # is off by default because it is not free -- it runs the real inference path (upsample,
     # then beat-detect) per snippet, roughly +17% wall clock. The optimize phase turns it on by
-    # itself when ranking trials by it (``--objective hr_corr``); set this to see the curve on
+    # itself when ranking trials by it (``--objective hr_agree``); set this to see the curve on
     # an ordinary training run. Requires a task that provides Task.make_val_scorer.
-    measure_hr_corr: bool = False
+    measure_hr: bool = False
 
     # Train-only input augmentation: subset of common.augment.AUGMENTATIONS. Regularisation,
     # so it lives with the other anti-overfitting knobs rather than in `data`.

@@ -17,9 +17,10 @@ chmod a+x setup.sh
 chmod a+x lib/funet/generate_training_snippets.sh
 #lib/funet/generate_training_snippets.sh
 
-# --objective hr_corr ranks trials by the Pearson r between the predicted and target BPM
-# traces at the epoch validation loss selected, instead of by the loss itself. Without it the
-# search ranks on validation loss (the default). Either way each trial still picks its own
-# checkpoint by validation loss, and the per-epoch "HR r" is logged regardless -- so the log
-# shows whether loss and r agree even on a plain loss-ranked run.
-poetry run funet-optimize lib/funet/fetal-config.yaml --trials=100 --objective hr_corr
+# --objective hr_delta ranks trials by the median bpm error between the predicted and target
+# HR traces, read at the epoch validation loss selected, and minimises it. Without the flag the
+# search ranks on validation loss instead. Either way each trial still picks its own checkpoint
+# by validation loss. ('hr_agree' scores the same comparison as a within-tolerance fraction;
+# 'hr_corr' is the old Pearson r, kept only so earlier runs stay reproducible -- over a single
+# snippet the rate is nearly flat, so r ends up decided by the worst beat or two.)
+poetry run funet-optimize lib/funet/fetal-config.yaml --trials=100 --objective hr_delta

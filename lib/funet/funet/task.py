@@ -9,7 +9,7 @@ import numpy as np
 from common.audio import SAMPLE_RATE
 from common.errors import InfeasibleConfig
 from common.losses import CorrAmpLoss, CorrelationLoss, MSELoss, SNRLoss
-from common.metrics import FETAL_BPM_RANGE, HRCorrelation
+from common.metrics import FETAL_BPM_RANGE, HRMetrics
 from common.optim import OPTIMIZERS
 from common.phases.inference import activity_postprocess
 from common.task import Task
@@ -122,7 +122,7 @@ class FUNetTask(Task):
 
         The detector is ``analyze.hr.detect_v2.v2_beat_detector`` -- literally the one
         ``analyze.funet_runner`` runs on a deployed model -- so the score cannot drift from
-        what the pipeline actually does. HRCorrelation supplies the rest of that path
+        what the pipeline actually does. HRMetrics supplies the rest of that path
         (``activity_postprocess`` then ``frames_to_native``); see its docstring for why picking
         peaks off the frame grid instead quantises the BPM trace into uselessness.
 
@@ -142,7 +142,7 @@ class FUNetTask(Task):
 
         # Shared across epochs so each target's beats are detected once, not every epoch.
         reference_beats: dict = {}
-        return lambda: HRCorrelation(
+        return lambda: HRMetrics(
             detect=detect,
             hop_length=config.model.hop_length,
             sample_rate=SAMPLE_RATE,

@@ -29,7 +29,7 @@ train:
   min_lr: 1.0e-05
   plateau_factor: 0.5
   plateau_patience: 3
-  measure_hr_corr: true
+  measure_hr: true
   amp_weight: 0.1
   amp_beat_threshold: 0.1
   augment:

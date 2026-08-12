@@ -24,10 +24,21 @@ Two deliberate departures from ``analyze.evaluate_v3``, which scores whole recor
 * **No beat matching.** Nothing here measures whether individual beats land within a tolerance;
   only whether the two BPM traces move together.
 
-Caveat worth remembering when reading the number: over a window as short as a training crop
-there is little slow accel/decel for two traces to agree *about*, so most of the signal is
-beat-to-beat interval agreement. Pearson r over ~15 intervals is inherently high-variance;
-compare trials using the spread, not the mean alone.
+**Why the headline metric is agreement, not correlation.** Over a window as short as a
+training crop the reference rate barely moves -- a real trace runs ~152 bpm with a standard
+deviation near 3.5. Pearson divides by that standard deviation, so it does not ask "is this
+the right heart rate", it asks "do the small wiggles around 152 wiggle together", and those
+wiggles are detector jitter. Worse, one mistimed beat throws a ~95 bpm excursion, tens of
+standard deviations wide, which then dominates the covariance: measured on a flat reference, a
+model tracking tightly with a single bad beat scores r = +0.04 while a uniformly sloppy model
+scores +0.17, and deleting that one beat of sixteen moves r from +0.04 to +0.84. So r is
+decided by the worst one or two beats and is blind to the other fifteen.
+
+Agreement asks the question the plot actually poses -- is the predicted rate the right number
+-- and needs no variance to do it. ``median_delta`` is the reading (in bpm) and ``within_tol``
+the score. Pearson stays available in ``corr`` because earlier runs were scored with it, and
+because on a multi-minute recording, where the rate really does accelerate and decelerate, it
+is the right statistic and is what ``analyze.evaluate_v3`` uses.
 """
 
 from dataclasses import dataclass
@@ -47,18 +58,43 @@ FETAL_BPM_RANGE = (90.0, 280.0)
 BeatDetector = Callable[[np.ndarray, float], np.ndarray]
 
 
+#: A predicted rate this far from the reference still counts as "the plot is right here".
+#: 10 bpm is a few percent of a fetal rate -- tight enough that a mistimed beat fails it,
+#: loose enough that frame quantisation alone does not.
+TOLERANCE_BPM = 10.0
+
+
+@dataclass
+class SnippetHR:
+    """The three ways one snippet's predicted BPM trace can be compared to the reference."""
+
+    within_tol: float          #: fraction of the trace within TOLERANCE_BPM -- higher is better
+    median_delta: float        #: median |predicted - reference| in bpm -- lower is better
+    corr: Optional[float]      #: Pearson r, or None when either trace is perfectly flat
+
+
 @dataclass
 class HRScore:
-    """Result of scoring a whole validation split."""
+    """Result of scoring a whole validation split.
 
-    mean: float           #: mean per-snippet Pearson r -- the selection metric, higher is better
-    std: float            #: spread across snippets; two configs closer than this are tied
-    n: int                #: snippets scored
-    n_degenerate: int     #: snippets that produced no usable BPM trace, counted as r = 0
+    ``within_tol`` is the selection metric. ``median_delta`` is the number to read: it is in
+    bpm, so "4.2" means the typical point of the predicted heart-rate plot sits 4.2 bpm from
+    the truth. ``corr`` is kept because it was the original metric, but it is close to
+    meaningless on a single snippet -- see the module docstring.
+    """
+
+    within_tol: float          #: mean per-snippet fraction within tolerance; the score
+    median_delta: float        #: median per-snippet median |delta bpm|; nan if all degenerate
+    corr: float                #: mean per-snippet Pearson r, for continuity with older runs
+    n: int                     #: snippets scored
+    n_degenerate: int          #: snippets with no usable trace, scored within_tol = 0
+    tolerance_bpm: float = TOLERANCE_BPM
 
     def __str__(self) -> str:
         degenerate = f", {self.n_degenerate}/{self.n} degenerate" if self.n_degenerate else ""
-        return f"{self.mean:.4f} +/- {self.std:.4f}{degenerate}"
+        delta = "n/a" if np.isnan(self.median_delta) else f"{self.median_delta:.1f}bpm"
+        return (f"within{self.tolerance_bpm:.0f} {self.within_tol:.3f}, "
+                f"median|d| {delta}, r {self.corr:+.3f}{degenerate}")
 
 
 def bpm_trace(beat_times: np.ndarray,
@@ -76,20 +112,19 @@ def bpm_trace(beat_times: np.ndarray,
     return t[keep], bpm[keep]
 
 
-def trace_correlation(
+def aligned_traces(
         pred_beats: np.ndarray,
         ref_beats: np.ndarray,
         bpm_range: Tuple[float, float] = FETAL_BPM_RANGE,
         grid_hz: float = 10.0,
         min_span_s: float = 1.0,
-) -> Optional[float]:
-    """Pearson r between the BPM traces of two beat trains, at zero lag.
+) -> Optional[Tuple[np.ndarray, np.ndarray]]:
+    """The two BPM traces resampled onto one shared time grid, or None if they cannot be
+    compared (too few beats on either side, or too little overlap).
 
-    The traces carry one sample per detected interval, so they are neither the same length nor
-    on the same timestamps; both are resampled onto a uniform grid over the span they both
-    cover before correlating. Returns ``None`` when no meaningful correlation exists -- too few
-    beats on either side, too little overlap, or a trace with no variance (a perfectly constant
-    rate correlates with nothing). Callers decide what a degenerate snippet scores.
+    A beat train yields one BPM sample per interval, at that interval's midpoint, so the two
+    traces are neither the same length nor on the same timestamps; both are interpolated onto a
+    uniform grid spanning the range they both cover.
     """
     tp, bp = bpm_trace(pred_beats, bpm_range)
     tr, br = bpm_trace(ref_beats, bpm_range)
@@ -104,27 +139,66 @@ def trace_correlation(
         return None
 
     grid = np.linspace(start, end, n)
-    p = np.interp(grid, tp, bp)
-    r = np.interp(grid, tr, br)
-    if p.std() == 0 or r.std() == 0:
+    return np.interp(grid, tp, bp), np.interp(grid, tr, br)
+
+
+def snippet_hr(
+        pred_beats: np.ndarray,
+        ref_beats: np.ndarray,
+        bpm_range: Tuple[float, float] = FETAL_BPM_RANGE,
+        tolerance_bpm: float = TOLERANCE_BPM,
+        grid_hz: float = 10.0,
+        min_span_s: float = 1.0,
+) -> Optional[SnippetHR]:
+    """Compare one snippet's predicted and reference BPM traces. None if incomparable.
+
+    Agreement (``within_tol``, ``median_delta``) is the useful part; ``corr`` is reported for
+    continuity but is unreliable here for the reason in the module docstring: it is None
+    whenever a trace is perfectly flat, and near-meaningless when it is nearly flat.
+    """
+    traces = aligned_traces(pred_beats, ref_beats, bpm_range, grid_hz, min_span_s)
+    if traces is None:
         return None
+    pred, ref = traces
 
-    corr = float(np.corrcoef(p, r)[0, 1])
-    return None if not np.isfinite(corr) else corr
+    delta = np.abs(pred - ref)
+    corr: Optional[float] = None
+    if pred.std() > 0 and ref.std() > 0:
+        value = float(np.corrcoef(pred, ref)[0, 1])
+        corr = value if np.isfinite(value) else None
+
+    return SnippetHR(within_tol=float((delta <= tolerance_bpm).mean()),
+                     median_delta=float(np.median(delta)),
+                     corr=corr)
 
 
-class HRCorrelation:
-    """Accumulates :func:`trace_correlation` over a validation split.
+def trace_correlation(
+        pred_beats: np.ndarray,
+        ref_beats: np.ndarray,
+        bpm_range: Tuple[float, float] = FETAL_BPM_RANGE,
+        grid_hz: float = 10.0,
+        min_span_s: float = 1.0,
+) -> Optional[float]:
+    """Pearson r alone, for callers that only want the legacy number."""
+    result = snippet_hr(pred_beats, ref_beats, bpm_range,
+                        grid_hz=grid_hz, min_span_s=min_span_s)
+    return None if result is None else result.corr
+
+
+class HRMetrics:
+    """Accumulates :func:`snippet_hr` over a validation split.
 
     One instance scores one pass over the split: construct, ``update`` per batch, read
-    ``result``. Degenerate snippets score 0 rather than being dropped -- dropping them would
-    score a model only on the snippets where it happened to fire, which rewards a model that
+    ``result``. A degenerate snippet scores ``within_tol = 0`` rather than being dropped --
+    dropping it would score a model only where it happened to fire, which rewards a model that
     emits almost nothing.
 
-    The per-snippet r values are averaged plainly. Fisher-z averaging is the textbook
-    correction for the fact that r is bounded and its sampling distribution skewed, but
-    measured at this sample size (~15 intervals per snippet) the raw bias is only ~0.01 and the
-    z-transform overcorrects, because an occasional r near +/-1 sends arctanh to infinity.
+    Aggregation differs per metric on purpose. ``within_tol`` is a mean, because it is already
+    a bounded per-snippet fraction. ``median_delta`` is a median of medians, so one snippet
+    where beat detection collapsed cannot drag the headline number. ``corr`` is a plain mean;
+    Fisher-z averaging is the textbook correction, but at ~15 intervals per snippet the raw
+    bias is ~0.01 and the z-transform overcorrects, since an r near +/-1 sends arctanh to
+    infinity.
     """
 
     def __init__(
@@ -136,6 +210,7 @@ class HRCorrelation:
             postprocess: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
             reference_beats: Optional[dict] = None,
             interpolation: str = "linear",
+            tolerance_bpm: float = TOLERANCE_BPM,
     ):
         self.detect = detect
         self.hop_length = hop_length
@@ -152,7 +227,10 @@ class HRCorrelation:
         # bytes, which makes the cache correct regardless of batch order. Pass a dict owned by
         # the scorer *factory* to share it across epochs; None disables caching.
         self.reference_beats = reference_beats
-        self._values: List[float] = []
+        self.tolerance_bpm = tolerance_bpm
+        self._within: List[float] = []
+        self._deltas: List[float] = []
+        self._corrs: List[float] = []
         self._degenerate = 0
 
     def beats(self, frames: np.ndarray) -> np.ndarray:
@@ -188,16 +266,28 @@ class HRCorrelation:
         tgt = target.detach().float().cpu().numpy()
 
         for pred_i, target_i in zip(out, tgt):
-            value = trace_correlation(
-                self.beats(pred_i), self._ref_beats(target_i), self.bpm_range)
-            if value is None:
+            result = snippet_hr(self.beats(pred_i), self._ref_beats(target_i),
+                                self.bpm_range, self.tolerance_bpm)
+            if result is None:
+                # No comparable trace at all: the model gets no credit, but there is no
+                # meaningful bpm error to fold into the median, so only the count records it.
                 self._degenerate += 1
-                value = 0.0
-            self._values.append(value)
+                self._within.append(0.0)
+                continue
+            self._within.append(result.within_tol)
+            self._deltas.append(result.median_delta)
+            if result.corr is not None:
+                self._corrs.append(result.corr)
 
     def result(self) -> HRScore:
-        if not self._values:
-            return HRScore(mean=0.0, std=0.0, n=0, n_degenerate=0)
-        values = np.asarray(self._values)
-        return HRScore(mean=float(values.mean()), std=float(values.std()),
-                       n=values.size, n_degenerate=self._degenerate)
+        if not self._within:
+            return HRScore(within_tol=0.0, median_delta=float("nan"), corr=0.0,
+                           n=0, n_degenerate=0, tolerance_bpm=self.tolerance_bpm)
+        return HRScore(
+            within_tol=float(np.mean(self._within)),
+            median_delta=float(np.median(self._deltas)) if self._deltas else float("nan"),
+            corr=float(np.mean(self._corrs)) if self._corrs else 0.0,
+            n=len(self._within),
+            n_degenerate=self._degenerate,
+            tolerance_bpm=self.tolerance_bpm,
+        )

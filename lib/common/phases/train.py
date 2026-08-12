@@ -27,7 +27,7 @@ def run_training(
         on_epoch: Optional[Callable[[int, float], None]] = None,
         save_artifacts: bool = True,
         best_model_path: Optional[str] = None,
-        measure_hr_corr: Optional[bool] = None,
+        measure_hr: Optional[bool] = None,
 ) -> FitResult:
     """Build the model/data/optimiser from ``config``, train, and return the run's FitResult.
 
@@ -36,7 +36,7 @@ def run_training(
     ``best_model_path`` to capture just that trial's best-epoch checkpoint, plus an
     ``on_epoch`` callback to report and prune trials.
 
-    ``measure_hr_corr`` overrides ``train.measure_hr_corr``; ``None`` (the default) defers to
+    ``measure_hr`` overrides ``train.measure_hr``; ``None`` (the default) defers to
     the config. The optimize phase passes ``True`` when it is ranking trials by the metric, so
     a search never depends on the config remembering to enable what it needs.
     """
@@ -58,20 +58,20 @@ def run_training(
     val_dl = task.make_val_loader(config)
     optimiser = task.build_optimizer(config, model)
     scheduler = task.build_scheduler(config, optimiser)
-    # Unlike the loss, the HR correlation is not free: it runs the full inference path (beat
+    # Unlike the loss, the HR metric is not free: it runs the full inference path (beat
     # detection over an upsampled activity) for every validation snippet, ~0.7 s per epoch on a
     # few hundred snippets. So it is opt-in, and off by default. Whether it runs never changes
     # the model -- the checkpoint, early stopping and the LR schedule all key off validation
     # loss regardless; it only adds a log line, a curve, and something for a search to rank by.
-    if measure_hr_corr is None:
-        measure_hr_corr = config.train.measure_hr_corr
-    make_scorer = task.make_val_scorer(config) if measure_hr_corr else None
-    if measure_hr_corr and make_scorer is None:
+    if measure_hr is None:
+        measure_hr = config.train.measure_hr
+    make_scorer = task.make_val_scorer(config) if measure_hr else None
+    if measure_hr and make_scorer is None:
         raise ValueError(
-            f"HR correlation was requested but task {task.name!r} provides no scorer "
+            f"The HR metric was requested but task {task.name!r} provides no scorer "
             f"(Task.make_val_scorer returned None).")
     if make_scorer is not None:
-        print("Measuring HR-trace correlation each epoch (diagnostic; the checkpoint is still "
+        print("Measuring HR-trace agreement each epoch (diagnostic; the checkpoint is still "
               "selected by validation loss)")
 
     # A full run saves best/last/config/curves under model_dir; the search saves only the

@@ -14,7 +14,7 @@ chmod a+x setup.sh
 ./setup.sh
 
 chmod a+x lib/tslnet/generate_training_snippets.sh
-lib/tslnet/generate_training_snippets.sh
+#lib/tslnet/generate_training_snippets.sh
 
 # The TimesFM checkpoint is ~1.9 GB and is fetched once, then reused. Keep the cache beside
 # the repo rather than in the default ~/.cache: a compute node whose home is not shared (or is

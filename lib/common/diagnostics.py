@@ -19,7 +19,10 @@ One row per validation snippet, three columns following the inference path in or
             the gap between a target beat's real position and the nearest frame dot is the
             quantisation error, drawn to scale.
     right   the two BPM traces those beat trains produce, which is literally what the HR
-            correlation scores. The per-snippet r is in the title.
+            metric scores. The title carries all three readings: the agreement fraction a
+            search ranks by, the median |delta| in bpm, and Pearson r. They can disagree --
+            over a snippet the rate is nearly flat, so r is decided by the worst beat or two
+            while agreement reflects the whole trace (see common.metrics).
 
 Over- and under-detection, smeared peaks and a raised noise floor are all legible in the first
 two columns; whether that translates into an agreeing heart rate is the third.
@@ -41,7 +44,7 @@ import torch
 from common.audio import SAMPLE_RATE, load_wav, snippet_indices
 from common.device import pick_device
 from common.io import atomic_save
-from common.metrics import bpm_trace, trace_correlation
+from common.metrics import bpm_trace, snippet_hr
 from common.phases.inference import frames_to_native
 
 #: Rows per figure. The whole validation split is drawn, split across as many files as that
@@ -274,8 +277,17 @@ def _draw_page(plt, scorer, preds, targets, first_index: int, out_path: str,
         tp, bp = bpm_trace(pred_beats, scorer.bpm_range)
         ax.plot(tr, br, color=TARGET_COLOUR, marker="o", ms=3, lw=1.0, label="target BPM")
         ax.plot(tp, bp, color=MODEL_COLOUR, marker="o", ms=3, lw=1.0, alpha=0.8, label="model BPM")
-        r = trace_correlation(pred_beats, ref_beats, scorer.bpm_range)
-        ax.set_title(f"BPM -- r = {'degenerate' if r is None else f'{r:.3f}'}", fontsize=9)
+        # All three, so the headline number can be checked against the picture: agreement is
+        # what a search ranks by, median|d| is the reading in bpm, r is the legacy statistic
+        # (and the one that disagrees with your eye when the rate is flat).
+        hr = snippet_hr(pred_beats, ref_beats, scorer.bpm_range, scorer.tolerance_bpm)
+        if hr is None:
+            title = "BPM -- degenerate (no comparable trace)"
+        else:
+            r_text = "n/a" if hr.corr is None else f"{hr.corr:+.3f}"
+            title = (f"BPM -- within{scorer.tolerance_bpm:.0f} {hr.within_tol:.2f}, "
+                     f"median|d| {hr.median_delta:.1f} bpm, r {r_text}")
+        ax.set_title(title, fontsize=9)
         ax.set_ylim(*scorer.bpm_range)
         ax.set_ylabel("bpm")
         if row == 0:

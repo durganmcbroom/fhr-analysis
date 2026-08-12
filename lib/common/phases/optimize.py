@@ -21,8 +21,9 @@ Train the final model from the best config with the full epoch budget:
 
 Design: every trial goes through the exact same ``run_training`` the train phase uses, so a
 config the search likes trains identically when you run it for real -- the tuner only chooses
-the numbers. Objective = the mean validation loss over the trial's final epochs (see
-SCORE_WINDOW), minimised -- a stabler target than the single best epoch on a noisy val curve.
+the numbers. What trials are ranked by is chosen with ``--objective`` (see OBJECTIVES); the
+study always minimises, and any higher-is-better objective is negated in one place,
+``_trial_value``.
 
 This is the ONLY module in common that imports optuna. Tasks never do: their ``suggest``
 receives a trial object structurally, and ``check_feasible`` raises ``InfeasibleConfig``,
@@ -33,6 +34,7 @@ import argparse
 import os
 from typing import Optional
 
+import numpy as np
 import optuna
 import torch
 
@@ -52,12 +54,27 @@ STUDY_DB = "study.db"
 # could win the search); a trailing mean is a stabler estimate of where a config settled.
 SCORE_WINDOW = 5
 
-#: What a trial can be scored by (``--objective``). 'loss' is the trailing-mean validation
-#: loss; 'hr_corr' is the HR-trace correlation at the epoch validation loss selected, which is
-#: the checkpoint the trial would actually hand you. A search-phase choice, so it lives on the
-#: CLI next to --trials/--epochs/--seed rather than in the config: it changes how trials are
-#: ranked, never how any individual model trains.
-OBJECTIVES = ("loss", "hr_corr")
+#: What a trial can be scored by (``--objective``), all evaluated at the epoch validation loss
+#: selected -- the checkpoint the trial would actually hand you:
+#:   'loss'      trailing-mean validation loss
+#:   'hr_delta'  median |predicted - reference| in bpm. The one to use: it is the error in the
+#:               heart-rate plot, in the units you read it in, and lower is better.
+#:   'hr_agree'  fraction of the predicted HR trace within tolerance. The same question phrased
+#:               as a bounded 0-1 score; useful when a hard tolerance is what you care about.
+#:   'hr_corr'   Pearson r between the traces. Kept so earlier runs stay reproducible, but on a
+#:               single short snippet the rate is nearly constant, so r ends up decided by the
+#:               worst one or two beats -- see common.metrics.
+#: A search-phase choice, so it lives on the CLI next to --trials/--epochs/--seed rather than
+#: in the config: it changes how trials are ranked, never how any individual model trains.
+OBJECTIVES = ("loss", "hr_delta", "hr_agree", "hr_corr")
+
+#: Objectives needing the HR metric measured.
+HR_OBJECTIVES = ("hr_delta", "hr_agree", "hr_corr")
+
+#: Of those, the higher-is-better ones. The study always minimises, so these are negated on the
+#: way in and un-negated when reported. 'hr_delta' is absent: it is an error in bpm, already
+#: lower-is-better, so it is handed to optuna as-is.
+MAXIMISED_OBJECTIVES = ("hr_agree", "hr_corr")
 
 
 # --------------------------------------------------------------------------------------
@@ -111,18 +128,31 @@ def check_frozen(task, base, config, searched: dict) -> None:
 def _trial_value(objective_name: str, result, val_history: list) -> tuple:
     """The number Optuna minimises for a finished trial, plus a line describing it.
 
-    'hr_corr' scores the trial by the HR correlation *at the epoch validation loss selected* --
-    the checkpoint the trial would actually hand you -- negated, because the study minimises.
-    'loss' uses the trailing mean of the validation loss, stabler than its single best epoch on
-    a noisy curve (see SCORE_WINDOW).
+    The study is always ``direction="minimize"``, so every objective is turned into a
+    lower-is-better number here and nowhere else. 'hr_delta' already is one -- it is a bpm
+    error -- so it passes through untouched; the higher-is-better ones are negated.
+
+    The HR objectives read the score *at the epoch validation loss selected*, i.e. the
+    checkpoint the trial would actually hand you. 'loss' uses the trailing mean of the
+    validation loss, stabler than its single best epoch on a noisy curve (see SCORE_WINDOW).
     """
-    if objective_name == "hr_corr":
+    if objective_name in HR_OBJECTIVES:
         score = result.best_score
         if score is None:
             raise optuna.TrialPruned(
-                "objective is 'hr_corr' but no HR correlation was measured -- this task "
+                f"objective is {objective_name!r} but no HR metric was measured -- this task "
                 "provides no scorer (Task.make_val_scorer), or every epoch was cut short")
-        return -score.mean, f"HR r {score} @ epoch {result.best_epoch + 1}"
+
+        if objective_name == "hr_delta":
+            # nan when every snippet was degenerate: there is no bpm error to speak of, and
+            # letting nan reach optuna would silently never compare greater than anything.
+            if not np.isfinite(score.median_delta):
+                raise optuna.TrialPruned(
+                    "every validation snippet was degenerate, so there is no bpm error to score")
+            return score.median_delta, f"HR {score} @ epoch {result.best_epoch + 1}"
+
+        value = score.within_tol if objective_name == "hr_agree" else score.corr
+        return -value, f"HR {score} @ epoch {result.best_epoch + 1}"
 
     window = val_history[-SCORE_WINDOW:]
     value = sum(window) / len(window) if window else float("inf")
@@ -196,10 +226,10 @@ def objective(trial: optuna.Trial, task, base, base_config_path: str, out_dir: s
     trial_model = os.path.join(out_dir, f".trial-{trial.number}.pt")
     try:
         # Force the metric on when it is the objective, so a search never depends on the config
-        # remembering to enable it; None otherwise, leaving train.measure_hr_corr to decide.
+        # remembering to enable it; None otherwise, leaving train.measure_hr to decide.
         result = run_training(task, config, on_epoch=on_epoch, save_artifacts=False,
                               best_model_path=trial_model,
-                              measure_hr_corr=True if objective_name == "hr_corr" else None)
+                              measure_hr=True if objective_name in HR_OBJECTIVES else None)
         value, note = _trial_value(objective_name, result, val_history)
 
         os.replace(trial_model, os.path.join(out_dir, LATEST_MODEL))
@@ -274,8 +304,10 @@ def parse_args(task, argv):
                    help="epochs per trial (default: the config's epochs); fewer = faster search")
     p.add_argument("--objective", choices=OBJECTIVES, default="loss",
                    help="what to rank trials by: 'loss' = trailing-mean validation loss "
-                        "(default); 'hr_corr' = HR-trace correlation at the loss-selected "
-                        "epoch, maximised. Does not change how any model trains.")
+                        "(default); 'hr_delta' = median bpm error of the HR trace, minimised; "
+                        "'hr_agree' = fraction of it within tolerance, maximised; 'hr_corr' = "
+                        "Pearson r, maximised. The HR ones are all read at the loss-selected "
+                        "epoch. Does not change how any model trains.")
     p.add_argument("--out-dir", default=None,
                    help="dir for best/latest config+model and the study db (default: model_dir)")
     p.add_argument("--storage", default=None,
@@ -298,9 +330,10 @@ def main(task, argv=None) -> None:
 
     # Before any training: a search that cannot compute its own objective should say so now,
     # not after the first trial has run to completion.
-    if args.objective == "hr_corr" and task.make_val_scorer(base) is None:
+    if args.objective in HR_OBJECTIVES and task.make_val_scorer(base) is None:
         raise SystemExit(
-            f"--objective hr_corr needs a validation scorer, but task {task.name!r} provides "
+            f"--objective {args.objective} needs a validation scorer, but task {task.name!r} "
+            f"provides "
             f"none (Task.make_val_scorer returned None). Use '--objective loss', or implement "
             f"the hook for this task.")
 
@@ -315,8 +348,8 @@ def main(task, argv=None) -> None:
     print(f"Output dir:  '{out_dir}' (best/latest config+model, study db)")
     print(f"Storage:     {storage} (resumes if it already exists)")
     print(f"Trials: {args.trials}, epochs/trial: {args.epochs or base.train.epochs}")
-    print(f"Objective: {args.objective}"
-          f"{' (maximised)' if args.objective == 'hr_corr' else ' (minimised)'}"
+    direction = "maximised" if args.objective in MAXIMISED_OBJECTIVES else "minimised"
+    print(f"Objective: {args.objective} ({direction})"
           " -- within a trial the checkpoint is still selected by validation loss")
 
     study = optuna.create_study(
@@ -346,9 +379,12 @@ def main(task, argv=None) -> None:
     print("\n===== Search complete =====")
     print(f"Completed trials: {len(study.get_trials(states=(optuna.trial.TrialState.COMPLETE,)))}"
           f" / {len(study.trials)}")
-    # study.best_value is what optuna minimised, which for hr_corr is the negated correlation.
-    if args.objective == "hr_corr":
-        print(f"Best HR correlation: {-study.best_value:.4f}")
+    # study.best_value is what optuna minimised: the objective itself for lower-is-better ones
+    # (loss, hr_delta), and its negation for the maximised ones.
+    if args.objective in MAXIMISED_OBJECTIVES:
+        print(f"Best {args.objective}: {-study.best_value:.4f}")
+    elif args.objective == "hr_delta":
+        print(f"Best {args.objective}: {study.best_value:.2f} bpm")
     else:
         print(f"Best validation loss: {study.best_value:.6f}")
     print("Best hyperparameters:")

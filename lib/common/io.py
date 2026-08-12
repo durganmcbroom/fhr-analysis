@@ -67,11 +67,11 @@ def plot_training_curves(
 ) -> None:
     """Save a train/validation loss-vs-epoch plot to ``out_path`` (PNG).
 
-    ``scores`` (mean HR correlation per epoch) is drawn on a right-hand axis when given. It is
-    plotted but does not select the checkpoint -- loss does -- so the marked epoch is the
-    lowest-loss one, and the R reading at that epoch is the number reported to the search.
-    Seeing both curves is the point: if R peaks somewhere far from the loss minimum, selecting
-    on loss is leaving something on the table.
+    ``scores`` (the per-epoch HR agreement fraction, 0-1) is drawn on a right-hand axis when
+    given. It is plotted but does not select the checkpoint -- loss does -- so the marked epoch
+    is the lowest-loss one, and the reading at that epoch is what a search receives. Seeing
+    both curves is the point: if agreement peaks far from the loss minimum, selecting on loss
+    is leaving something on the table.
 
     Imports matplotlib lazily and forces the headless Agg backend, so it works when training
     runs without a display (remote box, CI, nohup, ...).
@@ -100,16 +100,16 @@ def plot_training_curves(
                     textcoords="offset points", xytext=(0, 9), ha="center", fontsize=8)
 
     if scores is not None and any(s is not None for s in scores):
-        r = [float("nan") if s is None else s for s in scores]
+        agree = [float("nan") if s is None else s for s in scores]
         ax2 = ax.twinx()
-        lines += ax2.plot(epochs, r, label="HR corr (r)", color="#2ca02c", alpha=0.85)
-        ax2.set_ylabel("HR correlation (r)")
-        ax2.set_ylim(-1.05, 1.05)
-        # Annotate R at the *selected* epoch, not at R's own maximum: that is the value the
-        # search receives, and the gap to the curve's peak shows what selection cost.
-        if best_e is not None and r[best_e - 1] == r[best_e - 1]:
-            ax2.scatter([best_e], [r[best_e - 1]], color="#2ca02c", zorder=5)
-            ax2.annotate(f"r: {r[best_e - 1]:.3f}", (best_e, r[best_e - 1]),
+        lines += ax2.plot(epochs, agree, label="HR agreement", color="#2ca02c", alpha=0.85)
+        ax2.set_ylabel("HR trace within tolerance (fraction)")
+        ax2.set_ylim(-0.02, 1.02)
+        # Annotate the *selected* epoch, not the curve's own maximum: that is the value the
+        # search receives, and the gap to the peak shows what selection cost.
+        if best_e is not None and agree[best_e - 1] == agree[best_e - 1]:
+            ax2.scatter([best_e], [agree[best_e - 1]], color="#2ca02c", zorder=5)
+            ax2.annotate(f"agree: {agree[best_e - 1]:.3f}", (best_e, agree[best_e - 1]),
                          textcoords="offset points", xytext=(0, -14), ha="center",
                          fontsize=8, color="#2ca02c")
 

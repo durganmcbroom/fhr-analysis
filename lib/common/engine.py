@@ -87,7 +87,7 @@ def evaluate(
 ) -> float:
     """Mean loss over ``dataloader`` with grads disabled.
 
-    ``scorer``, when given (a ``common.metrics.HRCorrelation``), is fed every batch as it goes
+    ``scorer``, when given (a ``common.metrics.HRMetrics``), is fed every batch as it goes
     by, so the HR-correlation costs one shared forward pass rather than a second sweep.
     """
     model.to(device)
@@ -127,7 +127,7 @@ def fit(
 ) -> FitResult:
     """Train for ``epochs`` and return a :class:`FitResult`.
 
-    ``make_scorer`` builds a fresh ``common.metrics.HRCorrelation`` per epoch (fresh because
+    ``make_scorer`` builds a fresh ``common.metrics.HRMetrics`` per epoch (fresh because
     one instance accumulates one pass over the split). The score is measured every epoch so the
     curve can be plotted, but it does **not** select the checkpoint -- validation loss does,
     unchanged. What the caller gets back is the score at the val-loss-selected epoch.
@@ -188,7 +188,7 @@ def fit(
 
         grad_note = '' if max_grad_norm is None else \
             f', Max grad norm (pre-clip): {max_grad_norm:.4f}'
-        score_note = '' if score is None else f', HR r: {score}'
+        score_note = '' if score is None else f', HR: {score}'
         print(f'[{epoch+1}|{epochs}] Train loss: {train_loss:.6f}, '
               f'Val loss: {val_loss:.6f}{score_note}{grad_note}{lr_note}')
 
@@ -205,9 +205,11 @@ def fit(
         if save_config is not None:
             save_config()
     if curves_path is not None:
-        r_values = [None if s is None else s.mean for s in scores]
+        # The agreement fraction, not the correlation: it is the metric a search ranks by,
+        # and unlike r it stays meaningful on a near-constant rate (see common.metrics).
+        agreement = [None if s is None else s.within_tol for s in scores]
         atomic_save(
-            lambda p: plot_training_curves(train_losses, val_losses, p, scores=r_values),
+            lambda p: plot_training_curves(train_losses, val_losses, p, scores=agreement),
             curves_path)
         print(f'Saved training curves to {curves_path}')
 

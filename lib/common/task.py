@@ -124,7 +124,7 @@ class Task(ABC):
             "searched_fields()")
 
     def make_val_scorer(self, config) -> Optional[Callable[[], object]]:
-        """A factory building a fresh ``common.metrics.HRCorrelation`` per validation pass, or
+        """A factory building a fresh ``common.metrics.HRMetrics`` per validation pass, or
         None for tasks with no beat notion (the default).
 
         Whatever this returns is measured on *every* validation pass, logged and plotted, so it

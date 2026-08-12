@@ -14,7 +14,7 @@ chmod a+x setup.sh
 ./setup.sh
 
 chmod a+x lib/funet/generate_training_snippets.sh
-lib/funet/generate_training_snippets.sh
+#lib/funet/generate_training_snippets.sh
 
 # --diagnostics writes snippet_diagnostics.png next to the checkpoints: the best model's
 # activity against the target, and the BPM traces those produce, for a few validation
