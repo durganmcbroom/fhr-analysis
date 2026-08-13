@@ -53,6 +53,7 @@ rtmon = "rtmon.server:main"
 rtmon-recover = "rtmon.recover_cli:main"
 # Data prep and diagnostics (src/fhr_bin)
 fhr-snippets = "fhr_bin.generate_training_snippets:main"
+fhr-mine-failures = "fhr_bin.mine_failing_snippets:main"
 fhr-pico2data = "fhr_bin.pico2data:main"
 fhr-concat = "fhr_bin.concat:main"
 fhr-change-start = "fhr_bin.change_start:main"
