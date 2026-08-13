@@ -21,5 +21,5 @@ lib/funet/failing/generate_failing_snippets.sh
 # --diagnostics writes snippet_diagnostics.png next to the checkpoints: the best model's
 # activity against the target, and the BPM traces those produce, for a few validation
 # snippets. Drop the flag to skip it (see common/diagnostics.py).
-poetry run funet-train lib/funet/fetal-config.yaml --diagnostics
+poetry run funet-train lib/funet/failing/failing-config.yaml --diagnostics
 #python3 lib/funet/src/tune.py lib/funet/fetal-config.yaml --trials=75
