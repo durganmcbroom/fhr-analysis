@@ -1,0 +1,71 @@
+model:
+  channels: 3
+  dilations: [1, 1, 1]
+  bottleneck_dilation: 1
+  bottleneck_convs: 2
+  codec_convolutions: 3   # conv-norm-relu blocks per encoder AND per decoder level (default 3)
+  base_channels: 12
+  dropout: 0.0
+  # Spectrogram geometry: part of the model's input contract, so a checkpoint is only
+  # loadable alongside these.
+  n_fft: 1024
+  hop_length: 256
+  # How frame-rate activity is filled back onto the sample grid at readout (inference, the HR
+  # metric and the diagnostic all follow this): 'linear' = straight lines between frames, a
+  # corner every hop; 'pchip' = shape-preserving cubic, smooth and still non-negative.
+  # Omit for 'linear', which is what every model under models/ was measured with.
+  interpolation: 'linear'   # 'linear' | 'pchip'
+  # Keep only the rows spanning this band; null = full height (what v34 and earlier trained
+  # on). data.preprocess bandpasses to 100-300 Hz and log1p(0) == 0, so at n_fft 1024 only
+  # ~53 of 513 rows carry anything -- the other ~87% is a constant-zero field every
+  # convolution still walks over. Measured on a bandpassed mix, [80, 350] keeps 99.7% of the
+  # spectrogram's mass (a hard [100, 300] keeps 97.4% and cuts into the filter's transition
+  # skirt, which is still >1% of peak out to ~344 Hz). 71 rows, which the depth-3 floor takes
+  # to exactly 64 -- so the trim off the top lands in the guard band, not in the signal.
+  freq_crop_hz: [80, 350]
+  # Kill switch: true restores the full-height v34 front-end exactly, keeping the band above
+  # on record. false (the default) runs the crop.
+  disable_freq_crop: false
+
+train:
+  optimizer: 'AdamW'   # SGD, Adam, AdamW
+  learning_rate: 3.e-4
+  weight_decay: 0.2
+  batch_size: 8
+  epochs: 80
+  crop_len: 7
+  clip: 5.0             # max gradient norm
+  loss: 'mse'   # 'kldiv' | 'snr' | 'corr' | 'corr_amp' (corr + d' peak-contrast) | 'mse' (unit-peak comb)
+  lr_schedule: 'plateau'  # 'none' (constant LR) | 'cosine' (anneal learning_rate -> min_lr) | 'plateau' (ssnet-style)
+  min_lr: 1.e-5         # cosine floor only; unused by 'none' and 'plateau'
+  plateau_factor: 0.5      # plateau: multiply LR by this on each reduction (ssnet used 0.5)
+  plateau_patience: 3      # plateau: epochs with no val improvement before reducing (ssnet used 3)
+  # Measure the Pearson r between the predicted and target BPM traces each epoch (via the real
+  # inference path: upsample, then v2_beat_detector) and draw it on the training curves.
+  # Diagnostic only -- the checkpoint is still chosen by validation loss -- and costs ~17% wall
+  # clock, so it is off by default. `funet-optimize --objective hr_corr` enables it by itself.
+  measure_hr: true
+  # corr_amp only (ignored by other losses): d' rewards beats standing clear of a quiet floor.
+  amp_weight: 0.1           # weight on the d' peak-contrast term; 0 = pure correlation (try 0.01-0.1)
+  amp_beat_threshold: 0.1   # frac of per-item target peak above which a frame counts as a beat
+  # Regularisation (train-only).
+  augment: ['channel_dropout', 'gain', 'noise']
+  # SpecAugment-style masks, max width of one zeroed band per sample; 0 = off.
+  freq_mask: 0   # freq bins (of 512 kept); try ~40
+  time_mask: 0   # time frames; keep < one beat interval (~6 frames at hop 256 / 4kHz), try 4-6
+
+data:
+  train_dir: 'training/stereo_v14(failed)/fetal-train'
+  val_dir: 'training/stereo_v14(failed)/fetal-test'   # held-out patient; selects model_best.pt
+  num_workers: 8
+  # Deterministic input transforms, applied to BOTH splits and at inference (unlike
+  # train.augment, which is random and train-only). 'bandpass' = 100-300 Hz butterworth,
+  # 'normalize' = peak to +/-1. Changing this invalidates a checkpoint -- leave it empty to
+  # stay compatible with the existing funet-v33 weights.
+  preprocess: ["bandpass", "normalize"]
+
+# v35 = v34 + freq_crop_hz. Everything else is byte-identical to models/funet-v34/
+# fetal-config.yaml (same data, same schedule, same seed-less init), so the val curve is a
+# controlled read on the crop alone against v34's train 0.041 / val 0.0661.
+model_dir: '../models/funet-v37(poor snippets)/'
+resume: '../models/funet-v36/'
