@@ -55,8 +55,8 @@ train:
   time_mask: 0   # time frames; keep < one beat interval (~6 frames at hop 256 / 4kHz), try 4-6
 
 data:
-  train_dir: 'training/stereo_v14(failed)/fetal-train'
-  val_dir: 'training/stereo_v14(failed)/fetal-test'   # held-out patient; selects model_best.pt
+  train_dir: 'training/stereo_v14(failed)/fetal-train/'
+  val_dir: 'training/stereo_v14(failed)/fetal-test/'   # held-out patient; selects model_best.pt
   num_workers: 8
   # Deterministic input transforms, applied to BOTH splits and at inference (unlike
   # train.augment, which is random and train-only). 'bandpass' = 100-300 Hz butterworth,
@@ -68,4 +68,4 @@ data:
 # fetal-config.yaml (same data, same schedule, same seed-less init), so the val curve is a
 # controlled read on the crop alone against v34's train 0.041 / val 0.0661.
 model_dir: '../models/funet-v37(poor snippets)/'
-resume: '../models/funet-v36/'
+resume: '../models/funet-v36/model_best.pt'
