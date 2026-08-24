@@ -242,16 +242,16 @@ def main():
         WINDOW,
         DATA_DIR,
     )
-    run_tslnet_pipeline(
-        PATIENT,
-        WINDOW,
-        DATA_DIR,
-    )
-    run_neossnet_pipeline(
-        PATIENT,
-        WINDOW,
-        DATA_DIR,
-    )
+    # run_tslnet_pipeline(
+    #     PATIENT,
+    #     WINDOW,
+    #     DATA_DIR,
+    # )
+    # run_neossnet_pipeline(
+    #     PATIENT,
+    #     WINDOW,
+    #     DATA_DIR,
+    # )
     # run_raw_bandpass()
     # run_funet_pipeline(
     #     PATIENT,

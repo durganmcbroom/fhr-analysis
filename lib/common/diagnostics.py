@@ -1,7 +1,13 @@
 """Optional end-of-training diagnostic figure: the best model against real snippets.
 
-One row per validation snippet, three columns following the inference path in order:
+One row per validation snippet, four columns following the inference path in order:
 
+    input   the spectrogram actually fed to the network: preprocessing applied and the
+            passband rows cropped, exactly as the loader hands it over, averaged across the
+            input channels so one image stands for the whole stack. Both beat trains are
+            marked on it, so a beat the model missed can be checked against whether anything
+            was visible at that instant -- the difference between a model that cannot see a
+            beat and one that sees it and mistimes it.
     left    what the model actually emits: one frame per ``hop_length`` samples, drawn as
             discrete points so the frame grid is visible. At hop 256 that is 64 ms per point.
     middle  the same signal after ``frames_to_native`` -- the upsampled waveform the beat
@@ -24,8 +30,8 @@ One row per validation snippet, three columns following the inference path in or
             over a snippet the rate is nearly flat, so r is decided by the worst beat or two
             while agreement reflects the whole trace (see common.metrics).
 
-Over- and under-detection, smeared peaks and a raised noise floor are all legible in the first
-two columns; whether that translates into an agreeing heart rate is the third.
+Over- and under-detection, smeared peaks and a raised noise floor are all legible in the
+output columns; whether that translates into an agreeing heart rate is the last one.
 
 Everything is taken from the same objects the metric uses -- ``Task.make_val_scorer``'s scorer
 supplies the postprocess, the upsample and the detector -- so the picture cannot drift from
@@ -53,31 +59,36 @@ from common.phases.inference import frames_to_native
 ROWS_PER_PAGE = 40
 
 ROW_HEIGHT_IN = 2.6
+#: Vertical space held back for the figure title, in inches (see _draw_page).
+SUPTITLE_IN = 0.7
 TARGET_COLOUR = "#d62728"
 MODEL_COLOUR = "#1f77b4"
 
 
 def _predict(task, config, model, device, limit: Optional[int]):
-    """Run ``model`` over the validation split, returning per-snippet (prediction, target)
-    frame arrays.
+    """Run ``model`` over the validation split, returning per-snippet
+    (input spectrogram, prediction, target) arrays.
 
-    Only frame-rate arrays are kept (a few hundred floats each), never the upsampled signals:
-    the whole split at native rate would be tens of MB, and each row needs its own only while
-    it is being drawn. Batches come straight from the loader, so a large split is never
-    materialised as one tensor.
+    The inputs are kept as the loader produced them -- preprocessed and passband-cropped --
+    because that is precisely what the input column has to show; re-deriving them later would
+    risk drawing something the model never saw. They are the bulky part (a cropped spectrogram
+    is a few hundred KB per snippet, so tens of MB across a large split), but everything else
+    stays frame-rate: the upsampled signals are rebuilt per row, only while it is drawn.
+    Batches come straight from the loader, so the split is never one big tensor.
     """
     scorer_postprocess = task.make_val_scorer(config)().postprocess
-    preds, targets = [], []
+    inputs, preds, targets = [], [], []
     with torch.no_grad():
         for batch_in, batch_target in task.make_val_loader(config):
             out = model(batch_in.to(device))
             if scorer_postprocess is not None:
                 out = scorer_postprocess(out)
+            inputs.extend(batch_in.detach().float().cpu().numpy())
             preds.extend(out.detach().float().cpu().numpy())
             targets.extend(batch_target.detach().float().cpu().numpy())
             if limit is not None and len(preds) >= limit:
-                return preds[:limit], targets[:limit]
-    return preds, targets
+                return inputs[:limit], preds[:limit], targets[:limit]
+    return inputs, preds, targets
 
 
 def _page_paths(out_path: str, pages: int) -> List[str]:
@@ -165,7 +176,7 @@ def plot_snippet_diagnostics(
     model.load_state_dict(torch.load(checkpoint_path, map_location=device))
     model.to(device).eval()
 
-    preds, targets = _predict(task, config, model, device, n_snippets)
+    inputs, preds, targets = _predict(task, config, model, device, n_snippets)
     if not preds:
         print("Diagnostics skipped: the validation loader yielded no snippets.")
         return []
@@ -184,25 +195,26 @@ def plot_snippet_diagnostics(
     written = []
     for page, path in enumerate(paths):
         first = page * rows_per_page
+        page_inputs = inputs[first:first + rows_per_page]
         page_preds = preds[first:first + rows_per_page]
         page_targets = targets[first:first + rows_per_page]
         page_indices = None if indices is None else indices[first:first + rows_per_page]
-        _draw_page(plt, scorer, page_preds, page_targets, first, path,
+        _draw_page(plt, scorer, page_inputs, page_preds, page_targets, first, path,
                    checkpoint_path, page, pages,
                    snippet_dir=config.data.val_dir, indices=page_indices)
         written.append(path)
     return written
 
 
-def _draw_page(plt, scorer, preds, targets, first_index: int, out_path: str,
+def _draw_page(plt, scorer, inputs, preds, targets, first_index: int, out_path: str,
                checkpoint_path: str, page: int, pages: int,
                snippet_dir: Optional[str] = None,
                indices: Optional[List[int]] = None) -> None:
     """Render one page of rows and save it."""
     rows = len(preds)
-    fig, axes = plt.subplots(rows, 3, figsize=(21, ROW_HEIGHT_IN * rows), squeeze=False)
+    fig, axes = plt.subplots(rows, 4, figsize=(28, ROW_HEIGHT_IN * rows), squeeze=False)
 
-    for row, (pred_frames, target_frames) in enumerate(zip(preds, targets)):
+    for row, (spec, pred_frames, target_frames) in enumerate(zip(inputs, preds, targets)):
 
         # The signal the detector is handed, not the frame-rate output: peaks are picked after
         # frames_to_native, so drawing only the frames would not show what was actually detected.
@@ -230,20 +242,39 @@ def _draw_page(plt, scorer, preds, targets, first_index: int, out_path: str,
         pred_unit, target_unit = _unit(pred_native), _unit(target_native)
         pred_frames_unit, target_frames_unit = _unit(pred_frames), _unit(target_frames)
 
-        # ---- left: the raw frame-rate output, before any upsampling ----
+        # ---- input: the spectrogram the network is actually given ----
+        # Averaged over the channel axis: FUNet takes one row per fibre and they are hard to
+        # read stacked, while the mean still shows where energy sits in time and frequency.
+        # extent puts it on the same seconds axis as every other column, so a beat mark lines
+        # up across the row. Rows are labelled as bins rather than Hz because the passband crop
+        # has already removed the low bins, and this module cannot know the offset that applied.
         ax = axes[row][0]
+        image = spec.mean(axis=0) if spec.ndim == 3 else spec
+        duration = pred_frames.size * scorer.hop_length / scorer.sample_rate
+        ax.imshow(image, origin="lower", aspect="auto", cmap="magma",
+                  extent=(0.0, duration, 0.0, float(image.shape[0])))
+        for t in ref_beats:
+            ax.axvline(t, color=TARGET_COLOUR, alpha=0.55, lw=0.8)
+        for t in pred_beats:
+            ax.axvline(t, color=MODEL_COLOUR, alpha=0.55, lw=0.8, ls="--")
+        ax.set_ylabel(f"snippet {first_index + row}")
+        channels = spec.shape[0] if spec.ndim == 3 else 1
+        ax.set_title(f"model input -- {image.shape[0]} freq bins (cropped) x "
+                     f"{image.shape[1]} frames, mean of {channels} ch", fontsize=9)
+
+        # ---- output: the raw frame-rate output, before any upsampling ----
+        ax = axes[row][1]
         ax.plot(frame_seconds, target_frames_unit, color=TARGET_COLOUR, lw=0.9,
                 marker="o", ms=2.5, label="target (SOT)")
         ax.plot(frame_seconds, pred_frames_unit, color=MODEL_COLOUR, lw=0.9, alpha=0.8,
                 marker="o", ms=2.5, label="model")
-        ax.set_ylabel(f"snippet {first_index + row}")
         ax.set_title(f"model output -- {pred_frames.size} frames "
                      f"@ {1000 * scorer.hop_length / scorer.sample_rate:.0f} ms", fontsize=9)
         if row == 0:
             ax.legend(fontsize=8, loc="upper right")
 
         # ---- middle: after frames_to_native, i.e. what the detector sees ----
-        ax = axes[row][1]
+        ax = axes[row][2]
         # The original is a rectified waveform at the full rate, so it draws as a dense band
         # rather than a curve -- thin and semi-transparent so it reads as the envelope it is
         # and does not bury the model trace on top of it.
@@ -272,7 +303,7 @@ def _draw_page(plt, scorer, preds, targets, first_index: int, out_path: str,
                      f"{len(ref_beats)} target / {len(pred_beats)} model", fontsize=9)
 
         # ---- right: the BPM traces the score is computed from ----
-        ax = axes[row][2]
+        ax = axes[row][3]
         tr, br = bpm_trace(ref_beats, scorer.bpm_range)
         tp, bp = bpm_trace(pred_beats, scorer.bpm_range)
         ax.plot(tr, br, color=TARGET_COLOUR, marker="o", ms=3, lw=1.0, label="target BPM")
@@ -296,12 +327,18 @@ def _draw_page(plt, scorer, preds, targets, first_index: int, out_path: str,
     for ax in axes[-1]:
         ax.set_xlabel("seconds")
     for row in axes:
-        for ax in row:
+        for ax in row[1:]:          # not the spectrogram: a grid over an image is just noise
             ax.grid(True, alpha=0.3)
 
     page_note = f"  (page {page + 1} of {pages})" if pages > 1 else ""
-    fig.suptitle(f"Best model vs target -- {checkpoint_path}{page_note}", fontsize=10)
-    fig.tight_layout()
+    # Both the reserved strip and the title's own position are computed from the figure height
+    # rather than left at matplotlib's defaults, which are fractions: on a 40-row page the
+    # figure is ~100 in tall, so the default y=0.98 puts the title two inches down, on top of
+    # the first row's column headings. Working in inches keeps it the same at any row count.
+    headroom = SUPTITLE_IN / (ROW_HEIGHT_IN * rows)
+    fig.suptitle(f"Best model vs target -- {checkpoint_path}{page_note}",
+                 fontsize=10, y=1.0 - 0.4 * headroom, va="center")
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 1.0 - headroom))
     # format="png" because atomic_save hands savefig a ".png.tmp" path, whose suffix has no
     # inferable image format.
     atomic_save(lambda p: fig.savefig(p, dpi=110, format="png"), out_path)
