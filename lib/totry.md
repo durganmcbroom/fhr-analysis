@@ -7,3 +7,10 @@
  - Resnet
    - https://huggingface.co/docs/transformers/en/model_doc/resnet
  - More layers not better on MLP
+
+
+TODO:
+
+ - Diagnostics on PT13+14 for FUNet
+ - Diagnostics for SSNet on 13+14+12
+ - PansNet w/ small MLP

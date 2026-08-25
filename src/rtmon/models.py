@@ -34,6 +34,7 @@ _ROOT = Path(PROJECT_DIR)
 FAMILIES = {
     "funet": (_ROOT / "lib/funet/models", ("fetal-config.yaml", "config.yaml")),
     "tslnet": (_ROOT / "lib/tslnet/models", ("config.yaml",)),
+    "palnet": (_ROOT / "lib/palnet/models", ("config.yaml",)),
     "ssnet": (_ROOT / "lib/tune-ssnet/models", ("model.yaml",)),
 }
 CHECKPOINTS = ("model_best.pt", "model_last.pt")
@@ -75,8 +76,10 @@ def _channels_and_note(family: str, cfg: dict) -> tuple[int, str]:
         bits.append(str(train["loss"]))
     if train.get("crop_len"):
         bits.append(f"{train['crop_len']}s crop")
-    if family == "tslnet" and model.get("model_hz"):
+    if family in ("tslnet", "palnet") and model.get("model_hz"):
         bits.append(f"{model['model_hz']} Hz")
+    if family == "palnet" and model.get("freeze"):
+        bits.append(str(model["freeze"]))
     return int(model.get("channels", 1)), " · ".join(bits)
 
 

@@ -61,6 +61,11 @@ class FUNetTask(Task):
     # makes the optimize phase enforce that pairing instead of trusting anyone to remember it.
     loss_scale_fields = ("model.n_fft", "model.hop_length")
 
+    # FUNet.forward ends by scoring every (freq, time) cell, softmaxing over freq and summing:
+    # `project` is the first module of that collapse, so its input is the last thing that still
+    # has a frequency axis -- the map the model is about to compress into its output vector.
+    prepool_attr = "project"
+
     def head_for(self, config) -> str:
         """Which output head this config's loss trains."""
         try:
@@ -116,6 +121,32 @@ class FUNetTask(Task):
             raise InfeasibleConfig(
                 f"depth {len(config.model.dilations)} needs freq and time >= {divisor}, but "
                 f"this config yields freq={freq_bins}, time={time_frames}{band}")
+
+    def make_input(self, config, x, src_hz):
+        """The log1p spectrogram, preprocessed and passband-cropped, for ONE window.
+
+        ``spectrogram_input`` floors only the frequency axis, because ``run_funet`` follows it
+        by cutting the time axis into training-sized windows anyway. A single window has no
+        such step after it, so the time axis is floored here instead -- exactly as
+        ``funet.data.FetalPairs.__getitem__`` floors both axes -- or FUNet.forward rejects the
+        input for not halving cleanly at every level.
+
+        Lazy import: funet.inference imports this module.
+        """
+        from funet.inference import spectrogram_input
+
+        S = spectrogram_input(config, x, src_hz)
+        divisor = 2 ** len(config.model.dilations)
+        return S[..., :S.shape[-1] - S.shape[-1] % divisor]
+
+    def run_on_waveform(self, config, model, x, src_hz, device=None):
+        """Beat activity over a whole recording, via the real inference path.
+
+        Imported here rather than at module scope because funet.inference imports this module:
+        at import time the cycle would be unresolvable, at call time it is already loaded.
+        """
+        from funet.inference import run_funet
+        return run_funet(x, src_hz, model, config, device=device)
 
     def make_val_scorer(self, config):
         """Score validation by HR-trace correlation, along the real inference path.

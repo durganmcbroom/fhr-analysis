@@ -211,6 +211,7 @@ class HRMetrics:
             reference_beats: Optional[dict] = None,
             interpolation: str = "linear",
             tolerance_bpm: float = TOLERANCE_BPM,
+            target_postprocess: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
     ):
         self.detect = detect
         self.hop_length = hop_length
@@ -218,10 +219,15 @@ class HRMetrics:
         self.bpm_range = bpm_range
         # Must match what inference uses, or the score describes a readout nobody deploys.
         self.interpolation = interpolation
-        # Maps raw model output to the non-negative envelope the beat detector expects, exactly
-        # as inference does (common.phases.inference.activity_postprocess): a log-prob head has
-        # to be exp'd before its peaks mean anything.
+        # Maps raw model output to the envelope the beat detector expects, exactly as inference
+        # does (common.phases.inference.activity_postprocess): a log-prob head has to be exp'd
+        # before its peaks mean anything.
         self.postprocess = postprocess
+        # The same for the target, needed when a task's target is not already a single
+        # per-frame trace. A separation model emits and is trained against (batch, sources,
+        # time), so both sides have to be narrowed to the source carrying the heartbeat before
+        # either can become a beat train. None leaves the target as the loader produced it.
+        self.target_postprocess = target_postprocess
         # Targets are identical every epoch (the validation loader is deterministic and
         # un-augmented), so their beats are detected once and reused. Keyed by the target's own
         # bytes, which makes the cache correct regardless of batch order. Pass a dict owned by
@@ -259,9 +265,15 @@ class HRMetrics:
         return cached
 
     def update(self, output: torch.Tensor, target: torch.Tensor) -> None:
-        """Score every item in a ``(batch, frames)`` output/target pair."""
+        """Score every item in an output/target pair.
+
+        Both are ``(batch, frames)`` once the postprocess hooks have run; a task whose raw
+        output carries more than that (a separation model's source axis, say) narrows it there.
+        """
         if self.postprocess is not None:
             output = self.postprocess(output)
+        if self.target_postprocess is not None:
+            target = self.target_postprocess(target)
         out = output.detach().float().cpu().numpy()
         tgt = target.detach().float().cpu().numpy()
 

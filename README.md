@@ -67,6 +67,7 @@ every package is importable by name from any working directory — no
 | `funet` | `lib/funet/funet/` | FUNet beat-activity model |
 | `ssnet` | `lib/tune-ssnet/ssnet/` | NeoSSNet fine-tuning |
 | `tslnet` | `lib/tslnet/tslnet/` | TSLNet: frozen TimesFM backbone + trainable head |
+| `palnet` | `lib/palnet/palnet/` | PALNet: frozen PANNs ResNet22 (AudioSet) backbone + trainable head |
 | `models`, `utils`, `loss_fn` | `lib/neossnet/` | Submodule, vendored unmodified — it uses bare imports internally, so these stay top-level |
 
 ```
@@ -101,6 +102,11 @@ lib/
   tslnet/            -> package `tslnet` (tslnet/), plus its config and clips spec.
                       No backbone checkpoints of its own: the frozen TimesFM weights
                       come from the Hugging Face cache, and only the head is saved.
+  palnet/            -> package `palnet` (palnet/), plus its config and clips spec
+                      (the same 3-fiber training_clips.yaml FUNet uses). Same deal as
+                      tslnet: the frozen PANNs ResNet22 weights come from the Hugging
+                      Face cache and only the head is saved -- unless the run
+                      fine-tunes or recalibrates BatchNorm, which writes the lot.
   neossnet/           Git submodule: base pretrained NeoSSNet model + code.
   beats/              Hand-marked mic beat times.
 
@@ -123,6 +129,8 @@ Every entry point is a console script, so it works from any directory:
 | `poetry run ssnet-optimize [config.yaml] [--trials N]` | Optuna search for SSNet |
 | `poetry run tslnet-train [config.yaml]` | Train TSLNet's head (backbone stays frozen) |
 | `poetry run tslnet-optimize [config.yaml] [--trials N]` | Optuna search for TSLNet |
+| `poetry run palnet-train [config.yaml]` | Train PALNet's head (PANNs backbone stays frozen by default) |
+| `poetry run palnet-optimize [config.yaml] [--trials N]` | Optuna search for PALNet |
 | `poetry run beat-app` | Serve the beat-marking web app |
 | `poetry run rtmon` | Live rig: record the fibers and track fetal HR in real time |
 | `poetry run rtmon-recover <session-dir>` | Finalize a recording whose server was killed |

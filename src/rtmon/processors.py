@@ -239,14 +239,16 @@ def _run_activity_model(ctx: Context, family: str) -> Result:
 
     if family == "funet":
         from funet.config import load_config
-        from funet.inference import load_funet, run_funet
-        build = lambda e: load_funet(load_config(e.config), e.checkpoint, device())  # noqa: E731
-        infer = run_funet
-    else:
+        from funet.inference import load_funet as load_one, run_funet as infer
+    elif family == "tslnet":
         from tslnet.config import load_config
-        from tslnet.inference import load_tslnet, run_tslnet
-        build = lambda e: load_tslnet(load_config(e.config), e.checkpoint, device())  # noqa: E731
-        infer = run_tslnet
+        from tslnet.inference import load_tslnet as load_one, run_tslnet as infer
+    elif family == "palnet":
+        from palnet.config import load_config
+        from palnet.inference import load_palnet as load_one, run_palnet as infer
+    else:
+        raise KeyError(f"no activity-model loader for family {family!r}")
+    build = lambda e: load_one(load_config(e.config), e.checkpoint, device())  # noqa: E731
 
     entry = find_model(family, ctx.model)
     if entry is None:
@@ -274,6 +276,10 @@ def run_funet(ctx: Context) -> Result:
 
 def run_tslnet(ctx: Context) -> Result:
     return _run_activity_model(ctx, "tslnet")
+
+
+def run_palnet(ctx: Context) -> Result:
+    return _run_activity_model(ctx, "palnet")
 
 
 # ---------------------------------------------------------------------------
@@ -465,6 +471,13 @@ PROCESSORS: dict[str, ProcessorDef] = {
                         "the beat-activity envelope.",
             run=run_tslnet, kinds=(KIND_FIBER,), arity="model",
             family="tslnet", default_chunk=10.0,
+        ),
+        ProcessorDef(
+            id="palnet", label="PALNet beat activity",
+            description="Stacked fibers through the frozen PANNs ResNet22 AudioSet tagger, "
+                        "then peak-pick the beat-activity envelope.",
+            run=run_palnet, kinds=(KIND_FIBER,), arity="model",
+            family="palnet", default_chunk=10.0,
         ),
         ProcessorDef(
             id="ppg", label="PPG pulse peaks",

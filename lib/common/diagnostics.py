@@ -1,6 +1,9 @@
 """Optional end-of-training diagnostic figure: the best model against real snippets.
 
-One row per validation snippet, four columns following the inference path in order:
+One row per validation snippet, following the inference path left to right. Four columns for a
+model that emits on a frame grid (FUNet); three for one that already emits per input sample
+(SSNet and any other separation model), where the raw-output and upsampled panels would
+otherwise be the same picture:
 
     input   the spectrogram actually fed to the network: preprocessing applied and the
             passband rows cropped, exactly as the loader hands it over, averaged across the
@@ -37,11 +40,25 @@ Everything is taken from the same objects the metric uses -- ``Task.make_val_sco
 supplies the postprocess, the upsample and the detector -- so the picture cannot drift from
 the number. Nothing here is imported by the training path.
 
-REMOVING THIS FEATURE: delete this file and the block marked ``--- diagnostics ---`` in the
-model's train entry point (``grep -rn diagnostics lib/*/*/train.py jobs/``). Nothing else
-refers to it.
+Runnable on its own, so a trained model can be inspected on any snippet directory without
+retraining:
+
+    fhr-diagnose --task funet lib/funet/models/funet-v36/config.yaml \\
+        --snippet-dir lib/funet/training/stereo_v13/fetal-test \\
+        --out .out/diagnostics/v36-pt13.png
+
+``--snippet-dir`` simply replaces ``data.val_dir`` for the run, which is what makes it usable
+per patient: point it at one patient's snippets and the figure covers exactly that patient.
+
+REMOVING THIS FEATURE: delete this file, the block marked ``--- diagnostics ---`` in the
+model's train entry point, and the ``fhr-diagnose`` entry point in pyproject.toml
+(``grep -rn diagnostics lib/*/*/train.py jobs/ pyproject.toml``). Nothing else refers to it.
 """
 
+import argparse
+import importlib
+import sys
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -65,6 +82,36 @@ TARGET_COLOUR = "#d62728"
 MODEL_COLOUR = "#1f77b4"
 
 
+class _PrepoolCapture:
+    """Records the last 2-D feature map a model builds before collapsing it to a vector.
+
+    A forward *pre*-hook on the module named by ``Task.prepool_attr``: its input is the map,
+    its output is already partway through the collapse. Channels are averaged on the way in,
+    so what is kept is one ``(freq, time)`` image per item rather than the full stack.
+
+    Costs nothing when the task names no module -- ``maps`` stays empty and the column is
+    dropped -- and rides the forward pass the diagnostic was doing anyway.
+    """
+
+    def __init__(self, task, model):
+        self.maps: List[np.ndarray] = []
+        self.handle = None
+        attr = getattr(task, "prepool_attr", None)
+        module = getattr(model, attr, None) if attr else None
+        if module is not None:
+            self.handle = module.register_forward_pre_hook(self._capture)
+
+    def _capture(self, module, args):
+        x = args[0]
+        if x.ndim == 4:                       # (batch, channels, freq, time)
+            self.maps.extend(x.detach().float().cpu().numpy().mean(axis=1))
+
+    def close(self) -> None:
+        if self.handle is not None:
+            self.handle.remove()
+            self.handle = None
+
+
 def _predict(task, config, model, device, limit: Optional[int]):
     """Run ``model`` over the validation split, returning per-snippet
     (input spectrogram, prediction, target) arrays.
@@ -76,19 +123,29 @@ def _predict(task, config, model, device, limit: Optional[int]):
     stays frame-rate: the upsampled signals are rebuilt per row, only while it is drawn.
     Batches come straight from the loader, so the split is never one big tensor.
     """
-    scorer_postprocess = task.make_val_scorer(config)().postprocess
+    scorer = task.make_val_scorer(config)()
+    # Both hooks, not just the output one: a task whose target carries a source axis narrows it
+    # the same way the metric does, or every downstream step here gets a 2-D "frame" array.
+    post_out, post_target = scorer.postprocess, scorer.target_postprocess
     inputs, preds, targets = [], [], []
+    capture = _PrepoolCapture(task, model)
     with torch.no_grad():
         for batch_in, batch_target in task.make_val_loader(config):
             out = model(batch_in.to(device))
-            if scorer_postprocess is not None:
-                out = scorer_postprocess(out)
+            if post_out is not None:
+                out = post_out(out)
+            if post_target is not None:
+                batch_target = post_target(batch_target)
             inputs.extend(batch_in.detach().float().cpu().numpy())
             preds.extend(out.detach().float().cpu().numpy())
             targets.extend(batch_target.detach().float().cpu().numpy())
             if limit is not None and len(preds) >= limit:
-                return inputs[:limit], preds[:limit], targets[:limit]
-    return inputs, preds, targets
+                break
+    capture.close()
+    if limit is not None:
+        inputs, preds, targets = inputs[:limit], preds[:limit], targets[:limit]
+        capture.maps = capture.maps[:limit]
+    return inputs, preds, targets, capture.maps
 
 
 def _page_paths(out_path: str, pages: int) -> List[str]:
@@ -147,6 +204,131 @@ def _original_sot(snippet_dir: str, index: int, n_native: int) -> Optional[np.nd
     return heart
 
 
+
+def _patient_rows(task, config, model, device, scorer, patient_dir: str,
+                  window_s: Optional[float], fibers: Optional[List[str]] = None,
+                  limit: Optional[int] = None):
+    """Rows for a continuous recording, each window treated exactly as a training snippet.
+
+    Returns the same ``(inputs, predictions, targets, reference beats)`` the snippet path
+    returns, built the same way: ``Task.make_input`` produces the very tensor the model is fed,
+    the model is called directly, and the frame-rate output goes on to the same upsample and
+    the same detector. Everything downstream -- all four columns -- is therefore identical to
+    the figure training draws, which is the point: the only difference between the two is where
+    the audio and the reference came from.
+
+    Two things are inherent to a recording rather than choices:
+
+    * The reference is the **microphone SOT**, not a ``_heart.wav``: hand-marked
+      ``mic_beats.npy`` when the patient has one, else the v7 detector on the band-limited mic.
+      Those beat times are carried through rather than re-detected, because unlike a snippet
+      target there is no activity signal they were derived from.
+    * The drawn target is an impulse per SOT beat on the model's own frame grid, since the mic
+      is a different sensor at a different rate and has no trace on that axis.
+
+    ``analyze`` is imported here, not at module scope: it pulls in matplotlib, the neossnet
+    utils and the whole analysis stack, and a training run must never load it.
+    """
+    from pathlib import Path as _Path
+
+    from analyze.constants import ABDOMEN_FIBER_NAMES
+    from analyze.data import load_data
+    from analyze.hr import sot_beats
+    from analyze.hr.detect_v7 import v7_beat_detector
+    from analyze.sot import load_sot_no_ppg
+
+    data = load_data(patient_dir)
+    # Which fibres, in what order, is part of the model's input contract -- a 3-channel
+    # checkpoint trained on ["1B","2A","2B"] cannot be handed all five, and a different three
+    # means channel i is a different sensor than it was in training. Default to the first
+    # `model.channels` in canonical order, the list analyze.funet_runner uses.
+    if fibers:
+        missing = [n for n in fibers if n not in data.abdomen]
+        if missing:
+            raise SystemExit(f"--fibers {missing} not in this recording "
+                             f"(have {list(data.abdomen)})")
+        names = list(fibers)
+    else:
+        names = [n for n in ABDOMEN_FIBER_NAMES if n in data.abdomen]
+        wanted = getattr(config.model, "channels", None)
+        if wanted:
+            names = names[:wanted]
+
+    stacked = np.stack([data.abdomen[n].data for n in names]).astype(np.float32)
+    hz = data.abdomen[names[0]].hz
+    time = np.asarray(data.abdomen[names[0]].time)
+    print(f"  fibers: {names} @ {hz} Hz, {stacked.shape[-1] / hz:.1f} s")
+
+    sot = sot_beats(v7_beat_detector, out=_Path(patient_dir) / ".diagnostics",
+                    data_dir=patient_dir)(load_sot_no_ppg()(patient_dir))
+    ref_all = np.asarray(sot.mic_beats, dtype=float)
+    print(f"  SOT: {ref_all.size} fetal beats from the microphone")
+
+    # The microphone is typically far shorter than the fibre recording -- 20-40% of it on the
+    # Banner sessions -- and past its end there is no reference to score against, so those
+    # windows would cost a forward pass each and draw a row with an empty target.
+    total_s = stacked.shape[-1] / hz
+    mic_end = float(np.asarray(sot.mic.time)[-1]) if sot.mic is not None else None
+    if mic_end is not None:
+        usable = max(0.0, mic_end - float(time[0]))
+        if usable < total_s:
+            print(f"  mic covers {usable:.0f}s of {total_s:.0f}s; scoring stops there "
+                  f"(no reference beyond it)")
+            total_s = usable
+    if total_s <= 0:
+        raise SystemExit("The microphone does not overlap the fibre recording; nothing to score.")
+
+    # One row per training-sized crop by default, so a row is the same extent the model was
+    # trained on and the figure is directly comparable to the one training draws.
+    span = float(window_s) if window_s else float(config.train.crop_len)
+    n_rows = max(1, int(total_s // span))
+    if limit is not None and limit < n_rows:
+        n_rows = limit
+    print(f"  {n_rows} window(s) of {span:g}s")
+
+    inputs, preds, targets, ref_beats = [], [], [], []
+    capture = _PrepoolCapture(task, model)
+    model.eval()
+    with torch.no_grad():
+        for row in range(n_rows):
+            lo = row * span
+            a, b = int(lo * hz), int((lo + span) * hz)
+            chunk = stacked[:, a:b]
+            if chunk.shape[-1] < int(span * hz):
+                break                       # a short tail cannot make a full-length window
+
+            x = task.make_input(config, chunk, hz)
+            out = model(x[None, ...].to(device))
+            if scorer.postprocess is not None:
+                out = scorer.postprocess(out)
+            frames = out[0].detach().float().cpu().numpy()
+
+            # Only the span the model actually saw. make_input floors the time axis to the
+            # network's downsampling factor, so a 7 s request becomes 6.656 s at hop 256;
+            # counting reference beats past that would mark beats missed from audio the model
+            # was never shown.
+            covered = frames.size * scorer.hop_length / scorer.sample_rate
+            offset = time[a] if a < time.size else lo
+            in_window = ref_all[(ref_all >= offset) & (ref_all < offset + covered)] - offset
+
+            # The reference on the model's own frame grid, so the target column and the
+            # upsample behave exactly as they do for a snippet target.
+            target = np.zeros_like(frames)
+            idx = (in_window * scorer.sample_rate / scorer.hop_length).astype(int)
+            idx = idx[(idx >= 0) & (idx < target.size)]
+            target[idx] = 1.0
+
+            inputs.append(x.detach().float().cpu().numpy())
+            preds.append(frames)
+            targets.append(target)
+            ref_beats.append(in_window)
+
+    capture.close()
+    print(f"  scored {len(preds)} window(s), "
+          f"{sum(len(r) for r in ref_beats)} SOT beats in total")
+    return inputs, preds, targets, ref_beats, capture.maps
+
+
 def plot_snippet_diagnostics(
         task,
         config,
@@ -154,6 +336,9 @@ def plot_snippet_diagnostics(
         out_path: str,
         n_snippets: Optional[int] = None,
         rows_per_page: int = ROWS_PER_PAGE,
+        patient_dir: Optional[str] = None,
+        window_s: Optional[float] = None,
+        fibers: Optional[List[str]] = None,
 ) -> List[str]:
     """Draw the validation split through ``checkpoint_path``, every snippet by default.
 
@@ -176,9 +361,16 @@ def plot_snippet_diagnostics(
     model.load_state_dict(torch.load(checkpoint_path, map_location=device))
     model.to(device).eval()
 
-    inputs, preds, targets = _predict(task, config, model, device, n_snippets)
+    # A patient directory is a continuous recording with a microphone reference; a snippet
+    # directory is paired files with their own targets. Both reduce to the same per-row data.
+    forced_refs = None
+    if patient_dir:
+        inputs, preds, targets, forced_refs, maps = _patient_rows(
+            task, config, model, device, scorer, patient_dir, window_s, fibers, n_snippets)
+    else:
+        inputs, preds, targets, maps = _predict(task, config, model, device, n_snippets)
     if not preds:
-        print("Diagnostics skipped: the validation loader yielded no snippets.")
+        print("Diagnostics skipped: nothing to draw.")
         return []
 
     pages = (len(preds) + rows_per_page - 1) // rows_per_page
@@ -188,8 +380,8 @@ def plot_snippet_diagnostics(
 
     # Row i is snippet indices[i]; None means the originals are unreadable and the target
     # trace falls back to the loader's target upsampled (see _sot_indices).
-    indices = _sot_indices(config, scorer)
-    if indices is None:
+    indices = None if patient_dir else _sot_indices(config, scorer)
+    if indices is None and not patient_dir:
         print("  note: original snippets unavailable, drawing the upsampled target instead")
 
     written = []
@@ -199,9 +391,13 @@ def plot_snippet_diagnostics(
         page_preds = preds[first:first + rows_per_page]
         page_targets = targets[first:first + rows_per_page]
         page_indices = None if indices is None else indices[first:first + rows_per_page]
+        page_refs = None if forced_refs is None else forced_refs[first:first + rows_per_page]
+        page_maps = maps[first:first + rows_per_page] if maps else None
         _draw_page(plt, scorer, page_inputs, page_preds, page_targets, first, path,
                    checkpoint_path, page, pages,
-                   snippet_dir=config.data.val_dir, indices=page_indices)
+                   snippet_dir=config.data.val_dir, indices=page_indices,
+                   forced_refs=page_refs, row_label="window" if patient_dir else "snippet",
+                   maps=page_maps)
         written.append(path)
     return written
 
@@ -209,10 +405,28 @@ def plot_snippet_diagnostics(
 def _draw_page(plt, scorer, inputs, preds, targets, first_index: int, out_path: str,
                checkpoint_path: str, page: int, pages: int,
                snippet_dir: Optional[str] = None,
-               indices: Optional[List[int]] = None) -> None:
+               indices: Optional[List[int]] = None,
+               forced_refs: Optional[List[np.ndarray]] = None,
+               row_label: str = "snippet",
+               maps: Optional[List[np.ndarray]] = None) -> None:
     """Render one page of rows and save it."""
     rows = len(preds)
-    fig, axes = plt.subplots(rows, 4, figsize=(28, ROW_HEIGHT_IN * rows), squeeze=False)
+    # A model that already emits one value per input sample (hop_length 1, e.g. a separation
+    # model) has no frame grid distinct from the sample grid, so the "raw frames" panel would
+    # be a pixel-for-pixel copy of the one beside it. Drop it rather than print it twice.
+    has_frame_grid = scorer.hop_length > 1
+    has_maps = bool(maps)
+    # Columns follow the data flow, and each is present only when it says something: the
+    # pre-pool map when the task exposes one, the raw-frames panel only when the frame grid
+    # differs from the sample grid.
+    order = (["input"] + (["prepool"] if has_maps else [])
+             + (["frames"] if has_frame_grid else []) + ["native", "bpm"])
+    at = {name: i for i, name in enumerate(order)}
+    ncols = len(order)
+    col_frames = at.get("frames")
+    col_native, col_bpm = at["native"], at["bpm"]
+    fig, axes = plt.subplots(rows, ncols, figsize=(7 * ncols, ROW_HEIGHT_IN * rows),
+                             squeeze=False)
 
     for row, (spec, pred_frames, target_frames) in enumerate(zip(inputs, preds, targets)):
 
@@ -237,7 +451,11 @@ def _draw_page(plt, scorer, inputs, preds, targets, first_index: int, out_path: 
         frame_seconds = np.arange(pred_frames.size) * scorer.hop_length / scorer.sample_rate
 
         pred_beats = scorer.beats(pred_frames)
-        ref_beats = scorer.beats(target_frames)
+        # A recording's reference beats come from the microphone SOT and were never detected
+        # from `target_frames`, so re-detecting them would measure the impulse train we drew
+        # rather than the truth it stands for.
+        ref_beats = (scorer.beats(target_frames) if forced_refs is None
+                     else np.asarray(forced_refs[row], dtype=float))
 
         pred_unit, target_unit = _unit(pred_native), _unit(target_native)
         pred_frames_unit, target_frames_unit = _unit(pred_frames), _unit(target_frames)
@@ -250,31 +468,54 @@ def _draw_page(plt, scorer, inputs, preds, targets, first_index: int, out_path: 
         # has already removed the low bins, and this module cannot know the offset that applied.
         ax = axes[row][0]
         image = spec.mean(axis=0) if spec.ndim == 3 else spec
+        channels = spec.shape[0] if spec.ndim == 3 else 1
         duration = pred_frames.size * scorer.hop_length / scorer.sample_rate
-        ax.imshow(image, origin="lower", aspect="auto", cmap="magma",
-                  extent=(0.0, duration, 0.0, float(image.shape[0])))
+        # Not every model is fed a spectrogram: a separation model takes the waveform straight,
+        # which arrives here as a single row. Drawn as an image that is a meaningless smear of
+        # colour, so draw whatever it actually is.
+        if image.shape[0] > 1:
+            ax.imshow(image, origin="lower", aspect="auto", cmap="magma",
+                      extent=(0.0, duration, 0.0, float(image.shape[0])))
+            ax.set_title(f"model input -- {image.shape[0]} freq bins x "
+                         f"{image.shape[1]} frames, mean of {channels} ch", fontsize=9)
+        else:
+            wave = image[0]
+            ax.plot(np.linspace(0.0, duration, wave.size), wave, color="#555555", lw=0.5)
+            ax.set_title(f"model input -- waveform, {wave.size} samples "
+                         f"@ {scorer.sample_rate} Hz", fontsize=9)
         for t in ref_beats:
             ax.axvline(t, color=TARGET_COLOUR, alpha=0.55, lw=0.8)
         for t in pred_beats:
             ax.axvline(t, color=MODEL_COLOUR, alpha=0.55, lw=0.8, ls="--")
-        ax.set_ylabel(f"snippet {first_index + row}")
-        channels = spec.shape[0] if spec.ndim == 3 else 1
-        ax.set_title(f"model input -- {image.shape[0]} freq bins (cropped) x "
-                     f"{image.shape[1]} frames, mean of {channels} ch", fontsize=9)
+        ax.set_ylabel(f"{row_label} {first_index + row}")
+
+        # ---- pre-pool: the last map that still has a frequency axis ----
+        if has_maps:
+            ax = axes[row][at["prepool"]]
+            fmap = maps[row]
+            ax.imshow(fmap, origin="lower", aspect="auto", cmap="viridis",
+                      extent=(0.0, duration, 0.0, float(fmap.shape[0])))
+            for t in ref_beats:
+                ax.axvline(t, color=TARGET_COLOUR, alpha=0.45, lw=0.8)
+            for t in pred_beats:
+                ax.axvline(t, color=MODEL_COLOUR, alpha=0.45, lw=0.8, ls="--")
+            ax.set_title(f"pre-pool feature map -- {fmap.shape[0]} x {fmap.shape[1]}, "
+                         f"collapsed over freq into the output", fontsize=9)
 
         # ---- output: the raw frame-rate output, before any upsampling ----
-        ax = axes[row][1]
-        ax.plot(frame_seconds, target_frames_unit, color=TARGET_COLOUR, lw=0.9,
-                marker="o", ms=2.5, label="target (SOT)")
-        ax.plot(frame_seconds, pred_frames_unit, color=MODEL_COLOUR, lw=0.9, alpha=0.8,
-                marker="o", ms=2.5, label="model")
-        ax.set_title(f"model output -- {pred_frames.size} frames "
-                     f"@ {1000 * scorer.hop_length / scorer.sample_rate:.0f} ms", fontsize=9)
-        if row == 0:
-            ax.legend(fontsize=8, loc="upper right")
+        if col_frames is not None:
+            ax = axes[row][col_frames]
+            ax.plot(frame_seconds, target_frames_unit, color=TARGET_COLOUR, lw=0.9,
+                    marker="o", ms=2.5, label="target (SOT)")
+            ax.plot(frame_seconds, pred_frames_unit, color=MODEL_COLOUR, lw=0.9, alpha=0.8,
+                    marker="o", ms=2.5, label="model")
+            ax.set_title(f"model output -- {pred_frames.size} frames "
+                         f"@ {1000 * scorer.hop_length / scorer.sample_rate:.0f} ms", fontsize=9)
+            if row == 0:
+                ax.legend(fontsize=8, loc="upper right")
 
         # ---- middle: after frames_to_native, i.e. what the detector sees ----
-        ax = axes[row][2]
+        ax = axes[row][col_native]
         # The original is a rectified waveform at the full rate, so it draws as a dense band
         # rather than a curve -- thin and semi-transparent so it reads as the envelope it is
         # and does not bury the model trace on top of it.
@@ -299,11 +540,15 @@ def _draw_page(plt, scorer, inputs, preds, targets, first_index: int, out_path: 
                     color=MODEL_COLOUR, clip_on=False)
         ax.set_ylim(-0.05, 1.25)
         source = "original SOT" if target_is_original else "upsampled target"
-        ax.set_title(f"model upsampled to {scorer.sample_rate} Hz vs {source} + beats: "
+        # "upsampled" is only true when there was a frame grid to lift off; at hop 1 the model
+        # already emitted this, and claiming otherwise would misdescribe the panel.
+        what = (f"model upsampled to {scorer.sample_rate} Hz" if has_frame_grid
+                else f"model output @ {scorer.sample_rate} Hz")
+        ax.set_title(f"{what} vs {source} + beats: "
                      f"{len(ref_beats)} target / {len(pred_beats)} model", fontsize=9)
 
         # ---- right: the BPM traces the score is computed from ----
-        ax = axes[row][3]
+        ax = axes[row][col_bpm]
         tr, br = bpm_trace(ref_beats, scorer.bpm_range)
         tp, bp = bpm_trace(pred_beats, scorer.bpm_range)
         ax.plot(tr, br, color=TARGET_COLOUR, marker="o", ms=3, lw=1.0, label="target BPM")
@@ -326,8 +571,9 @@ def _draw_page(plt, scorer, inputs, preds, targets, first_index: int, out_path: 
 
     for ax in axes[-1]:
         ax.set_xlabel("seconds")
+    image_cols = 1 + (1 if has_maps else 0)     # input, and the pre-pool map when present
     for row in axes:
-        for ax in row[1:]:          # not the spectrogram: a grid over an image is just noise
+        for ax in row[image_cols:]:   # not the images: a grid over one is just noise
             ax.grid(True, alpha=0.3)
 
     page_note = f"  (page {page + 1} of {pages})" if pages > 1 else ""
@@ -344,3 +590,120 @@ def _draw_page(plt, scorer, inputs, preds, targets, first_index: int, out_path: 
     atomic_save(lambda p: fig.savefig(p, dpi=110, format="png"), out_path)
     plt.close(fig)
     print(f"  saved {out_path} ({rows} snippets)")
+
+
+# --------------------------------------------------------------------------------------
+# Standalone CLI
+# --------------------------------------------------------------------------------------
+
+#: task name -> (module, class). Imported lazily inside main() only: this module is pulled in
+#: by the training path, which must not drag every model package (and, through the FUNet task,
+#: the analysis stack) into a run that never asks for a diagnostic.
+TASKS = {
+    "funet": ("funet.task", "FUNetTask"),
+    "ssnet": ("ssnet.task", "SSNetTask"),
+    "tslnet": ("tslnet.task", "TSLNetTask"),
+}
+
+DEFAULT_PLOT = "snippet_diagnostics.png"
+
+
+def _build_task(name: str):
+    module_name, class_name = TASKS[name]
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as e:
+        raise SystemExit(f"Cannot import {module_name} for --task {name}: {e}")
+    return getattr(module, class_name)()
+
+
+def parse_args(argv):
+    p = argparse.ArgumentParser(
+        prog="fhr-diagnose", description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("config", type=Path, help="config describing the model to inspect")
+    p.add_argument("--task", choices=sorted(TASKS), default="funet",
+                   help="which model the config belongs to (default: funet)")
+    p.add_argument("--snippet-dir", type=Path, default=None,
+                   help="snippets to draw, replacing the config's validation set")
+    p.add_argument("--patient-dir", type=Path, default=None,
+                   help="a continuous recording to draw instead of snippets, e.g. "
+                        "Banner_data/Banner_test_20251220/PT13_1. The model runs over the "
+                        "fibres via its real recording-level inference and is scored against "
+                        "the microphone SOT (hand-marked mic_beats.npy if present, else v7).")
+    p.add_argument("--fibers", default=None, metavar="A,B,C",
+                   help="abdomen fibres to stack, in the order the model was trained on "
+                        "(default: the first model.channels of "
+                        + ",".join(["1B", "2A", "2B", "2C", "2D"]) + ")")
+    p.add_argument("--window", type=float, default=None, metavar="SECONDS",
+                   help="split a --patient-dir recording into rows this long "
+                        "(default: the whole recording as one row)")
+    p.add_argument("--model-dir", type=Path, default=None,
+                   help="directory holding the checkpoint, overriding the config's model_dir "
+                        "(relative to the CWD, not to the config file)")
+    p.add_argument("--checkpoint", type=Path, default=None,
+                   help="exact weights file, overriding --model-dir")
+    p.add_argument("--out", type=Path, default=None,
+                   help=f"output png (default: <model-dir>/{DEFAULT_PLOT}). Paginated into "
+                        f"-001, -002 ... when the split needs more than one page.")
+    p.add_argument("--snippets", type=int, default=None,
+                   help="cap the number of snippets drawn (default: all of them)")
+    return p.parse_args(argv)
+
+
+def main(argv=None) -> None:
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+
+    # Imported here rather than at module scope so the training path never pays for them.
+    from common.config import load_config
+    from common.phases.train import BEST_MODEL
+
+    task = _build_task(args.task)
+    config = load_config(str(args.config), task)
+
+    # Same resolution order as fhr-mine-failures: an exact file, else BEST_MODEL under an
+    # explicit dir, else under the config's own model_dir.
+    if args.checkpoint:
+        checkpoint = Path(args.checkpoint)
+    else:
+        model_dir = Path(args.model_dir) if args.model_dir else Path(config.model_dir)
+        checkpoint = model_dir / BEST_MODEL
+    if not checkpoint.is_file():
+        source = ("--checkpoint" if args.checkpoint else
+                  "--model-dir" if args.model_dir else
+                  f"the config model_dir {config.model_dir!r}")
+        raise SystemExit(
+            f"No checkpoint at '{checkpoint}'.\n  Resolved from: {source}\n"
+            f"  Point --model-dir at the directory holding {BEST_MODEL}, or --checkpoint at "
+            f"the file itself.")
+
+    # Redirecting the task's own validation loader is all that "run this on one patient"
+    # requires -- no second loader, no duplicate of the preprocessing chain. How to redirect it
+    # differs per task, hence the hook (ssnet splits a fraction off train_dir rather than
+    # keeping a val_dir at all).
+    if args.snippet_dir and args.patient_dir:
+        raise SystemExit("--snippet-dir and --patient-dir are alternatives; pass one.")
+    for flag, value in (("--snippet-dir", args.snippet_dir), ("--patient-dir", args.patient_dir)):
+        if value and not Path(value).is_dir():
+            raise SystemExit(f"{flag} '{value}' is not a directory.")
+    if args.snippet_dir:
+        task.use_snippet_dir(config, args.snippet_dir)
+
+    out = Path(args.out) if args.out else checkpoint.parent / DEFAULT_PLOT
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    print(f"Diagnosing {args.task} on {args.patient_dir or config.data.val_dir}")
+    written = plot_snippet_diagnostics(
+        task, config, checkpoint_path=str(checkpoint), out_path=str(out),
+        n_snippets=args.snippets,
+        patient_dir=str(args.patient_dir) if args.patient_dir else None,
+        window_s=args.window,
+        fibers=args.fibers.split(',') if args.fibers else None)
+    if not written:
+        raise SystemExit(
+            f"Nothing drawn. Task {task.name!r} provides no validation scorer "
+            f"(Task.make_val_scorer), which this figure needs for its beat detection.")
+
+
+if __name__ == "__main__":
+    main()

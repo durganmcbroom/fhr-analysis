@@ -14,8 +14,11 @@ from dataclasses import asdict
 import torch
 from torch import nn
 
+import numpy as np
+
 from common.audio import SAMPLE_RATE
 from common.errors import InfeasibleConfig
+from common.metrics import FETAL_BPM_RANGE, HRMetrics
 from common.optim import OPTIMIZERS
 from common.task import Task
 
@@ -110,6 +113,75 @@ class SSNetTask(Task):
         adapted = dict(state_dict)
         adapted["encoder.weight"] = weight.repeat(1, target_channels, 1) / target_channels
         return adapted
+
+    #: Index of the separated source carrying the heartbeat. ssnet.data builds the target as
+    #: [heart, lung, (noise)], so the heart is first.
+    HEART_SOURCE = 0
+
+    def make_input(self, config, x, src_hz):
+        """The preprocessed mono waveform, straight from the inference front-end."""
+        from ssnet.inference import waveform_input
+        return waveform_input(config, x, src_hz)
+
+    def run_on_waveform(self, config, model, x, src_hz, device=None):
+        """The separated heart sound over a whole recording. Same lazy-import reasoning as
+        FUNet's: ssnet.inference imports this module."""
+        from ssnet.inference import run_ssnet
+        return run_ssnet(x, src_hz, model, config, device=device, source=self.HEART_SOURCE)
+
+    def use_snippet_dir(self, config, snippet_dir) -> None:
+        """ssnet has no separate validation directory -- its val split is the tail fraction of
+        ``data.train_dir`` (see ssnet.data.make_dataloader) -- so pointing it at a directory
+        means repointing train_dir and asking for essentially all of it.
+
+        ``holdout_split`` always reserves at least one snippet for training and rejects a
+        fraction of 1, so one snippet of the directory is not drawn. That is a rounding loss in
+        a diagnostic, not a correctness problem, but it is why the figure can come back one row
+        short of the file count.
+        """
+        from common.audio import snippet_indices
+
+        config.data.train_dir = str(snippet_dir)
+        n = len(snippet_indices(snippet_dir))
+        config.data.val_fraction = (n - 1) / n if n > 1 else 0.5
+
+    def make_val_scorer(self, config):
+        """Score validation by HR-trace agreement on the separated heart source.
+
+        SSNet emits waveforms rather than a per-frame activity: both its output and its target
+        are ``(batch, sources, time)`` at the model's own sample rate. Two consequences, and
+        both are handled by configuring HRMetrics rather than by special-casing it:
+
+        * Both sides are narrowed to the heart source before anything else, the output through
+          ``postprocess`` and the target through ``target_postprocess``.
+        * ``hop_length=1`` says the model already emits one value per sample, which makes
+          ``frames_to_native`` an identity -- there is no frame grid to lift the beats off, and
+          none of the quantisation that costs FUNet its timing resolution.
+
+        No rectification: ``v2_beat_detector`` opens with Shannon energy, which squares its
+        input, so a bipolar separated waveform is exactly what it expects -- and is what
+        ``analyze.neossnet`` already feeds it on a real recording.
+
+        The detector is imported lazily and locally for the same reason as FUNet's: ``analyze``
+        pulls in matplotlib and the neossnet utils, which a plain training run should not load.
+        """
+        heart = self.HEART_SOURCE
+
+        def detect(activity, hz):
+            from analyze.data import Audio
+            from analyze.hr.detect_v2 import v2_beat_detector
+            time = np.arange(activity.size) / hz
+            return v2_beat_detector(Audio(time, hz, activity), FETAL_BPM_RANGE, None)["times"]
+
+        reference_beats: dict = {}
+        return lambda: HRMetrics(
+            detect=detect,
+            hop_length=1,
+            sample_rate=SAMPLE_RATE,
+            postprocess=lambda out: out[:, heart],
+            target_postprocess=lambda tgt: tgt[:, heart],
+            reference_beats=reference_beats,
+        )
 
     def check_feasible(self, config) -> None:
         """Reject configs the transformer/conformer mask generator cannot build."""

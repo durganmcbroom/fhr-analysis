@@ -87,6 +87,7 @@ def default_setup() -> Setup:
     funet = _newest("funet", channels=len(ABDOMEN_FIBER_NAMES))
     ssnet = _newest("ssnet")
     tslnet = _newest("tslnet")
+    palnet = _newest("palnet")
 
     # Two references, because two hearts are being measured: the microphone is the
     # fetal source of truth, the PPG strap the maternal one. Each band's estimates are
@@ -114,6 +115,12 @@ def default_setup() -> Setup:
             id="tslnet", name=f"TSLNet — {tslnet.version}", processor="tslnet",
             inputs=_first_n(tslnet.channels), model=tslnet.version, band="fetal",
             enabled=False, chunk_s=10.0, period_s=10.0, color=TRACK_COLORS[3]))
+
+    if palnet is not None:
+        tracks.append(Track(
+            id="palnet", name=f"PALNet — {palnet.version}", processor="palnet",
+            inputs=_first_n(palnet.channels), model=palnet.version, band="fetal",
+            enabled=False, chunk_s=10.0, period_s=10.0, color=TRACK_COLORS[5]))
 
     return Setup(
         tracks=tracks,

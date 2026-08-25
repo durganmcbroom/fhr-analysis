@@ -22,7 +22,8 @@ NEOSSNET_MODEL_CFG = os.path.join(PROJECT_DIR, "lib/neossnet/models/model.yaml")
 
 # FUNet beat-activity model (lib/funet)
 # FUNET_CONFIG = os.path.join(PROJECT_DIR, "lib/funet/fetal-config.yaml")
-FUNET_MODEL = "funet-v37(poor snippets)"
+# FUNET_MODEL = "funet-v37(poor snippets)"
+FUNET_MODEL = "funet-v29"
 FUNET_CONFIG = os.path.join(PROJECT_DIR, f"lib/funet/models/{FUNET_MODEL}/fetal-config.yaml")
 FUNET_MODEL_PATH = os.path.join(PROJECT_DIR, f"lib/funet/models/{FUNET_MODEL}/model_best.pt")
 
@@ -34,6 +35,15 @@ FUNET_MODEL_PATH = os.path.join(PROJECT_DIR, f"lib/funet/models/{FUNET_MODEL}/mo
 TSLNET_MODEL = "tslnet-v9"
 TSLNET_CONFIG = os.path.join(PROJECT_DIR, f"lib/tslnet/models/{TSLNET_MODEL}/config.yaml")
 TSLNET_MODEL_PATH = os.path.join(PROJECT_DIR, f"lib/tslnet/models/{TSLNET_MODEL}/model_best.pt")
+
+# PALNet beat-activity model (lib/palnet). Like TSLNet's, the checkpoint is head-only while
+# the backbone stays pristine -- the frozen PANNs ResNet22 is named (and pinned by revision) in
+# the config and comes from the Hugging Face cache. A run that fine-tunes, unfreezes bn0 or
+# recalibrates BatchNorm writes the full state dict instead; either loads through the same
+# `load_palnet`.
+PALNET_MODEL = "palnet-v1"
+PALNET_CONFIG = os.path.join(PROJECT_DIR, f"lib/palnet/models/{PALNET_MODEL}/config.yaml")
+PALNET_MODEL_PATH = os.path.join(PROJECT_DIR, f"lib/palnet/models/{PALNET_MODEL}/model_best.pt")
 
 FIBER_BUNDLE_A = "ps4000.npy"   # chest device bundle
 FIBER_BUNDLE_B = "ps3000a.npy"  # abdomen device bundle

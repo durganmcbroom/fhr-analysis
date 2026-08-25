@@ -45,6 +45,8 @@ ssnet-train = "ssnet.main:main"
 ssnet-optimize = "ssnet.optimize:main"
 tslnet-train = "tslnet.train:main"
 tslnet-optimize = "tslnet.optimize:main"
+palnet-train = "palnet.train:main"
+palnet-optimize = "palnet.optimize:main"
 # Analysis
 main = "analyze.main:main"
 beat-app = "beat_app.server:main"
@@ -54,6 +56,7 @@ rtmon-recover = "rtmon.recover_cli:main"
 # Data prep and diagnostics (src/fhr_bin)
 fhr-snippets = "fhr_bin.generate_training_snippets:main"
 fhr-mine-failures = "fhr_bin.mine_failing_snippets:main"
+fhr-diagnose = "common.diagnostics:main"
 fhr-pico2data = "fhr_bin.pico2data:main"
 fhr-concat = "fhr_bin.concat:main"
 fhr-change-start = "fhr_bin.change_start:main"
@@ -105,6 +108,7 @@ packages = [
     { include = "funet", from = "lib/funet" },
     { include = "ssnet", from = "lib/tune-ssnet" },
     { include = "tslnet", from = "lib/tslnet" },
+    { include = "palnet", from = "lib/palnet" },
     { include = "models", from = "lib/neossnet" },
     { include = "utils", from = "lib/neossnet" },
     { include = "loss_fn.py", from = "lib/neossnet" },

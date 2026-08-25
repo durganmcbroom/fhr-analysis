@@ -29,10 +29,10 @@ from analyze.constants import PROJECT_DIR, FETAL_ACOUSTIC_BAND_HZ, BROADBAND_FIL
 # PATIENT = "fiber-horizontal"
 # PATIENT = "PT12_2"
 # PATIENT = "Patient 7"
-PATIENT = "patient8-session1"
-# PATIENT = "session-02"
+# PATIENT = "patient8-session1"
+PATIENT = "PT14_3"
 # PATIENT = "band_durgan_1"
-WINDOW = 0, 340
+# WINDOW = 0, 340
 WINDOW = 0, 30*60
 # WINDOW = 0, 30
 # WINDOW = 10, 1810

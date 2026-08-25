@@ -1,0 +1,87 @@
+model:
+  channels: 3          # abdomen fibers; training_clips.yaml stacks 1B / 2A / 2B, in that order
+  # Fetched to the Hugging Face cache on first run (~259 MB), then reused. Pinned by revision:
+  # the repo is a personal Apache-2.0 re-upload of qiuqiangkong/audioset_tagging_cnn's
+  # ResNet22, and a silent re-push would otherwise change what this checkpoint trained against.
+  checkpoint: 'nicofarr/panns_ResNet22'
+  revision: 'e65b0662a88535d12289767b0bc1dbdfcc7523dc'
+
+  # 'per_fiber' runs the published 1-channel stem once per fiber (fibers ride the batch axis)
+  # and concatenates their per-frame embeddings in the head -- 3x the compute, stem untouched.
+  # 'stack' folds the stem across 3 input channels instead: 1x the compute, stem adapted.
+  channel_mode: 'per_fiber'
+  # 'after1' is PANNs' own 2048-d embedding (/32 in time); 'layer4' (512-d, /16) and 'layer3'
+  # (256-d, /8) are shallower and need 2-4x fewer STFT frames for the same output frame rate.
+  feature_layer: 'after1'
+  freeze: 'all'        # 'all' | 'after:1'..'after:4' | 'none'
+  bn_recalibrate: false
+  bn0_trainable: false
+
+  # --- the front-end, and the two knobs it leaves open ---
+  # The mel filterbank maps FFT bin *index*, not Hz, so the feeding rate decides where the
+  # fetal band sits on AudioSet's mel scale AND how long the fixed 1024-tap window is:
+  #    4000 -> 256 ms window, 22 of 64 mel bins on 100-300 Hz
+  #    8000 -> 128 ms window, 16 mel bins       <- here
+  #   16000 ->  64 ms window, 10 mel bins
+  # Resampling to the checkpoint's nominal 32000, where Hz would mean Hz, leaves the band on 5
+  # bins -- which is why that "honest" mapping is the worst option available.
+  model_hz: 8000
+  # The STFT convolution's stride, and the only front-end value that is not a stored weight.
+  # An output frame is hop x 32 = 256 samples = 32 ms, comparable to TSLNet's 40 ms patches.
+  # The 99.2% window overlap this implies is forced, not chosen: n_fft is frozen at 1024 and
+  # the network reduces time by 32, so the STFT frame rate must be 32x the output frame rate.
+  hop: 8
+
+  # Declared, not chosen: the STFT conv kernel *is* the windowed DFT basis and melW is the mel
+  # matrix, so both are fixed by the checkpoint. Here only so check_feasible can do its
+  # arithmetic offline; build_model verifies them against the backbone it loads.
+  n_fft: 1024
+  mel_bins: 64
+
+  head_hidden: 256
+  # Linear layers in the head. 3 = in -> hidden -> hidden -> out (1.64M params at hidden 256
+  # and 3 fibers); 1 = a plain linear probe (6k params, head_hidden then unused). The probe is
+  # the standard baseline for a frozen backbone and is the single most informative first run.
+  head_layers: 3
+  dropout: 0.0
+  interpolation: 'linear'   # 'linear' | 'pchip'; how frames are filled back onto the samples
+
+train:
+  optimizer: 'AdamW'   # SGD, Adam, AdamW
+  learning_rate: 1.e-3  # higher than FUNet's: this only fits a head over frozen features
+  weight_decay: 0.1
+  batch_size: 8
+  epochs: 60
+  # Seconds, and a float (PALNet widens the base config's int, as TSLNet does) so the crop is a
+  # whole number of output frames: 4.096 s at 32 ms is exactly 128, ~9.6 beats. Every pooling
+  # stage floors, so an unaligned crop would drop frames off the tail and slide the target out
+  # of alignment; palnet.data floors to the nearest aligned length and check_feasible reports
+  # what it used.
+  crop_len: 4.096
+  clip: 5.0             # max gradient norm
+  loss: 'mse'   # 'snr' | 'corr' | 'corr_amp' (corr + d' peak-contrast) | 'mse' (unit-peak comb)
+  lr_schedule: 'cosine'  # 'none' (constant LR) | 'cosine' (anneal to min_lr) | 'plateau'
+  min_lr: 1.e-5         # cosine floor only; unused by 'none' and 'plateau'
+  plateau_factor: 0.5
+  plateau_patience: 3
+  # corr_amp only (ignored by other losses): d' rewards beats standing clear of a quiet floor.
+  amp_weight: 0.1
+  amp_beat_threshold: 0.1
+  # Regularisation (train-only). Applied at 4 kHz, before preprocess and the resample.
+  augment: ['channel_dropout', 'gain', 'noise']
+
+data:
+  # Written by ./generate_training_snippets.sh from training_clips.yaml, which routes whole
+  # patients to fetal-train/ or fetal-test/ by their `mode`. Paths resolve relative to this
+  # file, not the working directory.
+  train_dir: 'training/stereo_v1/fetal-train'
+  val_dir: 'training/stereo_v1/fetal-test'   # held-out patient; selects model_best.pt
+  num_workers: 8
+  # NOT ['bandpass', 'normalize'], unlike every other model here, and the departure is
+  # deliberate. The backbone was trained on full-band audio, and a 100-300 Hz bandpass leaves
+  # 48 of its 64 mel bins at the -100 dB floor -- a constant plane handed to a BatchNorm
+  # carrying AudioSet's running statistics. Without it, 55 of 64 bins carry real content.
+  # This is the A/B that M2 settles; check_feasible prints a note either way.
+  preprocess: ['normalize']
+
+model_dir: 'models/palnet-v1/'

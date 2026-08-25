@@ -50,6 +50,12 @@ class Task(ABC):
     #: search that finds a better model and one that finds a cheaper yardstick.
     loss_scale_fields: tuple = ()
 
+    #: Name of the submodule whose *input* is the last 2-D feature map the model builds
+    #: before collapsing it to a per-frame vector, e.g. FUNet's frequency-attention pooling.
+    #: Set it and the diagnostic draws that map as its own column; leave it None and the column
+    #: is omitted. A name rather than a hook so a task only has to point at the boundary.
+    prepool_attr: Optional[str] = None
+
     #: Extra environment variables that override device selection, most specific first.
     device_env_vars: tuple = ()
 
@@ -84,6 +90,19 @@ class Task(ABC):
         Called by *both* phases: the optimize phase turns it into a pruned trial, the train
         phase into a readable error before anything is built. Raise the shared exception, not
         ``optuna.TrialPruned`` -- task code must not import optuna.
+        """
+        return None
+
+    def prepare_model(self, config, model, train_loader) -> None:
+        """Last chance to touch ``model`` with real data before the optimiser is built.
+
+        Called by the train phase once the loaders exist, and never by the inference path. The
+        seam exists for preparation that is a *function of the training data* but is not
+        training: PALNet uses it to re-estimate its pretrained backbone's BatchNorm running
+        statistics on this dataset, which needs a loader but produces no gradient.
+
+        Anything done here must survive into the checkpoint on its own -- inference rebuilds
+        the model from the config and loads weights, and does not call this. Default: nothing.
         """
         return None
 
@@ -134,6 +153,44 @@ class Task(ABC):
         is asked to rank trials by it (``optimize --objective hr_corr``).
         """
         return None
+
+    def make_input(self, config, x, src_hz):
+        """The exact tensor this model is fed for one window of waveform ``x``.
+
+        The seam that lets a continuous recording be scored *as a sequence of training-sized
+        windows* rather than in one pass: build the input, run the model, and every downstream
+        step -- the frame-rate output, the upsample, the beat detection -- is identical to the
+        snippet path, so the figure is identical too. Contrast ``run_on_waveform``, which runs a
+        whole recording and hands back a native-rate signal with no frame grid to show.
+        """
+        raise NotImplementedError(
+            f"task {self.name!r} cannot build a model input from a waveform; it has no "
+            "make_input().")
+
+    def run_on_waveform(self, config, model, x, src_hz, device=None):
+        """Run ``model`` over a raw waveform, returning a signal of the same length at
+        ``src_hz`` whose peaks are the heartbeats.
+
+        The seam for scoring a continuous recording rather than snippets. What the signal *is*
+        differs per task -- a beat activity for FUNet, the separated heart sound for a
+        separation model -- but both feed the same beat detector, so a caller holding one does
+        not need to know which. Tasks that have no recording-level inference leave this raising.
+        """
+        raise NotImplementedError(
+            f"task {self.name!r} cannot run on a raw waveform; it has no run_on_waveform(). "
+            "Only snippet directories can be scored for it.")
+
+    def use_snippet_dir(self, config, snippet_dir) -> None:
+        """Point this task's *validation* loader at ``snippet_dir``, in place.
+
+        What "the validation set" means is the task's own business -- a held-out directory for
+        some, a tail fraction of one directory for others -- so redirecting it is too. The
+        default suits a task whose val loader reads ``data.val_dir``; anything else overrides.
+
+        Used by the standalone diagnostic, which draws whatever the val loader yields, so
+        redirecting that loader is all "run this on one patient" needs to mean.
+        """
+        config.data.val_dir = str(snippet_dir)
 
     def baseline_params(self, base) -> Optional[dict]:
         """The ``suggest`` parameters that reproduce ``base``, or None to skip anchoring.

@@ -31,6 +31,39 @@ def load_funet(config, checkpoint: str, device: torch.device = None) -> FUNet:
     return load_model(FUNetTask(), config, checkpoint, device)
 
 
+def spectrogram_input(config, x: np.ndarray, src_hz: int) -> torch.Tensor:
+    """The exact tensor FUNet is fed for waveform ``x``: ``(channels, freq, frames)``.
+
+    Factored out of ``run_funet`` so that anything needing to *see* the model's input -- the
+    diagnostic's first column, say -- gets the same tensor the model gets, rather than a
+    reconstruction that could drift from it.
+    """
+    # Match training preprocessing: resample to the model rate, then peak-normalise on the
+    # same time scale a training snippet was normalised on -- not across the whole recording,
+    # which lets one loud transient rescale everything else (see normalize_blocks).
+    x = resample(x, src_hz, SAMPLE_RATE)
+    x = normalize_blocks(x, config.train.crop_len * SAMPLE_RATE)
+
+    hop = config.model.hop_length
+    divisor = 2 ** len(config.model.dilations)
+
+    # The same deterministic transforms the dataset applied, or the model meets an input
+    # distribution it never trained on (see common.preprocess).
+    waveform = Preprocessor(config.data.preprocess)(torch.from_numpy(np.ascontiguousarray(x)))
+
+    spec = torchaudio.transforms.Spectrogram(n_fft=config.model.n_fft, hop_length=hop)
+    S = torch.log1p(spec(waveform))                       # (channels, freq, frames)
+
+    # Passband crop, from the same helper the dataset uses -- a checkpoint trained on a band
+    # must be run on that band, and two copies of the arithmetic would eventually disagree.
+    crop = freq_crop_bins(config)
+    if crop is not None:
+        S = S[:, crop[0]:crop[1], :]
+
+    freq = S.shape[-2] - S.shape[-2] % divisor            # crop freq to a multiple of divisor
+    return S[:, :freq, :]
+
+
 @torch.no_grad()
 def run_funet(
         x: np.ndarray,
@@ -58,40 +91,16 @@ def run_funet(
             f"{config.model.channels} (config.model.channels)"
         )
 
-    # Match training preprocessing: resample to the model rate, then peak-normalise on the
-    # same time scale a training snippet was normalised on -- not across the whole recording,
-    # which lets one loud transient rescale everything else (see normalize_blocks).
-    x = resample(x, src_hz, SAMPLE_RATE)
-    x = normalize_blocks(x, config.train.crop_len * SAMPLE_RATE)
-
+    S = spectrogram_input(config, x, src_hz)
     hop = config.model.hop_length
     divisor = 2 ** len(config.model.dilations)
 
-    # The same deterministic transforms the dataset applied, or the model meets an input
-    # distribution it never trained on (see common.preprocess).
-    waveform = Preprocessor(config.data.preprocess)(torch.from_numpy(np.ascontiguousarray(x)))
-
-    spec = torchaudio.transforms.Spectrogram(n_fft=config.model.n_fft, hop_length=hop)
-    S = torch.log1p(spec(waveform))                       # (channels, freq, frames)
-
-    # Passband crop, from the same helper the dataset uses -- a checkpoint trained on a band
-    # must be run on that band, and two copies of the arithmetic would eventually disagree.
-    crop = freq_crop_bins(config)
-    if crop is not None:
-        S = S[:, crop[0]:crop[1], :]
-
-    freq = S.shape[-2] - S.shape[-2] % divisor            # crop freq to a multiple of divisor
-    S = S[:, :freq, :]
-
-    # Window the time axis to a training-sized crop, rounded down to a multiple of divisor.
+    # Window the time axis to a training-sized crop, rounded down to a multiple of divisor, so
+    # GroupNorm sees the spatial extent it trained on.
     window = max(divisor, ((config.train.crop_len * SAMPLE_RATE) // hop) // divisor * divisor)
 
     # How a window of raw output becomes activity depends on what the loss pinned down, so the
-    # readout is chosen from the loss rather than fixed here -- see ACTIVITY_POSTPROCESS. This
-    # matters for FUNet in the opposite direction to TSLNet: trained with 'mse' its output is
-    # already calibrated to a unit-peak comb, and the old blanket softmax over ~100+ frames
-    # flattened those calibrated peaks toward uniform -- a plausible contributor to the
-    # weak-peak problem, which is now just a clamp.
+    # readout is chosen from the loss rather than fixed here -- see ACTIVITY_POSTPROCESS.
     # NOTE: inference-only; training optimizes the raw signal-head output.
     postprocess = activity_postprocess(config.train.loss)
 
