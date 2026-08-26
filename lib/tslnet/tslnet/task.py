@@ -200,6 +200,15 @@ class TSLNetTask(Task):
               f"{config.train.crop_len:.2f}s ~ {beats:.1f} beats, "
               f"{patches * m.patch_length / m.context_length:.0%} of the context")
 
+    def period_probe(self, config):
+        """Expose the detector's period choice and how close the runner-up was.
+
+        Lazy and local for the same reason ``make_val_scorer``'s detector is: ``analyze`` pulls
+        in matplotlib and the neossnet utils, which a training run has no business loading.
+        """
+        from analyze.hr.period import period_probe
+        return period_probe
+
     # ------------------------------------------------------- optimize phase only
     def suggest(self, trial, base):
         """Return a copy of ``base`` with the searched hyperparameters replaced for this trial.

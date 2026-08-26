@@ -154,6 +154,20 @@ class Task(ABC):
         """
         return None
 
+    def period_probe(self, config):
+        """A callable ``(activity, hz, bpm_range, ref_beats) -> dict | None``, or None.
+
+        The seam for showing *why* a beat detector chose the rate it did. Beat detection in
+        this repo estimates one cardiac period per call and decodes the whole signal against
+        it, so a wrong period is not a scatter of wrong beats -- it is a smooth, confident,
+        uniformly wrong rate that no existing panel distinguishes from a right one. The probe
+        returns the autocorrelation the detector picked from, which does distinguish them.
+
+        Lives on the task, like ``make_val_scorer``, because the detector is in ``analyze`` and
+        ``common`` must not import it. Default None, which simply drops the column.
+        """
+        return None
+
     def make_input(self, config, x, src_hz):
         """The exact tensor this model is fed for one window of waveform ``x``.
 

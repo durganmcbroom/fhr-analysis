@@ -397,9 +397,15 @@ def plot_snippet_diagnostics(
                    checkpoint_path, page, pages,
                    snippet_dir=config.data.val_dir, indices=page_indices,
                    forced_refs=page_refs, row_label="window" if patient_dir else "snippet",
-                   maps=page_maps)
+                   maps=page_maps, probe=task.period_probe(config))
         written.append(path)
     return written
+
+
+#: At or below this many rows, the "input" panel is a stack of channels rather than a
+#: spectrogram, and is drawn as overlaid waveforms. A spectrogram with this few frequency bins
+#: would carry nothing worth looking at, so there is no ambiguous case in practice.
+MAX_WAVEFORM_ROWS = 8
 
 
 def _draw_page(plt, scorer, inputs, preds, targets, first_index: int, out_path: str,
@@ -408,7 +414,8 @@ def _draw_page(plt, scorer, inputs, preds, targets, first_index: int, out_path: 
                indices: Optional[List[int]] = None,
                forced_refs: Optional[List[np.ndarray]] = None,
                row_label: str = "snippet",
-               maps: Optional[List[np.ndarray]] = None) -> None:
+               maps: Optional[List[np.ndarray]] = None,
+               probe=None) -> None:
     """Render one page of rows and save it."""
     rows = len(preds)
     # A model that already emits one value per input sample (hop_length 1, e.g. a separation
@@ -420,11 +427,13 @@ def _draw_page(plt, scorer, inputs, preds, targets, first_index: int, out_path: 
     # pre-pool map when the task exposes one, the raw-frames panel only when the frame grid
     # differs from the sample grid.
     order = (["input"] + (["prepool"] if has_maps else [])
-             + (["frames"] if has_frame_grid else []) + ["native", "bpm"])
+             + (["frames"] if has_frame_grid else []) + ["native", "bpm"]
+             + (["period"] if probe is not None else []))
     at = {name: i for i, name in enumerate(order)}
     ncols = len(order)
     col_frames = at.get("frames")
     col_native, col_bpm = at["native"], at["bpm"]
+    col_period = at.get("period")
     fig, axes = plt.subplots(rows, ncols, figsize=(7 * ncols, ROW_HEIGHT_IN * rows),
                              squeeze=False)
 
@@ -473,16 +482,21 @@ def _draw_page(plt, scorer, inputs, preds, targets, first_index: int, out_path: 
         # Not every model is fed a spectrogram: a separation model takes the waveform straight,
         # which arrives here as a single row. Drawn as an image that is a meaningless smear of
         # colour, so draw whatever it actually is.
-        if image.shape[0] > 1:
+        if image.shape[0] > MAX_WAVEFORM_ROWS:
             ax.imshow(image, origin="lower", aspect="auto", cmap="magma",
                       extent=(0.0, duration, 0.0, float(image.shape[0])))
             ax.set_title(f"model input -- {image.shape[0]} freq bins x "
                          f"{image.shape[1]} frames, mean of {channels} ch", fontsize=9)
         else:
-            wave = image[0]
-            ax.plot(np.linspace(0.0, duration, wave.size), wave, color="#555555", lw=0.5)
-            ax.set_title(f"model input -- waveform, {wave.size} samples "
-                         f"@ {scorer.sample_rate} Hz", fontsize=9)
+            # A handful of rows is a channel stack, not a spectrogram -- PALNet is fed the
+            # fibres as raw waveforms, and drawing three of them as an image is a meaningless
+            # smear that the "freq bins" title above would then misdescribe. Overlaid, so a
+            # fibre that has gone quiet or saturated is visible against the others.
+            in_seconds = np.linspace(0.0, duration, image.shape[1])
+            for ch in range(image.shape[0]):
+                ax.plot(in_seconds, image[ch], lw=0.4, alpha=0.75)
+            what = "waveform" if image.shape[0] == 1 else f"{image.shape[0]} channels"
+            ax.set_title(f"model input -- {what}, {image.shape[1]} samples", fontsize=9)
         for t in ref_beats:
             ax.axvline(t, color=TARGET_COLOUR, alpha=0.55, lw=0.8)
         for t in pred_beats:
@@ -569,8 +583,47 @@ def _draw_page(plt, scorer, inputs, preds, targets, first_index: int, out_path: 
         if row == 0:
             ax.legend(fontsize=8, loc="upper right")
 
+        # ---- period: which rate the detector locked onto, and by how little it won ----
+        # Beat detection here estimates ONE cardiac period per call and decodes the whole
+        # window against it, so a wrong period is a uniformly wrong rate rather than a scatter
+        # of wrong beats -- indistinguishable from a right one in every panel to the left. This
+        # is the panel where they differ: a tall runner-up at the reference rate means the
+        # detector had the right answer and lost it on a hair.
+        if col_period is not None:
+            ax = axes[row][col_period]
+            info = probe(pred_native, float(scorer.sample_rate), scorer.bpm_range, ref_beats)
+            if info is None:
+                ax.set_title("period -- not enough signal to autocorrelate", fontsize=9)
+            else:
+                ax.plot(info["lags_bpm"], info["ac"], color=MODEL_COLOUR, lw=1.0)
+                ax.axvline(info["chosen_bpm"], color=MODEL_COLOUR, lw=1.2, ls="--",
+                           label=f"detector {info['chosen_bpm']:.0f}")
+                bits = [f"chose {info['chosen_bpm']:.0f}"]
+                if info["ref_bpm"] is not None:
+                    ax.axvline(info["ref_bpm"], color=TARGET_COLOUR, lw=1.2,
+                               label=f"target {info['ref_bpm']:.0f}")
+                    bits.append(f"target {info['ref_bpm']:.0f}")
+                    ratio = info["chosen_bpm"] / info["ref_bpm"]
+                    if not 0.85 <= ratio <= 1.15:
+                        bits.append(f"** {ratio:.2f}x OFF **")
+                    if not info["ref_in_band"]:
+                        bits.append("target OUTSIDE the searched band")
+                if info["margin"] is not None:
+                    # Negative is not a weak runner-up, it is a different statement: the
+                    # activity is ANTI-correlated at the reference period, i.e. whatever the
+                    # model is emitting peaks where the beats are not.
+                    bits.append(f"runner-up {info['margin']:.0%}" if info["margin"] >= 0
+                                else f"ANTI-correlated at target ({info['margin']:.0%})")
+                ax.set_title("period -- " + ", ".join(bits), fontsize=9)
+                ax.set_xlabel("bpm")
+                ax.set_ylabel("autocorr (rel. peak)")
+                ax.set_ylim(min(0.0, float(np.min(info["ac"]))), 1.05)
+                if row == 0:
+                    ax.legend(fontsize=8, loc="upper right")
+
     for ax in axes[-1]:
-        ax.set_xlabel("seconds")
+        if ax is not None and getattr(ax, "get_xlabel", lambda: "")() != "bpm":
+            ax.set_xlabel("seconds")
     image_cols = 1 + (1 if has_maps else 0)     # input, and the pre-pool map when present
     for row in axes:
         for ax in row[image_cols:]:   # not the images: a grid over one is just noise
@@ -603,6 +656,7 @@ TASKS = {
     "funet": ("funet.task", "FUNetTask"),
     "ssnet": ("ssnet.task", "SSNetTask"),
     "tslnet": ("tslnet.task", "TSLNetTask"),
+    "palnet": ("palnet.task", "PALNetTask"),
 }
 
 DEFAULT_PLOT = "snippet_diagnostics.png"

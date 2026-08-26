@@ -18,6 +18,7 @@ from analyze.mlcmed import run_mlcmed
 from analyze.mnmf import run_mnmf
 from analyze.neossnet import run_neossnet_pipeline, run_neossnet_no_sot, run_neossnet_on_nst, run_neossnet_belly_machine
 from analyze.nmcf import run_nmcf
+from analyze.palnet_runner import run_palnet_pipeline
 from analyze.pipeline import Pipeline
 from analyze.plot_hr import plot_hr, plot_peaks
 from analyze.sot import load_sot, combine_sot_results
@@ -33,7 +34,7 @@ from analyze.constants import PROJECT_DIR, FETAL_ACOUSTIC_BAND_HZ, BROADBAND_FIL
 PATIENT = "PT14_3"
 # PATIENT = "band_durgan_1"
 # WINDOW = 0, 340
-WINDOW = 0, 30*60
+WINDOW = 0, 5*60
 # WINDOW = 0, 30
 # WINDOW = 10, 1810
 # WINDOW = 220, 340
@@ -237,7 +238,12 @@ def main():
     # run_funet_no_sot(
     #     PATIENT, WINDOW, DATA_DIR,
     # )
-    run_funet_pipeline(
+    # run_funet_pipeline(
+    #     PATIENT,
+    #     WINDOW,
+    #     DATA_DIR,
+    # )
+    run_palnet_pipeline(
         PATIENT,
         WINDOW,
         DATA_DIR,

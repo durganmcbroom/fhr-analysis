@@ -42,7 +42,7 @@ model:
   # Linear layers in the head. 3 = in -> hidden -> hidden -> out (1.64M params at hidden 256
   # and 3 fibers); 1 = a plain linear probe (6k params, head_hidden then unused). The probe is
   # the standard baseline for a frozen backbone and is the single most informative first run.
-  head_layers: 3
+  head_layers: 1
   dropout: 0.0
   interpolation: 'linear'   # 'linear' | 'pchip'; how frames are filled back onto the samples
 
@@ -84,4 +84,4 @@ data:
   # This is the A/B that M2 settles; check_feasible prints a note either way.
   preprocess: ['normalize']
 
-model_dir: 'models/palnet-v1/'
+model_dir: 'models/palnet-v2/'
