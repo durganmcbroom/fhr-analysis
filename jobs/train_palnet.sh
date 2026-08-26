@@ -23,4 +23,12 @@ lib/palnet/generate_training_snippets.sh
 export HF_HOME="${HF_HOME:-$PWD/.hf-cache}"
 mkdir -p "$HF_HOME"
 
-poetry run palnet-train lib/palnet/fetal-config.yaml
+# --diagnostics writes snippet_diagnostics.png next to the checkpoints, one row per validation
+# snippet: the 64 log-mel bins the frozen backbone actually sees, the model's activity against
+# the target, the BPM traces those produce, and the cardiac period the beat detector locked
+# onto. Drop the flag to skip it (see common/diagnostics.py).
+#
+# The mel column is the one to look at first for this model. PALNet does not own its front-end
+# -- the mel filterbank is a tensor in the AudioSet checkpoint -- so whether a fetal beat is
+# visible in those 64 bins at all is the question the whole approach rests on.
+poetry run palnet-train lib/palnet/fetal-config.yaml --diagnostics

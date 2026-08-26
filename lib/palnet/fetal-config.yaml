@@ -84,4 +84,4 @@ data:
   # This is the A/B that M2 settles; check_feasible prints a note either way.
   preprocess: ['normalize']
 
-model_dir: 'models/palnet-v2/'
+model_dir: 'models/palnet-v3/'
