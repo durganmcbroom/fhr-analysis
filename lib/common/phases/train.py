@@ -56,10 +56,6 @@ def run_training(
 
     train_dl = task.make_train_loader(config)
     val_dl = task.make_val_loader(config)
-    # Data-dependent preparation that is not training (see Task.prepare_model). Ahead of the
-    # optimiser because it may change which parameters exist to optimise.
-    task.prepare_model(config, model, train_dl)
-
     optimiser = task.build_optimizer(config, model)
     scheduler = task.build_scheduler(config, optimiser)
     # Unlike the loss, the HR metric is not free: it runs the full inference path (beat

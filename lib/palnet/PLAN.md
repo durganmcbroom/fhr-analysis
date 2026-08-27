@@ -1,3 +1,21 @@
+> ## SUPERSEDED — read this first
+>
+> The front-end described below (the AudioSet checkpoint's own STFT and mel filterbank, fed at
+> 8 kHz to pitch-shift the fetal band up the mel scale) was built, trained and **abandoned**.
+> It did not work: a linear probe reached train 0.0845 and a 1.6M-parameter head 0.0790,
+> against FUNet's 0.041 on the same task. 267x more head capacity bought 0.005 of train loss,
+> which is what features that do not contain the target look like. The measured cause is
+> frequency resolution: the mel scale put only ~16 of its 64 bins on 100-300 Hz.
+>
+> PALNet now uses **FUNet's spectrogram** — `n_fft 1024`, `hop 256`, `freq_crop_hz [80, 350]`,
+> `log1p`, 64 rows over 78.1-328.1 Hz — and the trunk's pools were changed to frequency-only so
+> time survives. The AudioSet front-end tensors are dropped at load alongside `fc1`/`bn0`.
+>
+> What is still accurate below: §1 (what the checkpoint contains), §5 (why the model is
+> vendored), §7's BatchNorm concern, §8's control-arm reasoning, and the risk register. What is
+> obsolete: §2, §3, §4, §6, §9, §10, §11 and the milestones, all of which describe the mel
+> front-end. Sections 15-16 record the original build.
+
 # PALNet — plan
 
 **PALNet ("PANNs + Linear net")** — a frozen PANNs **ResNet22** AudioSet tagger under a small

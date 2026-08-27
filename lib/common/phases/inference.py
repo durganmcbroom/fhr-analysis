@@ -118,21 +118,13 @@ def run_windowed(
         *,
         device: Optional[torch.device] = None,
         postprocess: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
-        stride: int = 1,
 ) -> np.ndarray:
     """Run ``model`` over ``x`` in consecutive ``window``-sized slices of its last axis.
 
     ``x`` is a single unbatched example, e.g. ``(channels, freq, frames)`` or
     ``(channels, samples)``; the model is expected to map a batch of those to
-    ``(batch, window // stride)``. Returns the stitched result, trimmed back to
-    ``x``'s original length divided by ``stride``.
-
-    ``stride`` is how many input positions the model collapses into one output position. It is
-    1 for FUNet (windows spectrogram frames, emits one value per frame) and for TSLNet (windows
-    steps, emits one value per step), where input and output share a grid. PALNet windows
-    *samples* and emits *frames* -- its backbone reduces time by a fixed factor -- so it passes
-    that factor here rather than reimplementing the padding rules below, which are subtle
-    enough that a second copy would drift.
+    ``(batch, window)``. Returns the stitched ``(len,)`` result, trimmed back to ``x``'s
+    original length.
 
     The last axis is padded up to a whole number of windows first, so EVERY window is exactly
     ``window`` wide: a short final window is out-of-distribution (fewer frames shift a
@@ -140,9 +132,6 @@ def run_windowed(
     output. Padding reflects so the boundary looks like signal continuing, falling back to
     zeros when the input is too short to reflect that far.
     """
-    if window % stride:
-        raise ValueError(f"window ({window}) must be a multiple of stride ({stride})")
-
     device = device or next(model.parameters()).device
     total = x.shape[-1]
 
@@ -152,18 +141,16 @@ def run_windowed(
         x = torch.nn.functional.pad(x, (0, pad), mode=mode)
     padded = total + pad
 
-    out = np.zeros(padded // stride, dtype=np.float32)
+    out = np.zeros(padded, dtype=np.float32)
     x = x.to(device)
     for start in range(0, padded, window):
         chunk = x[..., start:start + window]          # always exactly `window` wide
-        y = model(chunk.unsqueeze(0))[0]              # (window // stride,)
+        y = model(chunk.unsqueeze(0))[0]              # (window,)
         if postprocess is not None:
             y = postprocess(y)
-        out[start // stride:(start + window) // stride] = y.cpu().numpy()
+        out[start:start + window] = y.cpu().numpy()
 
-    # Ceil, so a partial trailing frame is kept rather than silently dropped: at stride 1 this
-    # is exactly the old `out[:total]`.
-    return out[:-(-total // stride)]
+    return out[:total]
 
 
 #: How ``frames_to_native`` fills the gap between frames. Neither adds information -- one

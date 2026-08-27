@@ -1,21 +1,19 @@
 """Run a trained PALNet on a raw waveform and get a beat-activity signal over time.
 
-Mirrors ``funet.inference`` and ``tslnet.inference`` -- same signature, same return contract --
-so the analyze pipeline and rtmon can swap one model for another. The difference is only the
-front-end: PALNet resamples the stacked fibers to ``model_hz`` and hands the waveform to the
-backbone, which owns the STFT and mel filterbank (see ``palnet.data`` for why the rate is a
-design decision rather than a formality).
+Mirrors ``funet.inference`` almost line for line -- same signature, same return contract, same
+front-end -- so the analyze pipeline and rtmon can swap one model for the other. The difference
+is only what sits between the spectrogram and the frame-rate output: a frozen AudioSet trunk
+rather than a learned U-Net.
 
-The model trains on fixed crop_len-second crops, so inference processes the series in equal
-windows matching the training extent -- BatchNorm then sees the spatial statistics it trained
-on -- and stitches the per-window activity back together. PALNet is the reason
-``common.phases.inference.run_windowed`` takes a ``stride``: it windows *samples* and emits
-*frames*, at a fixed 32:1 (or 16:1, or 8:1) ratio, where FUNet and TSLNet emit one value per
-input position.
+The model trains on fixed crop_len-second crops, so inference processes the spectrogram in
+equal frame windows matching the training extent and stitches the per-window activity back
+together -- see common.phases.inference.run_windowed. The frame-rate activity is then mapped
+onto the input's own time axis so it lines up sample-for-sample with the source waveform.
 """
 
 import numpy as np
 import torch
+import torchaudio
 
 from common.audio import SAMPLE_RATE, resample
 from common.phases.inference import (
@@ -23,43 +21,52 @@ from common.phases.inference import (
 )
 from common.preprocess import Preprocessor
 
-from palnet.data import crop_samples, frame_stride, to_model_rate
+from palnet.data import freq_crop_bins
 from palnet.model import PALNet
+from palnet.panns import FREQ_DOWNSAMPLE
 from palnet.task import PALNetTask
 
 
 def load_palnet(config, checkpoint: str, device: torch.device = None) -> PALNet:
-    """Build a PALNet matching ``config`` and load ``checkpoint`` into it.
+    """Build a PALNet matching ``config`` and load head weights from ``checkpoint``.
 
-    ``checkpoint`` is head-only when the run left the backbone pristine, and a full state dict
-    otherwise (fine-tuned, a trainable bn0, or recalibrated BatchNorm statistics) -- see
-    ``PALNet.state_dict``. Either way the frozen part comes from ``config.model.checkpoint``
-    via the Hugging Face cache.
+    ``checkpoint`` is a head-only file (see PALNet.state_dict); the frozen trunk comes from the
+    Hugging Face cache.
     """
     return load_model(PALNetTask(), config, checkpoint, device)
 
 
-def waveform_input(config, x: np.ndarray, src_hz: int) -> torch.Tensor:
-    """The exact tensor PALNet is fed for waveform ``x``: ``(channels, samples)`` at model_hz.
+def spectrogram_input(config, x: np.ndarray, src_hz: int) -> torch.Tensor:
+    """The exact tensor PALNet is fed for waveform ``x``: ``(channels, rows, frames)``.
 
     Factored out of ``run_palnet`` so that anything needing to *see* the model's input -- the
-    diagnostic, via ``PALNetTask.make_input`` -- gets the same tensor the model gets, rather
-    than a reconstruction that could drift from it.
-
-    The order matters and matches the dataset exactly: everything deterministic happens at
-    4 kHz (where ``common.preprocess`` designs its bandpass) and the resample to ``model_hz``
-    comes last.
+    diagnostic's first column, via ``PALNetTask.make_input`` -- gets the same tensor the model
+    gets, rather than a reconstruction that could drift from it.
     """
-    # Peak-normalise on the same time scale a training snippet was normalised on -- not across
-    # the whole recording, which lets one loud transient rescale everything else.
+    # Match training preprocessing: resample to the model rate, then peak-normalise on the same
+    # time scale a training snippet was normalised on -- not across the whole recording, which
+    # lets one loud transient rescale everything else (see normalize_blocks).
     x = resample(x, src_hz, SAMPLE_RATE)
-    x = normalize_blocks(x, crop_samples(config))
+    x = normalize_blocks(x, config.train.crop_len * SAMPLE_RATE)
 
-    # The same deterministic transforms the dataset applied, at the same 4 kHz rate, or the
-    # model meets an input distribution it never trained on (see common.preprocess).
+    # The same deterministic transforms the dataset applied, or the model meets an input
+    # distribution it never trained on (see common.preprocess).
     waveform = Preprocessor(config.data.preprocess)(torch.from_numpy(np.ascontiguousarray(x)))
 
-    return to_model_rate(waveform, config.model.model_hz)
+    spec = torchaudio.transforms.Spectrogram(n_fft=config.model.n_fft,
+                                             hop_length=config.model.hop_length)
+    S = torch.log1p(spec(waveform))                       # (channels, freq, frames)
+
+    # Passband crop, from the same helper the dataset uses -- a checkpoint trained on a band
+    # must be run on that band, and two copies of the arithmetic would eventually disagree.
+    crop = freq_crop_bins(config)
+    if crop is not None:
+        S = S[:, crop[0]:crop[1], :]
+
+    # Floor the rows the same way the dataset does; the time axis needs no flooring because the
+    # trunk's pools are frequency-only.
+    freq = S.shape[-2] - S.shape[-2] % FREQ_DOWNSAMPLE
+    return S[:, :freq, :]
 
 
 @torch.no_grad()
@@ -88,27 +95,19 @@ def run_palnet(
             f"waveform has {channels} channel(s) but the model expects "
             f"{config.model.channels} (config.model.channels)")
 
-    series = waveform_input(config, x, src_hz)                 # (channels, samples)
+    S = spectrogram_input(config, x, src_hz)
 
-    stride = frame_stride(config)
-    # A training-sized crop, in model_hz samples. crop_samples is already aligned to a whole
-    # number of frames, so this is an exact multiple of stride -- the only window the pooling
-    # stages can take without dropping a partial frame off the end.
-    window = max(stride, crop_samples(config) * config.model.model_hz // SAMPLE_RATE)
+    # Window the time axis to a training-sized crop, so the model sees the extent it trained
+    # on. No rounding is needed: the trunk does not downsample time.
+    hop = config.model.hop_length
+    window = max(1, config.train.crop_len * SAMPLE_RATE // hop)
 
     # How a window of raw output becomes activity depends on what the loss pinned down, so the
     # readout is chosen from the loss rather than fixed here -- see ACTIVITY_POSTPROCESS.
     # NOTE: inference-only; training optimizes the raw output.
     postprocess = activity_postprocess(config.train.loss)
 
-    activity = run_windowed(model, series, window, device=device, postprocess=postprocess,
-                            stride=stride)
+    activity = run_windowed(model, S, window, device=device, postprocess=postprocess)
 
-    # Frame t is placed at model sample t*stride, which is the convention funet and tslnet use
-    # and the one HRMetrics scores both sides through. (A frame actually *aggregates* samples
-    # [t*stride, (t+1)*stride), so its centre of mass sits half a frame later -- 16 ms at the
-    # default geometry, against FUNet's 32 ms. Correcting it here alone would put PALNet on a
-    # different timing convention from every other model in the repo, so it is left as a
-    # measured question rather than a unilateral shift.)
-    return frames_to_native(activity, stride, config.model.model_hz, n_native, src_hz,
+    return frames_to_native(activity, hop, SAMPLE_RATE, n_native, src_hz,
                             interpolation=config.model.interpolation)

@@ -93,19 +93,6 @@ class Task(ABC):
         """
         return None
 
-    def prepare_model(self, config, model, train_loader) -> None:
-        """Last chance to touch ``model`` with real data before the optimiser is built.
-
-        Called by the train phase once the loaders exist, and never by the inference path. The
-        seam exists for preparation that is a *function of the training data* but is not
-        training: PALNet uses it to re-estimate its pretrained backbone's BatchNorm running
-        statistics on this dataset, which needs a loader but produces no gradient.
-
-        Anything done here must survive into the checkpoint on its own -- inference rebuilds
-        the model from the config and loads weights, and does not call this. Default: nothing.
-        """
-        return None
-
     def adapt_state_dict(self, state_dict: dict, config) -> dict:
         """Adapt a resume checkpoint before it is loaded into a fresh model.
 

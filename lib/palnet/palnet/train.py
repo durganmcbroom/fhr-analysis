@@ -47,18 +47,35 @@ def main(argv=None) -> None:
     run_training(task, config)
 
     # --- diagnostics (optional; delete this block and the CLI argument to remove) ---
-    # Runs the validation split a batch at a time through the real inference path, which for
-    # PALNet means the 99.2%-overlap STFT and 59.5M frozen params per snippet. That is fine on
-    # the GPU this job already holds and is not fine on a laptop: a 4.096 s crop peaks near
-    # 3 GB on CPU, so `PALNET_DEVICE=cpu palnet-train --diagnostics` will thrash or be killed.
-    # Use `fhr-diagnose --task palnet ... --window 8 --snippets N` there instead.
+    # Runs the validation split a batch at a time through the real inference path. Cheap now
+    # that the front-end is FUNet's: a 7 s crop is a 64 x 110 spectrogram rather than the
+    # 64 x 4097 the mel front-end produced, so this is minutes on CPU, not an OOM. (An earlier
+    # revision of this comment warned it was GPU-only; that stopped being true when the
+    # front-end changed.)
     if args.diagnostics:
         from common.diagnostics import plot_snippet_diagnostics
-        plot_snippet_diagnostics(
-            task, config,
-            checkpoint_path=os.path.join(config.model_dir, BEST_MODEL),
-            out_path=os.path.join(config.model_dir, DIAGNOSTICS_PLOT),
-        )
+        checkpoint = os.path.join(config.model_dir, BEST_MODEL)
+        # Said out loud, and before the work, because the alternative is what actually
+        # happened once: a run finishes, writes its curves, and the only trace of the
+        # diagnostics not happening is a line lost in a few thousand of training log.
+        print(f"--- diagnostics: {checkpoint} -> {config.model_dir} ---")
+        if not os.path.exists(checkpoint):
+            print(f"!! diagnostics skipped: no checkpoint at {checkpoint}")
+        else:
+            written = plot_snippet_diagnostics(
+                task, config,
+                checkpoint_path=checkpoint,
+                out_path=os.path.join(config.model_dir, DIAGNOSTICS_PLOT),
+            )
+            # Paginated, so the file is -001.png rather than the bare name whenever the
+            # validation split needs more than one page -- worth printing rather than
+            # leaving anyone to guess which of the two they should be looking for.
+            if written:
+                print(f"--- diagnostics: wrote {len(written)} file(s) ---")
+                for path in written:
+                    print(f"      {path}")
+            else:
+                print("!! diagnostics produced no files -- see the reason printed above")
     # --- end diagnostics ---
 
 

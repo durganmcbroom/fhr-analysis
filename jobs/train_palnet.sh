@@ -14,7 +14,7 @@ chmod a+x setup.sh
 ./setup.sh
 
 chmod a+x lib/palnet/generate_training_snippets.sh
-lib/palnet/generate_training_snippets.sh
+#lib/palnet/generate_training_snippets.sh
 
 # The PANNs ResNet22 checkpoint is ~259 MB and is fetched once, then reused. Keep the cache
 # beside the repo rather than in the default ~/.cache: a compute node whose home is not shared

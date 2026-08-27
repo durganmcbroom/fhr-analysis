@@ -1,120 +1,138 @@
-"""The waveform front-end and paired dataset for PALNet.
+"""PALNet's front-end and paired dataset: FUNet's spectrogram, deliberately unchanged.
 
-PALNet does not build a spectrogram: the backbone owns one, and its STFT basis and mel
-filterbank are tensors in the published checkpoint. All this module does is put the waveform on
-the rate the backbone should see it at, and build the target on the frame grid the backbone
-will emit.
+This is a near-copy of ``funet.data``, and the sameness is the point. PALNet exists to test one
+thing -- whether a frozen AudioSet trunk beats a U-Net learned from ~350 snippets -- and that
+question is only answerable if both models are handed the identical tensor. Every difference
+between the two front-ends would be a difference the comparison could not attribute.
 
-**Why the rate is a design decision.** The mel filterbank maps FFT *bin index* to mel bin, so a
-bin's effective frequency is whatever the feeding rate claims. Resampling the 4 kHz snippets to
-the checkpoint's nominal 32 kHz -- the "honest" mapping, where Hz means Hz -- is the worst
-option available: AudioSet's mel scale spends its resolution on speech and music, and 100-300 Hz
-lands on 5 of its 64 bins. Feeding at 8 kHz instead deliberately pitch-shifts the fetal band up
-to a pretend 400-1200 Hz, where 16 bins cover it, and simultaneously makes the fixed 1024-tap
-window 128 ms rather than 32 ms. 4 kHz (no resampling at all) covers the band with 22 bins but
-stretches the window to 256 ms, over half the fastest plausible beat interval. See
-``PALNetTask.check_feasible``, which reports all of this for whatever rate is configured.
+What PALNet's earlier front-end did instead, and why it was abandoned: it used the STFT and mel
+filterbank stored inside the AudioSet checkpoint. Those resolved the 100-300 Hz fetal band with
+~16 of 64 perceptually-spaced mel bins and spent the other 48 on frequencies a fetus does not
+emit. A linear probe over it reached train 0.0845 and a 1.6M-parameter head 0.0790, against
+FUNet's 0.041. Neither stored tensor was ever *learned* -- one is a windowed DFT basis, the
+other a triangular filterbank -- so replacing them costs the transfer bet nothing.
 
-**Why the hop looks absurd.** ``hop 8`` at 8 kHz is a 99.2%-overlap STFT. It is not a choice:
-``n_fft`` is frozen at 1024 by the conv kernel, and the network reduces time by exactly 32, so
-the input frame rate has to be 32x the output frame rate whatever the window length is. The
-output is 32 ms frames, which is the number that matters.
+Two differences from ``funet.data`` remain, both forced by the backbone:
 
-**Why crops are aligned.** Every pooling stage floors, so a crop that is not a whole number of
-output frames silently drops frames off the tail and slides the target out of alignment with
-the input. ``crop_samples`` floors to the nearest aligned length and everything downstream
-derives from it.
+* **Rows are floored to a multiple of 32**, not ``2**depth``. The trunk halves frequency five
+  times (see ``palnet.panns``), and flooring makes each halving exact instead of letting
+  ``avg_pool2d`` silently drop an odd row at every stage. FUNet's shipped passband,
+  ``[80, 350]`` at n_fft 1024, yields 71 rows and floors to 64 -- which is why that band is the
+  default here too.
+* **Time is not floored at all.** The trunk's pools are frequency-only, so there is no
+  requirement on the frame count and the model emits one value per spectrogram frame.
 
-The target is built by pooling the heart comb into frame-sized bins at 4 kHz, rather than
-resampling it: a comb put through an anti-alias lowpass rings and smears, and beat *timing* is
-the label.
+The target is built by pooling the heart comb into ``hop_length``-sized bins, on the same frame
+grid the spectrogram produces, rather than resampling it: a comb put through an anti-alias
+lowpass rings and smears, and beat *timing* is the label.
 """
 
-import numpy as np
+import math
+from typing import Optional
+
 import torch
+import torchaudio
 from torch.utils.data import DataLoader, Dataset
 
-from common.audio import (
-    SAMPLE_RATE, crop_time, holdout_split, load_wav, pad_time, resample, snippet_indices,
-)
+from common.audio import SAMPLE_RATE, crop_time, holdout_split, load_wav, pad_time, snippet_indices
 from common.augment import Augmenter
 from common.preprocess import Preprocessor
 
-from palnet.panns import TAPS
+from palnet.panns import FREQ_DOWNSAMPLE
 
 
-def time_downsample(config) -> int:
-    """Spectrogram frames per output frame, fixed by where the features are tapped."""
-    return TAPS[config.model.feature_layer][1]
+def freq_crop_bins(config) -> Optional[tuple[int, int]]:
+    """Half-open ``[lo, hi)`` spectrogram row range for ``config.model.freq_crop_hz``.
 
+    None when no band is configured, which keeps the full height.
 
-def frame_stride(config) -> int:
-    """Samples *at model_hz* per output frame."""
-    return time_downsample(config) * config.model.hop
+    Row k of a onesided STFT is centred at ``k * SAMPLE_RATE / n_fft`` Hz. The low edge floors
+    and the high edge ceils, so the kept rows always *bracket* the requested band rather than
+    landing inside it -- no row whose centre falls in [low, high] is ever dropped, and the
+    bandpass's transition skirt keeps a row of margin on each side.
 
-
-def native_stride(config) -> int:
-    """Samples *at 4 kHz* per output frame -- the target's bin width, and the alignment unit.
-
-    Exact only when ``model_hz`` divides ``frame_stride * SAMPLE_RATE``, which check_feasible
-    enforces; the crop and the target both reshape by this number.
+    One definition, called by the dataset, by inference and by ``spectrogram_shape``, so
+    training and inference cannot drift onto different row ranges (which would silently feed a
+    checkpoint a band it never saw).
     """
-    return frame_stride(config) * SAMPLE_RATE // config.model.model_hz
+    band = config.model.freq_crop_hz
+    if band is None:
+        return None
+
+    if len(band) != 2:
+        raise ValueError(f"model.freq_crop_hz must be [low_hz, high_hz], got {band!r}")
+    low, high = float(band[0]), float(band[1])
+    if not 0 <= low < high:
+        raise ValueError(
+            f"model.freq_crop_hz must satisfy 0 <= low < high, got [{low}, {high}]")
+
+    n_bins = config.model.n_fft // 2 + 1
+    bin_hz = SAMPLE_RATE / config.model.n_fft
+    lo = int(math.floor(low / bin_hz))
+    hi = min(int(math.ceil(high / bin_hz)) + 1, n_bins)   # +1: half-open, so `high` is kept
+    if lo >= hi:
+        raise ValueError(
+            f"model.freq_crop_hz [{low}, {high}] keeps no spectrogram rows at n_fft="
+            f"{config.model.n_fft} ({bin_hz:.3f} Hz/bin, Nyquist {SAMPLE_RATE / 2:g} Hz)")
+    return lo, hi
 
 
-def crop_samples(config) -> int:
-    """Length of one training crop in 4 kHz samples, floored to a whole number of frames."""
-    n = int(round(config.train.crop_len * SAMPLE_RATE))
-    return n - n % native_stride(config)
+def spectrogram_shape(config) -> tuple[int, int]:
+    """(freq_rows, frames) of the spectrogram PALNet is fed, *before* the row floor.
 
-
-def model_frames(config) -> int:
-    """Output frames one crop becomes.
-
-    Zero for a crop shorter than one frame, which is what makes this usable as a feasibility
-    check: the tuner can reject an unusable crop_len/hop/model_hz combination without
-    downloading the backbone.
+    ``freq_rows`` is ``n_fft // 2 + 1``, or the rows kept by ``freq_crop_hz``; ``frames`` is
+    ``1 + crop_samples // hop_length``, matching torchaudio's default (onesided, center=True)
+    Spectrogram. Pre-floor because that is what a feasibility check wants -- a band too narrow
+    for the trunk's five halvings floors to 0, and the tuner should be able to reject it
+    without building anything.
     """
-    return crop_samples(config) // native_stride(config)
+    freq_rows = config.model.n_fft // 2 + 1
+    crop = freq_crop_bins(config)
+    if crop is not None:
+        freq_rows = crop[1] - crop[0]
+    frames = 1 + config.train.crop_len * SAMPLE_RATE // config.model.hop_length
+    return freq_rows, frames
 
 
-def to_model_rate(waveform: torch.Tensor, model_hz: int) -> torch.Tensor:
-    """Resample a ``(channels, samples)`` waveform from SAMPLE_RATE to ``model_hz``.
-
-    Usually an *up*sample (4 kHz -> 8 kHz), which is lossless -- nothing above 2 kHz exists in
-    the source to alias -- and exact in length, since ``resample_poly`` at an integer ratio
-    returns exactly ``L * up`` samples.
-    """
-    if model_hz == SAMPLE_RATE:
-        return waveform
-    resampled = resample(waveform.numpy(), SAMPLE_RATE, model_hz)
-    return torch.from_numpy(np.ascontiguousarray(resampled, dtype=np.float32))
+def model_rows(config) -> int:
+    """Rows the model actually sees: ``spectrogram_shape`` floored to a whole number of
+    halvings. This is the width ``PALNet.input_norm`` is built for."""
+    rows, _ = spectrogram_shape(config)
+    return rows - rows % FREQ_DOWNSAMPLE
 
 
 class PALNetPairs(Dataset):
     """Paired snippet dataset in the shared training layout: ``{i}_mix.wav`` (multi-channel)
     plus mono ``{i}_heart.wav``.
 
-    mix    -> (channels, samples): per-fiber waveform at ``model_hz``
+    mix    -> (channels, freq, frames): log-power spectrogram, passband-cropped
     target -> (frames,): per-frame heart-beat activity, normalised to sum to 1
 
     mix and heart are cropped in the time domain with a single shared offset so they stay
-    aligned, and to a fixed aligned length so the frame count (and the default collate) is
-    consistent across the batch. Short clips are zero-padded.
+    aligned, and to a fixed length so the frame count (and the default collate) is consistent
+    across the batch. Short clips are zero-padded.
     """
 
-    def __init__(self, snippet_dir: str, indices: list, crop_length: int, frames: int,
-                 stride: int, train: bool, model_hz: int, augment=(), preprocess=()):
+    def __init__(self, snippet_dir: str, indices: list, crop_samples: int, train: bool,
+                 n_fft: int, hop_length: int, freq_crop: Optional[tuple[int, int]] = None,
+                 augment=(), preprocess=(), freq_mask: int = 0, time_mask: int = 0):
         self.dir = snippet_dir
         self.indices = indices
-        self.crop_length = crop_length   # 4 kHz samples, already aligned
-        self.frames = frames
-        self.stride = stride             # 4 kHz samples per output frame
+        self.crop_samples = crop_samples
         self.train = train  # train => random crop offset + augmentation; eval => deterministic
-        self.model_hz = model_hz
+        self.hop_length = hop_length
+        self.freq_crop = freq_crop
         self.augmenter = Augmenter(augment)
         # Unlike the augmenter, this is passed for validation too -- see common.preprocess.
         self.preprocessor = Preprocessor(preprocess)
+        self.spectrogram = torchaudio.transforms.Spectrogram(n_fft=n_fft, hop_length=hop_length)
+        # SpecAugment-style masking (train-only): one random-width band of freq bins / time
+        # frames zeroed, width uniform in [0, param). 0 disables. Applied after log1p, where
+        # 0 == log1p(0) == silence. Reachable at all only because PALNet owns its spectrogram
+        # now -- the AudioSet checkpoint's own spec_augmenter sat inside a frozen, eval-pinned
+        # module and could never fire.
+        self.freq_masking = torchaudio.transforms.FrequencyMasking(freq_mask) if train and freq_mask > 0 else None
+        self.time_masking = torchaudio.transforms.TimeMasking(time_mask) if train and time_mask > 0 else None
 
     def __len__(self):
         return len(self.indices)
@@ -127,37 +145,57 @@ class PALNetPairs(Dataset):
         mix = self._load(f"{idx}_mix.wav")
         heart = self._load(f"{idx}_heart.wav")
 
-        # Crop/pad to the aligned length (random offset when training), then augment and
-        # preprocess at 4 kHz -- the rate common.preprocess designs its bandpass for.
-        mix, heart = crop_time([mix, heart], self.crop_length, random_offset=self.train)
+        # Crop/pad to a fixed length (random offset when training) and layer on the enabled
+        # input augmentations (train-only; an empty Augmenter is a no-op for validation).
+        # Augment first, then preprocess: it band-limits the augmentation noise the same way
+        # real in-band noise arrives, and leaves peak normalisation with the last word.
+        mix, heart = crop_time([mix, heart], self.crop_samples, random_offset=self.train)
         mix = self.preprocessor(self.augmenter(mix))
 
-        series = to_model_rate(mix, self.model_hz)
+        # Power spectrogram magnitudes span orders of magnitude; log1p compresses that to a
+        # learnable range. Same transform FUNet applies, for the same reason.
+        spectrogram = torch.log1p(self.spectrogram(mix))
 
-        # Build the target on the SAME grid the backbone will emit on, so beats stay aligned
-        # with the input. Frame t covers 4 kHz samples [t*stride, (t+1)*stride). clamp_min(0)
-        # drops the gated/negative lobes; normalising to sum 1 keeps the target on the same
-        # footing as FUNet's and TSLNet's, which the shared losses assume.
-        covered = self.frames * self.stride
+        # Drop the rows the bandpass already emptied, before anything else looks at the axis.
+        # Ahead of the SpecAugment masks on purpose: a freq_mask is a width in rows, so masking
+        # first would spend part of its budget on rows about to be discarded.
+        if self.freq_crop is not None:
+            spectrogram = spectrogram[:, self.freq_crop[0]:self.freq_crop[1], :]
+
+        # Masks go on the input only -- the target still expects beats inside a time-masked
+        # span, deliberately: the model must interpolate through the gap from rhythm context.
+        if self.freq_masking is not None:
+            spectrogram = self.freq_masking(spectrogram)
+        if self.time_masking is not None:
+            spectrogram = self.time_masking(spectrogram)
+
+        # Floor the frequency axis to a whole number of the trunk's five halvings. The time
+        # axis is left alone: PALNet's pools are frequency-only, so any frame count works.
+        freq = spectrogram.shape[-2]
+        freq -= freq % FREQ_DOWNSAMPLE
+        spectrogram = spectrogram[:, :freq, :]
+
+        # Build the target on the SAME frame grid as the spectrogram so beats stay time-aligned
+        # with the input. A torchaudio frame t sits at sample t*hop_length, so the frames span
+        # the first frames*hop_length samples; pool the heart into those hop-sized bins.
+        # clamp_min(0) drops the gated/negative lobes; normalising to sum 1 keeps the target on
+        # the same footing as FUNet's and TSLNet's, which the shared losses assume.
+        frames = spectrogram.shape[-1]
+        covered = frames * self.hop_length
         heart_flat = pad_time(heart, covered)[0, :covered]           # (covered,)
-        target = heart_flat.reshape(self.frames, self.stride).clamp_min(0).mean(dim=-1)
+        target = heart_flat.reshape(frames, self.hop_length).clamp_min(0).mean(dim=-1)
         target = target / (target.sum() + 1e-12)
 
-        return series.float(), target.float()
+        return spectrogram, target.float()
 
 
-def make_dataloader(config, snippet_dir: str, *, train: bool, shuffle=None) -> DataLoader:
+def make_dataloader(config, snippet_dir: str, *, train: bool) -> DataLoader:
     """Build a loader over ``snippet_dir``.
 
     Two split strategies, as in the other models: a separate ``val_dir`` holds out a whole
     patient (preferred -- no within-patient leakage), and ``val_fraction`` carves the tail off
     ``train_dir`` by index for datasets that ship as one directory. ``val_fraction`` is used
     only when it is set and no ``val_dir`` is given.
-
-    ``shuffle`` defaults to ``train``. The BatchNorm recalibration pass overrides it: it wants
-    the deterministic, un-augmented view of the *training* directory, which is ``train=False``
-    over ``train_dir`` -- but with shuffling on, so a 32-batch sample is not just the first 32
-    snippets in index order.
     """
     m = config.model
 
@@ -170,13 +208,13 @@ def make_dataloader(config, snippet_dir: str, *, train: bool, shuffle=None) -> D
     else:
         chosen = indices
 
-    ds = PALNetPairs(snippet_dir, chosen, crop_samples(config), model_frames(config),
-                     native_stride(config), train=train, model_hz=m.model_hz,
+    ds = PALNetPairs(snippet_dir, chosen, config.train.crop_len * SAMPLE_RATE, train=train,
+                     n_fft=m.n_fft, hop_length=m.hop_length, freq_crop=freq_crop_bins(config),
                      augment=config.train.augment if train else (),
-                     preprocess=config.data.preprocess)   # every split, not just train
+                     preprocess=config.data.preprocess,   # every split, not just train
+                     freq_mask=config.train.freq_mask, time_mask=config.train.time_mask)
 
     print(f"Loaded {len(indices)} snippets from {snippet_dir}{split_note} "
           f"({'train' if train else 'validation'})")
-    return DataLoader(ds, batch_size=config.train.batch_size,
-                      shuffle=train if shuffle is None else shuffle,
+    return DataLoader(ds, batch_size=config.train.batch_size, shuffle=train,
                       num_workers=config.data.num_workers, pin_memory=True)
