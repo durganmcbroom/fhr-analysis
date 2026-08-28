@@ -207,7 +207,7 @@ def _original_sot(snippet_dir: str, index: int, n_native: int) -> Optional[np.nd
 
 def _patient_rows(task, config, model, device, scorer, patient_dir: str,
                   window_s: Optional[float], fibers: Optional[List[str]] = None,
-                  limit: Optional[int] = None):
+                  limit: Optional[int] = None, context_s: Optional[float] = None):
     """Rows for a continuous recording, each window treated exactly as a training snippet.
 
     Returns the same ``(inputs, predictions, targets, reference beats)`` the snippet path
@@ -286,7 +286,23 @@ def _patient_rows(task, config, model, device, scorer, patient_dir: str,
         n_rows = limit
     print(f"  {n_rows} window(s) of {span:g}s")
 
-    inputs, preds, targets, ref_beats = [], [], [], []
+    # --context: run the model on a longer span centred on each drawn window, then keep only
+    # that window's frames. The rows and their coverage are unchanged, so the figure stays
+    # directly comparable to a run without it -- the only difference is how much audio the
+    # model had around each row. That matters for a model whose output at a boundary is worse
+    # than in the middle: a separation model gets edge artefacts from the STFT's reflect pad
+    # and from sosfiltfilt's transient at each end of a crop, and at 7 s those two ends are a
+    # large fraction of what it sees.
+    #
+    # Cost is ~context/span forward passes' worth of audio per row, since neighbouring rows
+    # re-run overlapping context.
+    if context_s is not None:
+        if context_s < span:
+            raise SystemExit(f"--context {context_s:g}s is shorter than the {span:g}s window")
+        print(f"  context: model runs on {context_s:g}s centred on each window "
+              f"({context_s / span:.1f}x the drawn extent)")
+
+    inputs, preds, targets, ref_beats, map_fracs = [], [], [], [], []
     capture = _PrepoolCapture(task, model)
     model.eval()
     with torch.no_grad():
@@ -297,11 +313,36 @@ def _patient_rows(task, config, model, device, scorer, patient_dir: str,
             if chunk.shape[-1] < int(span * hz):
                 break                       # a short tail cannot make a full-length window
 
-            x = task.make_input(config, chunk, hz)
-            out = model(x[None, ...].to(device))
-            if scorer.postprocess is not None:
-                out = scorer.postprocess(out)
-            frames = out[0].detach().float().cpu().numpy()
+            if context_s is None:
+                x = task.make_input(config, chunk, hz)
+                out = model(x[None, ...].to(device))
+                if scorer.postprocess is not None:
+                    out = scorer.postprocess(out)
+                frames = out[0].detach().float().cpu().numpy()
+                keep = None
+            else:
+                # Widen symmetrically, clamped at the recording's ends -- so a row near either
+                # end gets less context than the middle rows, which is honest: there is no
+                # more audio to give it.
+                pad = int(round((context_s - span) / 2 * hz))
+                ca, cb = max(0, a - pad), min(stacked.shape[-1], b + pad)
+                x = task.make_input(config, stacked[:, ca:cb], hz)
+                out = model(x[None, ...].to(device))
+                # Postprocess on the CONTEXT, not the slice: the affine-invariant readouts
+                # standardise over whatever they are given, so slicing first would normalise
+                # each row against its own 7 s rather than against what the model just saw.
+                if scorer.postprocess is not None:
+                    out = scorer.postprocess(out)
+                full = out[0].detach().float().cpu().numpy()
+
+                # Frame f covers second f*hop/sample_rate from the context's start.
+                per_frame = scorer.hop_length / scorer.sample_rate
+                first = int(round((a - ca) / hz / per_frame))
+                n_keep = int(round(span / per_frame))
+                first = max(0, min(first, max(0, full.size - n_keep)))
+                keep = slice(first, first + n_keep)
+                frames = full[keep]
+                x = x[..., keep]
 
             # Only the span the model actually saw. make_input floors the time axis to the
             # network's downsampling factor, so a 7 s request becomes 6.656 s at hop 256;
@@ -318,15 +359,26 @@ def _patient_rows(task, config, model, device, scorer, patient_dir: str,
             idx = idx[(idx >= 0) & (idx < target.size)]
             target[idx] = 1.0
 
+            if keep is None:
+                map_fracs.append((0.0, 1.0))
+            else:
+                map_fracs.append((keep.start / max(1, full.size),
+                                  keep.stop / max(1, full.size)))
             inputs.append(x.detach().float().cpu().numpy())
             preds.append(frames)
             targets.append(target)
             ref_beats.append(in_window)
 
     capture.close()
+    maps = capture.maps
+    if context_s is not None and maps:
+        # The hook fired on the context, so its time axis is wider than the drawn row's.
+        # Narrow it by the same fraction, or the map column would not line up with the others.
+        maps = [m[:, int(round(m.shape[1] * lo_f)):int(round(m.shape[1] * hi_f))]
+                for m, (lo_f, hi_f) in zip(maps, map_fracs)]
     print(f"  scored {len(preds)} window(s), "
           f"{sum(len(r) for r in ref_beats)} SOT beats in total")
-    return inputs, preds, targets, ref_beats, capture.maps
+    return inputs, preds, targets, ref_beats, maps
 
 
 def plot_snippet_diagnostics(
@@ -339,6 +391,8 @@ def plot_snippet_diagnostics(
         patient_dir: Optional[str] = None,
         window_s: Optional[float] = None,
         fibers: Optional[List[str]] = None,
+        draw_input: bool = True,
+        context_s: Optional[float] = None,
 ) -> List[str]:
     """Draw the validation split through ``checkpoint_path``, every snippet by default.
 
@@ -366,7 +420,8 @@ def plot_snippet_diagnostics(
     forced_refs = None
     if patient_dir:
         inputs, preds, targets, forced_refs, maps = _patient_rows(
-            task, config, model, device, scorer, patient_dir, window_s, fibers, n_snippets)
+            task, config, model, device, scorer, patient_dir, window_s, fibers, n_snippets,
+            context_s=context_s)
     else:
         inputs, preds, targets, maps = _predict(task, config, model, device, n_snippets)
     if not preds:
@@ -397,7 +452,8 @@ def plot_snippet_diagnostics(
                    checkpoint_path, page, pages,
                    snippet_dir=config.data.val_dir, indices=page_indices,
                    forced_refs=page_refs, row_label="window" if patient_dir else "snippet",
-                   maps=page_maps, probe=task.period_probe(config))
+                   maps=page_maps, probe=task.period_probe(config),
+                   draw_input=draw_input)
         written.append(path)
     return written
 
@@ -415,7 +471,7 @@ def _draw_page(plt, scorer, inputs, preds, targets, first_index: int, out_path: 
                forced_refs: Optional[List[np.ndarray]] = None,
                row_label: str = "snippet",
                maps: Optional[List[np.ndarray]] = None,
-               probe=None) -> None:
+               probe=None, draw_input: bool = True) -> None:
     """Render one page of rows and save it."""
     rows = len(preds)
     # A model that already emits one value per input sample (hop_length 1, e.g. a separation
@@ -426,7 +482,7 @@ def _draw_page(plt, scorer, inputs, preds, targets, first_index: int, out_path: 
     # Columns follow the data flow, and each is present only when it says something: the
     # pre-pool map when the task exposes one, the raw-frames panel only when the frame grid
     # differs from the sample grid.
-    order = (["input"] + (["prepool"] if has_maps else [])
+    order = ((["input"] if draw_input else []) + (["prepool"] if has_maps else [])
              + (["frames"] if has_frame_grid else []) + ["native", "bpm"]
              + (["period"] if probe is not None else []))
     at = {name: i for i, name in enumerate(order)}
@@ -469,39 +525,57 @@ def _draw_page(plt, scorer, inputs, preds, targets, first_index: int, out_path: 
         pred_unit, target_unit = _unit(pred_native), _unit(target_native)
         pred_frames_unit, target_frames_unit = _unit(pred_frames), _unit(target_frames)
 
+        duration = pred_frames.size * scorer.hop_length / scorer.sample_rate
+
         # ---- input: the spectrogram the network is actually given ----
         # Averaged over the channel axis: FUNet takes one row per fibre and they are hard to
         # read stacked, while the mean still shows where energy sits in time and frequency.
         # extent puts it on the same seconds axis as every other column, so a beat mark lines
         # up across the row. Rows are labelled as bins rather than Hz because the passband crop
         # has already removed the low bins, and this module cannot know the offset that applied.
-        ax = axes[row][0]
-        image = spec.mean(axis=0) if spec.ndim == 3 else spec
-        channels = spec.shape[0] if spec.ndim == 3 else 1
-        duration = pred_frames.size * scorer.hop_length / scorer.sample_rate
         # Not every model is fed a spectrogram: a separation model takes the waveform straight,
-        # which arrives here as a single row. Drawn as an image that is a meaningless smear of
-        # colour, so draw whatever it actually is.
-        if image.shape[0] > MAX_WAVEFORM_ROWS:
-            ax.imshow(image, origin="lower", aspect="auto", cmap="magma",
-                      extent=(0.0, duration, 0.0, float(image.shape[0])))
-            ax.set_title(f"model input -- {image.shape[0]} freq bins x "
-                         f"{image.shape[1]} frames, mean of {channels} ch", fontsize=9)
+        # which arrives here as a single row. Drawn as an image that would be a meaningless
+        # smear of colour, so draw whatever it actually is. Skipped entirely under --no-input,
+        # where the column was never allocated.
+        if not draw_input:
+            # The row still has to be identifiable, so its label moves to the new leftmost.
+            axes[row][0].set_ylabel(f"{row_label} {first_index + row}")
         else:
-            # A handful of rows is a channel stack, not a spectrogram -- PALNet is fed the
-            # fibres as raw waveforms, and drawing three of them as an image is a meaningless
-            # smear that the "freq bins" title above would then misdescribe. Overlaid, so a
-            # fibre that has gone quiet or saturated is visible against the others.
-            in_seconds = np.linspace(0.0, duration, image.shape[1])
-            for ch in range(image.shape[0]):
-                ax.plot(in_seconds, image[ch], lw=0.4, alpha=0.75)
-            what = "waveform" if image.shape[0] == 1 else f"{image.shape[0]} channels"
-            ax.set_title(f"model input -- {what}, {image.shape[1]} samples", fontsize=9)
-        for t in ref_beats:
-            ax.axvline(t, color=TARGET_COLOUR, alpha=0.55, lw=0.8)
-        for t in pred_beats:
-            ax.axvline(t, color=MODEL_COLOUR, alpha=0.55, lw=0.8, ls="--")
-        ax.set_ylabel(f"{row_label} {first_index + row}")
+            ax = axes[row][at["input"]]
+            image = spec.mean(axis=0) if spec.ndim == 3 else spec
+            channels = spec.shape[0] if spec.ndim == 3 else 1
+            if image.shape[0] > MAX_WAVEFORM_ROWS:
+                # Percentile colour limits, not matplotlib's min/max autoscale. A log1p power
+                # spectrogram is dominated by whatever is loudest, and for a model fed full-band
+                # audio that is sub-100 Hz motion: on funet-v29's input the brightest row is DC and
+                # the whole 100-300 Hz fetal band peaks at 34% of the image maximum, so an
+                # autoscaled image renders the only part anyone wants to see as near-black. Clipping
+                # at p1/p99 puts that band at ~73% of the colormap instead. The tensor is unchanged
+                # -- this is the display, and the title says so, because a clipped scale must not be
+                # mistaken for an absolute one.
+                vmin, vmax = (float(v) for v in np.percentile(image, [1.0, 99.0]))
+                if not vmax > vmin:          # a constant image: let matplotlib autoscale
+                    vmin = vmax = None
+                ax.imshow(image, origin="lower", aspect="auto", cmap="magma", vmin=vmin, vmax=vmax,
+                          extent=(0.0, duration, 0.0, float(image.shape[0])))
+                ax.set_title(f"model input -- {image.shape[0]} freq bins x "
+                             f"{image.shape[1]} frames, mean of {channels} ch "
+                             f"(colour clipped to p1-p99)", fontsize=9)
+            else:
+                # A handful of rows is a channel stack, not a spectrogram -- PALNet is fed the
+                # fibres as raw waveforms, and drawing three of them as an image is a meaningless
+                # smear that the "freq bins" title above would then misdescribe. Overlaid, so a
+                # fibre that has gone quiet or saturated is visible against the others.
+                in_seconds = np.linspace(0.0, duration, image.shape[1])
+                for ch in range(image.shape[0]):
+                    ax.plot(in_seconds, image[ch], lw=0.4, alpha=0.75)
+                what = "waveform" if image.shape[0] == 1 else f"{image.shape[0]} channels"
+                ax.set_title(f"model input -- {what}, {image.shape[1]} samples", fontsize=9)
+            for t in ref_beats:
+                ax.axvline(t, color=TARGET_COLOUR, alpha=0.55, lw=0.8)
+            for t in pred_beats:
+                ax.axvline(t, color=MODEL_COLOUR, alpha=0.55, lw=0.8, ls="--")
+            ax.set_ylabel(f"{row_label} {first_index + row}")
 
         # ---- pre-pool: the last map that still has a frequency axis ----
         if has_maps:
@@ -624,7 +698,7 @@ def _draw_page(plt, scorer, inputs, preds, targets, first_index: int, out_path: 
     for ax in axes[-1]:
         if ax is not None and getattr(ax, "get_xlabel", lambda: "")() != "bpm":
             ax.set_xlabel("seconds")
-    image_cols = 1 + (1 if has_maps else 0)     # input, and the pre-pool map when present
+    image_cols = (1 if draw_input else 0) + (1 if has_maps else 0)   # input + pre-pool map
     for row in axes:
         for ax in row[image_cols:]:   # not the images: a grid over one is just noise
             ax.grid(True, alpha=0.3)
@@ -700,6 +774,19 @@ def parse_args(argv):
     p.add_argument("--out", type=Path, default=None,
                    help=f"output png (default: <model-dir>/{DEFAULT_PLOT}). Paginated into "
                         f"-001, -002 ... when the split needs more than one page.")
+    p.add_argument("--context", type=float, default=None, metavar="SECONDS",
+                   help="run the model on this much audio centred on each drawn window, then "
+                        "keep only that window's output. The rows and their coverage are "
+                        "unchanged -- only how much context the model had. Use it when a "
+                        "model's output degrades near a crop boundary (STFT reflect padding, "
+                        "the bandpass's edge transient), which at a 7 s window is a large "
+                        "fraction of what it sees. Costs roughly context/window times the "
+                        "audio per row. --patient-dir only.")
+    p.add_argument("--no-input", action="store_true",
+                   help="omit the leftmost 'model input' column. Useful when the input carries "
+                        "nothing worth looking at -- a separation model is fed the raw "
+                        "waveform, which draws as an undifferentiated band -- and the figure "
+                        "is wanted narrower.")
     p.add_argument("--snippets", type=int, default=None,
                    help="cap the number of snippets drawn (default: all of them)")
     return p.parse_args(argv)
@@ -752,7 +839,9 @@ def main(argv=None) -> None:
         n_snippets=args.snippets,
         patient_dir=str(args.patient_dir) if args.patient_dir else None,
         window_s=args.window,
-        fibers=args.fibers.split(',') if args.fibers else None)
+        fibers=args.fibers.split(',') if args.fibers else None,
+        draw_input=not args.no_input,
+        context_s=args.context)
     if not written:
         raise SystemExit(
             f"Nothing drawn. Task {task.name!r} provides no validation scorer "

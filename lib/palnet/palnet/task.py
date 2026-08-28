@@ -176,6 +176,27 @@ class PALNetTask(Task):
               f"spanning {low:.1f}-{low + kept * bin_hz:.1f} Hz")
         print(f"Frames: {config.train.crop_len}s crop -> {frames} frames, ~{beats:.1f} beats")
 
+    def config_overrides(self, config) -> dict:
+        """Pin the front-end into the archived config, defaults included.
+
+        ``write_config`` archives the *raw* YAML, so a field left to its dataclass default
+        leaves no trace next to the checkpoint. For most fields that is fine. It is not fine
+        for these three: they decide the spectrogram's row count, and the row count is the
+        width of ``input_norm`` -- so a checkpoint whose config omits them cannot be rebuilt if
+        the default ever moves, and would fail to load with nothing in the archive to explain
+        why.
+
+        It has already misled once: ``models/palnet-v4/config.yaml`` records no
+        ``freq_crop_hz``, because the source YAML had it commented out, and the run was read as
+        uncropped when in fact the [80, 350] default applied. PALNet's default is a band where
+        FUNet's is None, so commenting the line out means opposite things in the two models --
+        which is the kind of asymmetry that has to be written down rather than remembered.
+        """
+        m = config.model
+        return {"model": {"n_fft": m.n_fft, "hop_length": m.hop_length,
+                          "freq_crop_hz": (list(m.freq_crop_hz) if m.freq_crop_hz is not None
+                                           else None)}}
+
     def make_input(self, config, x, src_hz):
         """The exact tensor PALNet is fed for ONE window: ``(channels, rows, frames)``.
 

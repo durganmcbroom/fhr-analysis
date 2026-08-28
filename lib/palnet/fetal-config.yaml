@@ -19,7 +19,7 @@ model:
   # trunk's five frequency halvings floor to exactly 64 spanning 78.1-328.1 Hz.
   n_fft: 1024
   hop_length: 256          # 64 ms frames, and the target's bin width
-#  freq_crop_hz: [80, 350]
+  freq_crop_hz: null
 
   head_hidden: 256
   # Linear layers in the head. 1 = a plain linear probe (head_hidden then unused), the standard

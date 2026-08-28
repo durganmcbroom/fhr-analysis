@@ -54,6 +54,29 @@ class FUNetModelConfig:
     # the first conv, so a checkpoint cannot be run without knowing which way it was set.
     disable_freq_crop: bool = False
 
+    # How every 'same'-padded convolution fills outside the feature map -- and, because the two
+    # share a cause, which upsampler the decoders use.
+    #
+    # 'zeros' is the default and reproduces every checkpoint under models/ exactly: zero
+    # padding plus ConvTranspose2d decoders. Leaving this key out of a config therefore changes
+    # nothing, which is the point -- an existing run must stay loadable.
+    #
+    # Anything else pads continuously *and* replaces the decoders' ConvTranspose2d with
+    # Upsample + Conv2d. Both target the same measured failure: fed all-zero audio, FUNet emits
+    # a fixed per-window pattern the detector reads as a confident ~206 bpm -- a boundary
+    # artefact recurring every inference window (zero padding), plus a checkerboard oscillation
+    # inside it (transposed convolution). A model that invents a plausible heart rate from
+    # silence gives no way to tell "no signal" from "a beat", so this is worth an arm.
+    #
+    # 'reflect' | 'replicate' | 'circular' are torch's other Conv2d modes. 'circular' is a poor
+    # fit here -- a window's end is not continuous with its start. 'reflect' additionally
+    # requires the pad to be smaller than the feature map; check_feasible rejects a
+    # depth/dilation combination that violates it rather than letting the forward pass crash.
+    #
+    # Changing this invalidates existing weights (the decoders' module layout differs), so it
+    # belongs in `model` by the usual test.
+    padding_mode: str = "zeros"   # 'zeros' | 'reflect' | 'replicate' | 'circular'
+
 
 @dataclass(kw_only=True)
 class FUNetTrainConfig(TrainConfig):

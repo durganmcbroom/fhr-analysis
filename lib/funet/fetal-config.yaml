@@ -27,6 +27,14 @@ model:
   # on record. false (the default) runs the crop.
   disable_freq_crop: false
 
+  # 'zeros' reproduces every checkpoint under models/ exactly. Anything else pads continuously
+  # AND swaps the decoders' ConvTranspose2d for Upsample+Conv2d -- both aimed at the same
+  # measured failure: on all-zero audio FUNet emits a fixed per-window pattern the detector
+  # reads as a confident ~206 bpm (boundary artefact every window from the zero padding, plus a
+  # checkerboard oscillation inside it from the transposed convolution). Not loadable from a
+  # 'zeros' checkpoint -- it is a different network, so this needs its own run.
+  padding_mode: 'reflect'   # 'zeros' | 'reflect' | 'replicate' | 'circular'
+
 train:
   optimizer: 'AdamW'   # SGD, Adam, AdamW
   learning_rate: 3.e-4
@@ -67,4 +75,5 @@ data:
 # v35 = v34 + freq_crop_hz. Everything else is byte-identical to models/funet-v34/
 # fetal-config.yaml (same data, same schedule, same seed-less init), so the val curve is a
 # controlled read on the crop alone against v34's train 0.041 / val 0.0661.
-model_dir: 'models/funet-v36/'
+# A new network (different decoder layout), so it cannot resume from or overwrite v36.
+model_dir: 'models/funet-v38/'

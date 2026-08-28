@@ -2,7 +2,8 @@ import math
 
 import torch
 from torch import nn
-from torch.nn import Conv2d, GroupNorm, ReLU, MaxPool2d, Sequential, ConvTranspose2d, ModuleList, Dropout2d
+from torch.nn import (Conv2d, GroupNorm, ReLU, MaxPool2d, Sequential, ConvTranspose2d,
+                      ModuleList, Dropout2d, Upsample)
 
 NORM_GROUPS = 8  # target group count; actual is gcd(NORM_GROUPS, channels) so any width works
 
@@ -18,6 +19,7 @@ def encoder(
     convs: int = 3,
     dilation = 1,
     dropout: float = 0.0,
+    padding_mode: str = "zeros",
 ):
     modules = []
 
@@ -26,7 +28,8 @@ def encoder(
             inc = in_channels
         else:
             inc = out_channels
-        convolution = Conv2d(inc, out_channels, 3, dilation=dilation, padding="same")
+        convolution = Conv2d(inc, out_channels, 3, dilation=dilation, padding="same",
+                             padding_mode=padding_mode)
         norm = _norm(out_channels)
         relu = ReLU()
 
@@ -50,16 +53,38 @@ def decoder(
         convs: int = 3,
         dilation= 1,
         dropout: float = 0.0,
+        padding_mode: str = "zeros",
 ):
     modules = []
 
-    transpose = ConvTranspose2d(in_channels, out_channels, 3, stride=2, padding=1, output_padding=1)
-    modules.append(transpose)
+    if padding_mode == "zeros":
+        # The original upsampler, kept bit-for-bit so every existing checkpoint still loads:
+        # same module at the same Sequential index, same state_dict keys.
+        modules.append(ConvTranspose2d(in_channels, out_channels, 3, stride=2, padding=1,
+                                       output_padding=1))
+    else:
+        # Resize-then-convolve, the standard remedy for transposed-convolution checkerboarding
+        # (Odena et al.). A stride-2 ConvTranspose2d does not treat every output position
+        # alike: with kernel 3 the tap counts alternate 1,2,1,2 / 2,4,2,4, so a *spatially
+        # uniform* input comes out patterned -- which is exactly what silence produces, and it
+        # is where FUNet's ~206 bpm response to all-zero audio comes from. Measured parity
+        # contrast (spread of the four parity-class means over the interior std): 115% for
+        # ConvTranspose2d at kernel 3 *and* at kernel 4, versus 0.0% here. Making the kernel
+        # divisible by the stride evens the tap counts but not the weights each parity class
+        # sees, so it does not help; only giving every output position the same kernel does.
+        #
+        # Parameter count is unchanged: ConvTranspose2d(in, out, 3) and Conv2d(in, out, 3) both
+        # hold in*out*9 weights. The Sequential indices do shift by one, so this arm cannot
+        # load a zeros-mode checkpoint -- which is correct, it is a different network.
+        modules.append(Upsample(scale_factor=2, mode="nearest"))
+        modules.append(Conv2d(in_channels, out_channels, 3, padding="same",
+                              padding_mode=padding_mode))
     modules.append(_norm(out_channels))
     modules.append(ReLU())
 
     for _ in range(convs):
-        convolution = Conv2d(out_channels, out_channels, 3, dilation=dilation, padding="same")
+        convolution = Conv2d(out_channels, out_channels, 3, dilation=dilation, padding="same",
+                             padding_mode=padding_mode)
         norm = _norm(out_channels)
         relu = ReLU()
 
@@ -83,8 +108,28 @@ class FUNet(nn.Module):
         base_channels: int = 64,   # width of the first level; every level doubles from here
         head: str = "logprob",     # "logprob" -> log_softmax (KLDivLoss); "signal" -> raw signal (SNR loss)
         dropout: float = 0.0,      # Dropout2d p in the bottleneck + deepest enc/dec level; 0 = off
+        # How every 'same'-padded convolution fills outside the feature map, and -- because the
+        # two problems share a cause -- which upsampler the decoders use.
+        #
+        # 'zeros' (the default, and every checkpoint under models/) pads with 0, so a unit at
+        # the border computes over a field the interior never sees. Anything else pads
+        # continuously AND swaps the decoders' ConvTranspose2d for Upsample+Conv2d; see
+        # `decoder`. Both changes attack the same symptom: fed all-zero audio, FUNet emits a
+        # fixed per-window pattern that the beat detector reads as a confident ~206 bpm, with
+        # the boundary artefact recurring every window and a checkerboard oscillation inside it.
+        #
+        # 'reflect' mirrors the interior, so the padding looks like signal continuing. Note it
+        # requires the pad to be smaller than the feature map, which a deep stack with large
+        # dilations can violate -- FUNetTask.check_feasible rejects that up front.
+        padding_mode: str = "zeros",
     ):
         super().__init__()
+
+        if padding_mode not in ("zeros", "reflect", "replicate", "circular"):
+            raise ValueError(
+                f"padding_mode must be one of zeros/reflect/replicate/circular, "
+                f"got {padding_mode!r}")
+        self.padding_mode = padding_mode
 
         if head not in ("logprob", "signal"):
             raise ValueError(f"head must be 'logprob' or 'signal', got {head!r}")
@@ -92,13 +137,14 @@ class FUNet(nn.Module):
         self.depth = len(dilations)
 
         base = base_channels
-        self.initial_conv = Conv2d(channels, base, 3, padding="same")
+        self.initial_conv = Conv2d(channels, base, 3, padding="same",
+                                   padding_mode=padding_mode)
         self.initial_norm = _norm(base)
         # Dropout only at the deepest level (and bottleneck below): the shallow levels carry
         # the fine time-localization of beats, which dropout there would smear.
         self.encoders = ModuleList([
             encoder(in_channels=base * 2**i, out_channels=base * 2**(i+1), dilation=e,
-                    convs=codec_convolutions,
+                    convs=codec_convolutions, padding_mode=padding_mode,
                     dropout=dropout if i == len(dilations) - 1 else 0.0)
             for i, e in enumerate(dilations)
         ])
@@ -106,7 +152,7 @@ class FUNet(nn.Module):
         # decoders[0] (i == len(dilations)) is the deepest level.
         self.decoders = ModuleList([
             decoder(in_channels=2 * base * 2**i, out_channels=base * 2**(i-1),
-                    convs=codec_convolutions,
+                    convs=codec_convolutions, padding_mode=padding_mode,
                     dropout=dropout if i == len(dilations) else 0.0)
             for i in range(len(dilations), 0, -1)
         ])
@@ -114,7 +160,9 @@ class FUNet(nn.Module):
         bottleneck_ch = base * 2 ** len(dilations)
         bottleneck_modules = []
         for _ in range(bottleneck_convs):
-            bottleneck_modules.append(Conv2d(bottleneck_ch, bottleneck_ch, 4, dilation=bottleneck_dilation, padding="same"))
+            bottleneck_modules.append(Conv2d(bottleneck_ch, bottleneck_ch, 4,
+                                             dilation=bottleneck_dilation, padding="same",
+                                             padding_mode=padding_mode))
             bottleneck_modules.append(_norm(bottleneck_ch))
             bottleneck_modules.append(ReLU())
             if dropout > 0:

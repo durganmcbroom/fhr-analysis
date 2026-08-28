@@ -47,7 +47,8 @@ class FUNetTask(Task):
     # interpolation joins these for the same reason: it is a readout decision, and letting a
     # search vary it would let a trial win by picking the readout that localises beats best
     # rather than the model that does.
-    frozen_fields = ("model.freq_crop_hz", "model.disable_freq_crop", "model.interpolation")
+    frozen_fields = ("model.freq_crop_hz", "model.disable_freq_crop", "model.interpolation",
+                     "model.padding_mode")
 
     # n_fft/hop_length are searched, but they change what the loss *means*, not just the model:
     # data.__getitem__ builds the target comb on the spectrogram's own frame grid, so halving
@@ -88,6 +89,9 @@ class FUNetTask(Task):
             # Inactive under eval(), but dropout>0 shifts Sequential state_dict keys, so the
             # architecture must match the checkpoint's training config to load it.
             dropout=m.dropout,
+            # Same story: anything but 'zeros' also swaps the decoders' upsampler, which shifts
+            # their Sequential keys. See FUNetModelConfig.padding_mode.
+            padding_mode=m.padding_mode,
         )
 
     def build_loss(self, config):
@@ -110,6 +114,14 @@ class FUNetTask(Task):
         with a small n_fft or a large hop violates that -- and so does a narrow
         model.freq_crop_hz, which stft_output_shape has already applied to freq_bins.
         """
+        mode = config.model.padding_mode
+        if mode not in ("zeros", "reflect", "replicate", "circular"):
+            raise InfeasibleConfig(
+                f"model.padding_mode must be one of zeros/reflect/replicate/circular, "
+                f"got {mode!r}")
+        if mode != "zeros":
+            print(f"Padding: '{mode}' -- decoders use Upsample+Conv2d instead of "
+                  f"ConvTranspose2d, so this cannot load a 'zeros' checkpoint.")
         freq_bins, time_frames = stft_output_shape(config)
         divisor = 2 ** len(config.model.dilations)
         if divisor > freq_bins or divisor > time_frames:
@@ -121,6 +133,51 @@ class FUNetTask(Task):
             raise InfeasibleConfig(
                 f"depth {len(config.model.dilations)} needs freq and time >= {divisor}, but "
                 f"this config yields freq={freq_bins}, time={time_frames}{band}")
+
+        # After the depth check on purpose: a network too deep for its input floors the maps to
+        # zero, and reporting "pads 1 into a 0x0 map" would send the reader after the wrong bug.
+        if mode == "reflect":
+            problems = self._reflect_pad_problems(config)
+            if problems:
+                raise InfeasibleConfig(
+                    "padding_mode 'reflect' cannot pad wider than the map it pads, but "
+                    + "; ".join(problems)
+                    + ". Use 'replicate' (no such limit), lower the dilations, or shorten the "
+                      "network")
+
+    def _reflect_pad_problems(self, config) -> list:
+        """Layers whose 'same' padding would meet or exceed the feature map it pads.
+
+        ``reflect`` mirrors the interior, so it cannot supply more padding than there is map to
+        mirror -- torch raises "Padding size should be less than the corresponding input
+        dimension". A shallow net never comes close; FUNet's *default* dilations
+        ([1,1,1,2,2,4,4] with bottleneck_dilation 8) do, because the bottleneck sees a
+        freq/128 grid and asks for 12 rows of padding. Caught here rather than left to explode
+        part-way through the first forward pass.
+
+        ``replicate`` and ``circular`` have no such limit, so this only gates ``reflect``.
+        """
+        freq, time = stft_output_shape(config)
+        depth = len(config.model.dilations)
+        divisor = 2 ** depth
+        freq -= freq % divisor
+        time -= time % divisor
+
+        problems = []
+        # Encoder level i works on the map halved i times; kernel 3 at dilation d pads d a side.
+        # The decoders mirror it, so checking the encoders covers both.
+        for i, d in enumerate(config.model.dilations):
+            f, t = freq >> i, time >> i
+            if d >= min(f, t):
+                problems.append(f"encoder/decoder level {i}: dilation {d} pads {d} into a "
+                                f"{f}x{t} map")
+        # The bottleneck is the tightest: kernel 4, so it pads ceil(3*dilation/2) a side.
+        f, t = freq >> depth, time >> depth
+        pad = -(-config.model.bottleneck_dilation * 3 // 2)
+        if pad >= min(f, t):
+            problems.append(f"bottleneck: dilation {config.model.bottleneck_dilation} with "
+                            f"kernel 4 pads {pad} into a {f}x{t} map")
+        return problems
 
     def make_input(self, config, x, src_hz):
         """The log1p spectrogram, preprocessed and passband-cropped, for ONE window.
