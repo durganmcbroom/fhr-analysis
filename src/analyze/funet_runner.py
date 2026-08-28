@@ -167,7 +167,7 @@ def run_funet_pipeline(patient, window, datadir, fibers=["1B", "2A", "2B"]):
         # FiberData.apply(bp(*(100, 300), "butter")),
         # FiberData.apply(normalize),
         use_funet(out_path, fibers),
-        fiber_beats(v2_beat_detector, out_path),
+        fiber_beats(v7_beat_detector, out_path),
         plot_hr(sot, out_path),
         plot_hr_corrected(sot, f"{Path(datadir) / NST_DRIFT_LOG_FILE}", out_path),
         evaluate_v3(sot, out_path, hr_smooth=20)
