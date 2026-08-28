@@ -23,7 +23,7 @@ NEOSSNET_MODEL_CFG = os.path.join(PROJECT_DIR, "lib/neossnet/models/model.yaml")
 # FUNet beat-activity model (lib/funet)
 # FUNET_CONFIG = os.path.join(PROJECT_DIR, "lib/funet/fetal-config.yaml")
 # FUNET_MODEL = "funet-v37(poor snippets)"
-FUNET_MODEL = "funet-v39"
+FUNET_MODEL = "funet-v40"
 FUNET_CONFIG = os.path.join(PROJECT_DIR, f"lib/funet/models/{FUNET_MODEL}/config.yaml")
 FUNET_MODEL_PATH = os.path.join(PROJECT_DIR, f"lib/funet/models/{FUNET_MODEL}/model_best.pt")
 
