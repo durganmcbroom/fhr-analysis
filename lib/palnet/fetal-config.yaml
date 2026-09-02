@@ -25,7 +25,7 @@ model:
   # Linear layers in the head. 1 = a plain linear probe (head_hidden then unused), the standard
   # baseline for a frozen backbone and the most informative first run; 3 = in -> hidden ->
   # hidden -> out.
-  head_layers: 1
+  head_layers: 3
   dropout: 0.0
   interpolation: 'linear'   # 'linear' | 'pchip'; how frames are filled back onto the samples
 
@@ -63,4 +63,4 @@ data:
   # maternal sound or motion *inside* it, and the crop was measured on a bandpassed mix.
   preprocess: ['bandpass', 'normalize']
 
-model_dir: 'models/palnet-v4/'
+model_dir: 'models/palnet-v5/'

@@ -23,7 +23,7 @@ NEOSSNET_MODEL_CFG = os.path.join(PROJECT_DIR, "lib/neossnet/models/model.yaml")
 # FUNet beat-activity model (lib/funet)
 # FUNET_CONFIG = os.path.join(PROJECT_DIR, "lib/funet/fetal-config.yaml")
 # FUNET_MODEL = "funet-v37(poor snippets)"
-FUNET_MODEL = "funet-v40"
+FUNET_MODEL = "funet-v41"
 FUNET_CONFIG = os.path.join(PROJECT_DIR, f"lib/funet/models/{FUNET_MODEL}/config.yaml")
 FUNET_MODEL_PATH = os.path.join(PROJECT_DIR, f"lib/funet/models/{FUNET_MODEL}/model_best.pt")
 
@@ -41,7 +41,7 @@ TSLNET_MODEL_PATH = os.path.join(PROJECT_DIR, f"lib/tslnet/models/{TSLNET_MODEL}
 # the config and comes from the Hugging Face cache. A run that fine-tunes, unfreezes bn0 or
 # recalibrates BatchNorm writes the full state dict instead; either loads through the same
 # `load_palnet`.
-PALNET_MODEL = "palnet-v1"
+PALNET_MODEL = "palnet-v4"
 PALNET_CONFIG = os.path.join(PROJECT_DIR, f"lib/palnet/models/{PALNET_MODEL}/config.yaml")
 PALNET_MODEL_PATH = os.path.join(PROJECT_DIR, f"lib/palnet/models/{PALNET_MODEL}/model_best.pt")
 

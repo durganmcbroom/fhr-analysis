@@ -34,7 +34,7 @@ from analyze.constants import PROJECT_DIR, FETAL_ACOUSTIC_BAND_HZ, BROADBAND_FIL
 PATIENT = "PT14_3"
 # PATIENT = "band_durgan_1"
 # WINDOW = 0, 340
-WINDOW = 0, 4*60
+WINDOW = 0, 30*60
 # WINDOW = 0, 30
 # WINDOW = 10, 1810
 # WINDOW = 220, 340
@@ -243,22 +243,22 @@ def main():
         WINDOW,
         DATA_DIR,
     )
-    # run_palnet_pipeline(
-    #     PATIENT,
-    #     WINDOW,
-    #     DATA_DIR,
-    # )
-    # run_tslnet_pipeline(
-    #     PATIENT,
-    #     WINDOW,
-    #     DATA_DIR,
-    # )
+    run_palnet_pipeline(
+        PATIENT,
+        WINDOW,
+        DATA_DIR,
+    )
+    run_tslnet_pipeline(
+        PATIENT,
+        WINDOW,
+        DATA_DIR,
+    )
     # run_neossnet_pipeline(
     #     PATIENT,
     #     WINDOW,
     #     DATA_DIR,
     # )
-    # run_raw_bandpass()
+    run_raw_bandpass()
     # run_funet_pipeline(
     #     PATIENT,
     #     WINDOW,
